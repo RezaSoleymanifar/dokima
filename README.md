@@ -8,6 +8,18 @@ Dokima is a production-grade runtime for AI agents. It is the management layer a
 
 *Status: private and in active development. Source is not public yet.*
 
+## You check the verification, not the work
+
+Agents like Claude Code are strong, but someone has to check every step. Dokima moves the human from checking the work
+to checking the verification, so agents can code unattended for much longer, with outcomes you can verify:
+
+- **A contract per task:** a definition of done with held-out tests the agent never sees.
+- **An independent reviewer:** judges the plan against your own request, and the work against the plan.
+- **A merge gate:** nothing lands until the full suite passes.
+- **An auditor on every run:** reads every step's input, output and handoff, and files what the machinery got wrong.
+
+Your job shrinks to approving direction and promoting findings.
+
 ## Who it's for
 
 - **Engineers, first.** Build on the runtime: define workflows, plug in tools, models and clients.
