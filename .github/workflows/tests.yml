@@ -1,23 +1,49 @@
 name: tests
+# DEMO: one GitHub check per done-when, plus one final gate check.
 on:
   pull_request:
-  push:
-    branches: [main]
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 jobs:
-  tests:
+  done-whens:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/done_whens.py >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: done-whens
+    if: needs.done-whens.outputs.matrix != '[]'
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.done-whens.outputs.matrix) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest
-      - run: pytest -q -rA -o junit_family=xunit1 --junitxml=results/results.xml
-      - name: Save results for the card
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: results
-          path: results/results.xml
+      - run: pip install -q pytest
+      - name: Run this done-when's tests
+        env:
+          TESTS: ${{ matrix.tests }}
+        run: |
+          if [ -z "$TESTS" ]; then echo "No test verifies this done-when yet."; exit 1; fi
+          pytest -rA -p no:cacheprovider $TESTS
+
+  all-done-whens:
+    name: all done-whens passed
+    needs: check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.check.result }}" = "success"
