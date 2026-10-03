@@ -18,14 +18,19 @@ jobs:
     outputs:
       skip: ${{ steps.start.outputs.skip }}
     steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.DOKIMA_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
       - name: Open a draft pull request for the issue
         id: start
         env:
-          GH_TOKEN: ${{ secrets.DOKIMA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           N: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
         run: |
@@ -35,8 +40,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git config user.name "dokima-worker"
-          git config user.email "dokima-worker@users.noreply.github.com"
+          git config user.name "dokima-runtime[bot]"
+          git config user.email "337511017+dokima-runtime[bot]@users.noreply.github.com"
           git checkout -b "$B"
           git commit --allow-empty -m "Start work on #$N"
           git push origin "$B"
@@ -79,13 +84,20 @@ jobs:
             --dangerously-skip-permissions --max-turns 40
       - name: Tests pass before anything is pushed
         run: pytest -q
+      # The app's token is minted only now, after the agent has finished, and it
+      # cannot touch .github/ (the app has no workflows permission).
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
       - name: Commit, push and mark the pull request ready
         env:
-          GH_TOKEN: ${{ secrets.DOKIMA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           N: ${{ github.event.issue.number }}
         run: |
-          git config user.name "dokima-worker"
-          git config user.email "dokima-worker@users.noreply.github.com"
+          git config user.name "dokima-runtime[bot]"
+          git config user.email "337511017+dokima-runtime[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Build #$N"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
