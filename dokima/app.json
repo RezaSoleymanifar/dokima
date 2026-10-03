@@ -1,0 +1,17 @@
+{
+  "name": "Dokima Runtime",
+  "description": "Dokima's bot. Opens PRs, posts the card, never approves. Nothing merges until it's proven.",
+  "url": "https://github.com/RezaSoleymanifar/dokima",
+  "hook_attributes": {"url": "https://github.com/RezaSoleymanifar/dokima", "active": false},
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "actions": "read",
+    "statuses": "read",
+    "metadata": "read"
+  },
+  "default_events": []
+}
