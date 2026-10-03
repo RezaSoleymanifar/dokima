@@ -8,11 +8,11 @@ permissions:
   pull-requests: read
 jobs:
   done-whens:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: m
         env:
           GH_TOKEN: ${{ github.token }}
@@ -26,10 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.done-whens.outputs.matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -q pytest
@@ -44,20 +44,24 @@ jobs:
         if: always() && matrix.tests != ''
         env:
           ID: ${{ matrix.id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PY'
           import os, xml.etree.ElementTree as ET
+          repo, sha, done_when = os.environ["GITHUB_REPOSITORY"], os.environ["HEAD_SHA"], os.environ["ID"]
           for tc in ET.parse("r.xml").iter("testcase"):
               failed = any(c.tag in ("failure", "error") for c in tc)
               kind, verdict = ("error", "failed") if failed else ("notice", "passed")
-              line = int(tc.get("line")) + 1
-              print(f"::{kind} file={tc.get('file')},line={line},title={os.environ['ID']} {verdict}::{tc.get('name')} {verdict}")
+              path, line = tc.get("file"), int(tc.get("line")) + 1
+              link = f"https://github.com/{repo}/blob/{sha}/{path}#L{line}"
+              print(f"::{kind} file={path},line={line},title={done_when} {verdict}::"
+                    f"{tc.get('name')} {verdict} · {path} line {line} · view the test: {link}")
           PY
 
   all-done-whens:
     name: all done-whens passed
     needs: check
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: test "${{ needs.check.result }}" = "success"
