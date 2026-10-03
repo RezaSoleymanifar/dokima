@@ -1,4 +1,5 @@
 name: worker
+run-name: ${{ github.event.label.name == 'work' && format('worker for #{0}', github.event.issue.number) || format('worker: ignored label {0} on #{1}', github.event.label.name, github.event.issue.number) }}
 # Labeling an issue `work` opens a draft PR for it, waits for Reza's approval,
 # then runs Claude Code on a fresh GitHub machine to build what the issue asks.
 on:
@@ -13,11 +14,11 @@ permissions:
 jobs:
   open:
     if: github.event.label.name == 'work'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       skip: ${{ steps.start.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.DOKIMA_TOKEN }}
@@ -46,20 +47,20 @@ jobs:
   approve:
     needs: open
     if: needs.open.outputs.skip == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: approval
     steps:
       - run: echo "Approved by a required reviewer."
 
   build:
     needs: [open, approve]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: work/issue-${{ github.event.issue.number }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install pytest and Claude Code
