@@ -2,68 +2,67 @@
 
 **Agents are capable but unreliable. Dokima makes the system around them trustworthy.**
 
-Dokima is a production-grade runtime for AI agents. It is the management layer around your agentic ecosystem: memory, execution, verification, resources and recovery, whichever models or clients you use.
+Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You describe a task in a GitHub issue; isolated AI sessions plan it, build it and review it; and nothing reaches your main branch until it is proven.
 
-> "Give me a machine, connect my preferred models, and let me delegate work to an assistant that remembers and follows through."
+No servers to run. No database. Your repo, its issues and its pull requests are the whole system.
 
-*Status: private and in active development. Source is not public yet.*
+> Status: in active development. The first slice is being built now; see [Roadmap](#roadmap).
 
 ## You check the verification, not the work
 
-Agents like Claude Code are strong, but someone has to check every step. Dokima moves the human from checking the work
-to checking the verification, so agents can code unattended for much longer, with outcomes you can verify:
+Coding agents like Claude Code are strong, but someone still has to watch every step. Dokima moves you from checking the work to checking the verification. You approve the plan, you accept the result, and the runtime guarantees everything in between.
 
-- **A contract per task:** a definition of done with held-out tests the agent never sees.
-- **An independent reviewer:** judges the plan against your own request, and the work against the plan.
-- **A merge gate:** nothing lands until the full suite passes.
-- **An auditor on every run:** reads every step's input, output and handoff, and files what the machinery got wrong.
+## How it works
 
-Your job shrinks to approving direction and promoting findings.
+```
+issue ──► Planner ──► you approve ──► Worker ──► Reviewer ──► Gate ──► main
+            plan +                      code       read-only     tests
+            tests                                  judgment      pass
+```
 
-## Who it's for
+1. **You open an issue** in plain words: what you want and what "done" looks like.
+2. **The planner** turns it into a plan and the tests that will prove it, then waits for your go.
+3. **The worker** writes the code to make those tests pass. It cannot change them.
+4. **The reviewer**, a fresh session that never talked to the worker, checks the change against the plan.
+5. **The gate** merges only when the full test suite passes on the latest main.
 
-- **Engineers, first.** Build on the runtime: define workflows, plug in tools, models and clients.
-- **Everyone, next.** Install add-ons that engineers build, and customize your assistant without writing code.
+Each role is its own GitHub Actions job on its own clean machine. Labels on the issue say whose turn it is.
 
-## Why it exists
+## Production-grade by design
 
-- **Memory across models and devices.** You shouldn't have to rebuild your context every time you change tools.
-- **Verifiable execution.** An agent saying it finished is not evidence that it did.
-- **Durable workflows.** Work should survive crashes, interruptions and long runs.
-- **Controlled orchestration.** You decide what each model can see and do.
-- **A common runtime.** All of this should work across models, clients and, eventually, machines.
+- **Separation of duties.** Planner, worker and reviewer run as separate sessions on separate machines. None can see, steer or vouch for another.
+- **Tamper-proof grading.** The tests are the contract. They are written before the work and locked during it; a change that edits them fails, even if everything passes.
+- **Independent review.** A read-only reviewer blocks gamed tests and damage outside the task's scope.
+- **A merge gate.** Main never breaks. Nothing lands until it is green against the latest main, and merges happen on their own.
+- **Durable execution.** The worker commits after every step. A crash, timeout or cancelled job resumes from the last commit instead of starting over, and stalled tasks restart themselves.
+- **Fast verification.** Large test suites split across many machines at once, so checking never becomes the bottleneck.
+- **Full audit trail.** Every plan, step, review and decision is a commit, comment or log on GitHub. Nothing happens off the record.
+- **Least privilege.** Each role gets only the permissions its job needs. Secrets live in GitHub's encrypted store, never in the repo.
 
-## Three guarantees
+## Plug in any repo
 
-### Isolation
-- **Sandboxing.** Each worker runs sealed, with one way out. Network isolation makes verification provable.
-- **Orchestration.** Workflows define exactly what each model sees, may do, and which tools it gets.
-- **Scheduling.** Resources and conflicts are managed so parallel, interdependent work lands on its own unless it truly collides.
+One command connects a repository: it adds a small workflow file, a starter `CLAUDE.md` for the repo's own rules, the labels, and the branch protection that makes the gate binding. Your code and data stay in your repo; Dokima only holds the pipeline.
 
-### Continuity
-- **Unified memory.** Conversations, decisions, plans, runs and work history live in one index, across models, subscriptions and devices.
-- **Brokerage.** One relay is the only door to any model. It routes, logs every call, and keeps many clients in sync.
-- **Durability.** Checkpoints and automatic recovery carry work through crashes and restarts. Every step hands off to the next.
+The same flow works beyond code. A job application or a research brief is a task too: the reviewer checks facts and fit, and anything that leaves your hands, like sending or submitting, waits for your yes.
 
-### Verification
-- **Evidence, not claims.** Work is graded by locked tests the agent can't see or edit. Done means demonstrated.
-- **Adaptation.** Dokima scans its memory for statistically significant patterns and proposes evidence-based improvements. You approve.
+## Roadmap
 
-## Scope
+Dokima is built through itself: a minimal pipeline is assembled by hand, then every capability below arrives as an issue run through that pipeline.
 
-A genuinely useful system doesn't need thousands of machines:
+- [ ] **Slice 1:** issue in, tested pull request out, merged only when green
+- [ ] **Plan:** you approve intent and tests before any work starts
+- [ ] **Review:** independent, read-only reviewer
+- [ ] **Locked tests:** the worker cannot touch what it is graded on
+- [ ] **Gate:** automatic, ordered merges against the latest main
+- [ ] **Resume:** crashes and stalls never lose work
+- [ ] **Fast tests:** suites split across many machines
+- [ ] **Any repo, any task:** one-command onboarding
 
-- One machine, with bounded compute and concurrency
-- One persistent personal agent, with many specialized workflows
-- One memory and task history
-- Scheduling, checkpoints and recovery
-- Verification and permission boundaries
-- An extensible interface for tools, models and clients
+## Requirements
 
-## Life OS: the first add-on bundle
-
-Life OS is a personal assistant built on Dokima, and the proof of what it can do: its own always-on computer, one conversation shared across voice, chat and a pocket device, and a gateway to mail, the browser and the owner's other machines.
+- A GitHub account. Public repos work on the free plan; enforcing the gate on private repos needs GitHub Pro.
+- A Claude subscription or API key.
 
 ---
 
-Built by [Reza Soleymanifar](https://github.com/RezaSoleymanifar).
+Built by Reza Soleymanifar.
