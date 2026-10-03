@@ -40,5 +40,5 @@ if nodes:
         for dw in goal["done_whens"]:
             key = f"{issue['number']}.{dw['n']}"
             text = dw["text"] if len(dw["text"]) <= 60 else dw["text"][:57] + "..."
-            matrix.append({"name": f"{key} · {text}", "tests": " ".join(tests.get(key, []))})
+            matrix.append({"id": key, "name": f"{key} · {text}", "tests": " ".join(tests.get(key, []))})
 print("matrix=" + json.dumps(matrix))

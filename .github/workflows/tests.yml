@@ -36,9 +36,23 @@ jobs:
       - name: Run this done-when's tests
         env:
           TESTS: ${{ matrix.tests }}
+          ID: ${{ matrix.id }}
         run: |
-          if [ -z "$TESTS" ]; then echo "No test verifies this done-when yet."; exit 1; fi
-          pytest -rA -p no:cacheprovider $TESTS
+          if [ -z "$TESTS" ]; then echo "::error title=${ID} has no test::No test verifies this done-when yet."; exit 1; fi
+          pytest -rA -p no:cacheprovider -o junit_family=xunit1 --junitxml=r.xml $TESTS
+      - name: Annotate the tests that ran
+        if: always() && matrix.tests != ''
+        env:
+          ID: ${{ matrix.id }}
+        run: |
+          python3 - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          for tc in ET.parse("r.xml").iter("testcase"):
+              failed = any(c.tag in ("failure", "error") for c in tc)
+              kind, verdict = ("error", "failed") if failed else ("notice", "passed")
+              line = int(tc.get("line")) + 1
+              print(f"::{kind} file={tc.get('file')},line={line},title={os.environ['ID']} {verdict}::{tc.get('name')} {verdict}")
+          PY
 
   all-done-whens:
     name: all done-whens passed
