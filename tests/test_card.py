@@ -4,95 +4,88 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import card  # noqa: E402
 
-LATEST = "abc1234"
-RUN = {"url": "https://github.com/o/r/actions/runs/1/job/2", "sha": LATEST}
-ISSUE = {"number": 8, "title": "Card"}
-BODY = ("- [ ] Goal: show a card\n"
-        "  - [ ] Done when: it appears\n"
-        "    Verified by: reading it\n"
-        "  - [ ] Done when: it is honest\n"
-        "    Verified by: these tests\n")
+REPO = "o/r"
+ISSUE = {"number": 40, "title": "T", "url": "https://github.com/o/r/issues/40",
+         "body": ("- [ ] Goal: show a card\n"
+                  "  - [ ] Done when: first thing works\n"
+                  "    Verified by: a test\n"
+                  "  - [ ] Done when: second thing works\n"
+                  "    Verified by: another test\n\n"
+                  "**Not checked:** speed.\n")}
+WAITING = {"status": "waiting", "html_url": "https://github.com/o/r/actions/runs/1"}
+BUILDING = {"status": "in_progress", "html_url": "https://github.com/o/r/actions/runs/1"}
+DONE = {"status": "completed", "html_url": "https://github.com/o/r/actions/runs/1"}
 
 
-def link(result):
-    return f"https://proof/{result['name']}"
+def run(name, status="completed", conclusion="success", n=7):
+    return {"name": name, "status": status, "conclusion": conclusion,
+            "html_url": f"https://github.com/o/r/actions/runs/2/job/{n}"}
 
 
-def result(status, proves="8.2"):
-    return {"file": "tests/t.py", "name": "t", "status": status, "proves": [proves]}
+GREEN = [run("40.1 · first thing works", n=1), run("40.2 · second thing works", n=2), run("all tests", n=3)]
 
 
-def test_issue_parses_goals_done_whens_and_how_verified():
-    goals = card.parse_issue(BODY)
-    assert goals[0]["text"] == "Goal: show a card"
-    assert [(d["n"], d["text"], d["verified_by"]) for d in goals[0]["done_whens"]] == [
-        (1, "it appears", "reading it"), (2, "it is honest", "these tests")]
+def title(body):
+    return body.splitlines()[1]
 
 
-def test_junit_reads_status_and_which_done_when_it_proves():
-    xml = ('<testsuites><testsuite><testcase file="tests/t.py" name="t_ok"><properties>'
-           '<property name="proves" value="8.3"/></properties></testcase>'
-           '<testcase file="tests/t.py" name="t_bad"><failure/></testcase></testsuite></testsuites>')
-    assert [(r["name"], r["status"], r["proves"]) for r in card.parse_junit(xml)] == [
-        ("t_ok", "passed", ["8.3"]), ("t_bad", "failed", [])]
+def links(body):
+    return body.splitlines()[2]
 
 
-def test_recorded_pass_on_latest_commit_shows_check_with_built_proof_link(record_property):
-    record_property("proves", "8.3")
-    assert card.verdict(8, 2, [result("passed")], RUN, LATEST, link) == ("✅", "[proof](https://proof/t)")
+def test_title_shows_pr_and_each_stage(record_property):
+    record_property("proves", "29.5")
+    assert title(card.render(REPO, 5, ISSUE, GREEN, WAITING)) == "### PR #5 · Waiting for your approval"
+    assert title(card.render(REPO, 5, ISSUE, GREEN, BUILDING)) == "### PR #5 · Building"
+    running = GREEN[:1] + [run("40.2 · second thing works", status="in_progress", conclusion=None)] + GREEN[2:]
+    assert title(card.render(REPO, 5, ISSUE, running, DONE)) == "### PR #5 · Checking"
+    failing = GREEN[:1] + [run("40.2 · second thing works", conclusion="failure")] + GREEN[2:]
+    assert title(card.render(REPO, 5, ISSUE, failing, DONE)) == "### PR #5 · Checks failing"
+    assert title(card.render(REPO, 5, ISSUE, GREEN, DONE)) == "### PR #5 · Ready to merge"
 
 
-def test_pass_with_no_recorded_run_is_not_a_check(record_property):
-    record_property("proves", "8.3")
-    icon, text = card.verdict(8, 2, [result("passed")], None, LATEST, link)
-    assert icon == "⚠️" and "no recorded run" in text
+def test_approve_link_only_while_waiting(record_property):
+    record_property("proves", "29.6")
+    assert f"[Approve]({WAITING['html_url']})" in links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
+    for worker in (BUILDING, DONE, None):
+        assert "Approve" not in card.render(REPO, 5, ISSUE, GREEN, worker)
 
 
-def test_pass_from_an_older_commit_is_not_a_check(record_property):
-    record_property("proves", "8.3")
-    icon, text = card.verdict(8, 2, [result("passed")], {"url": RUN["url"], "sha": "old0000"}, LATEST, link)
-    assert icon == "⚠️" and "older commit" in text
+def test_live_run_points_to_what_is_running_now(record_property):
+    record_property("proves", "29.7")
+    assert f"[live run]({BUILDING['html_url']})" in links(card.render(REPO, 5, ISSUE, GREEN, BUILDING))
+    running = [run("40.1 · first thing works", status="in_progress", conclusion=None, n=9)]
+    assert "[live run](https://github.com/o/r/actions/runs/2/job/9)" in links(card.render(REPO, 5, ISSUE, running, DONE))
+    assert "live run" not in card.render(REPO, 5, ISSUE, GREEN, DONE)
 
 
-def test_failure_shows_cross_with_proof(record_property):
-    record_property("proves", "8.3")
-    assert card.verdict(8, 2, [result("passed"), result("failed")], RUN, LATEST, link)[0] == "❌"
+def test_one_row_of_links(record_property):
+    record_property("proves", "29.8")
+    row = links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
+    assert row == (f"[Approve]({WAITING['html_url']}) · [live run]({WAITING['html_url']}) · "
+                   "[issue #40](https://github.com/o/r/issues/40) · [files changed](https://github.com/o/r/pull/5/files)")
 
 
-def test_done_when_without_a_test_is_not_a_check(record_property):
-    record_property("proves", "8.3")
-    icon, text = card.verdict(8, 1, [result("passed")], RUN, LATEST, link)
-    assert icon == "⚠️" and "no test verifies" in text
+def test_each_done_when_shows_githubs_verdict_from_its_own_check(record_property):
+    record_property("proves", "29.9")
+    checks = [run("40.1 · first thing works", n=1), run("40.2 · second thing works", conclusion="failure", n=2),
+              run("all tests", n=3)]
+    body = card.render(REPO, 5, ISSUE, checks, DONE)
+    assert "- ✅ **Done when:** first thing works · [proof](https://github.com/o/r/actions/runs/2/job/1)" in body
+    assert "- ❌ **Done when:** second thing works · [proof](https://github.com/o/r/actions/runs/2/job/2)" in body
+    assert "  **Verified by:** a test" in body
+    assert "**Full suite:** ✅ [proof](https://github.com/o/r/actions/runs/2/job/3)" in body
+    assert "**Not checked:** speed." in body
 
 
-def test_card_shape_pr_goal_done_when_verified_by():
-    body = card.render(12, ISSUE, card.parse_issue(BODY), [result("passed")], RUN, LATEST, link)
-    assert body.startswith(card.MARKER)
-    assert f"### PR #12 · [live run]({RUN['url']})" in body
-    assert "**Goal: show a card**" in body
-    assert "- ✅ **Done when:** it is honest · [proof](https://proof/t)" in body
-    assert "  **Verified by:** these tests" in body
-    assert "- ⚠️ **Done when:** it appears" in body
+def test_running_or_missing_checks_never_show_a_pass(record_property):
+    record_property("proves", "29.9")
+    assert card.verdict(None) == ("⚠️", "no check yet")
+    assert card.verdict(run("x", status="in_progress", conclusion=None))[0] == "⏳"
+    body = card.render(REPO, 5, ISSUE, [run("40.1 · first thing works")], DONE)
+    assert "- ⚠️ **Done when:** second thing works · no check yet" in body
+    assert "**Full suite:** ⚠️ no check yet" in body
 
 
 def test_card_without_issue_says_so():
-    assert "No linked issue" in card.render(3, None, [], [], RUN, LATEST, link)
-
-
-def test_proof_link_lands_on_the_pytest_line():
-    job = {"html_url": "https://job", "steps": [{"number": 5, "name": "Run pytest -q"}]}
-    log = "2026Z ##[group]Run pytest -q\n2026Z x\n2026Z PASSED tests/t.py::t\n"
-    links = card.step_line_links(job, log, [result("passed")])
-    assert links["tests/t.py::t"] == "https://job#step:5:3"
-
-
-def test_proof_link_skips_the_step_that_only_installs_pytest():
-    job = {"html_url": "https://job", "steps": [{"number": 4, "name": "Run pip install pytest"},
-                                                {"number": 5, "name": "Run pytest -q"}]}
-    log = "2026Z ##[group]Run pip install pytest\n2026Z ##[group]Run pytest -q\n2026Z PASSED tests/t.py::t\n"
-    assert card.step_line_links(job, log, [result("passed")])["tests/t.py::t"] == "https://job#step:5:2"
-
-
-def test_proof_link_falls_back_to_the_test_step_without_a_log():
-    job = {"html_url": "https://job", "steps": [{"number": 5, "name": "Run pytest -q"}]}
-    assert card.step_line_links(job, "", [result("passed")])["tests/t.py::t"] == "https://job#step:5"
+    assert "No linked issue" in card.render(REPO, 5, None, [], None)

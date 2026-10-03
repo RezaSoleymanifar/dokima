@@ -1,0 +1,65 @@
+name: done-whens
+# One GitHub check per done-when of the PR's linked issue, plus one gate check.
+on:
+  pull_request:
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+jobs:
+  list:
+    name: list done-whens
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m dokima.checks matrix >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: list
+    if: needs.list.outputs.matrix != '[]'
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.list.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -q pytest
+      - name: Run this done-when's tests
+        env:
+          TESTS: ${{ matrix.tests }}
+          ID: ${{ matrix.id }}
+        run: |
+          if [ -z "$TESTS" ]; then echo "::error title=$ID has no test::No test verifies this done-when yet."; exit 1; fi
+          pytest -rA -p no:cacheprovider -o junit_family=xunit1 --junitxml=r.xml $TESTS
+      - name: Annotate the tests that ran
+        if: always() && matrix.tests != ''
+        env:
+          ID: ${{ matrix.id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -m dokima.checks annotate r.xml
+
+  gate:
+    name: all done-whens passed
+    needs: [list, check]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          MATRIX: ${{ needs.list.outputs.matrix }}
+          RESULT: ${{ needs.check.result }}
+        run: |
+          if [ -z "$MATRIX" ] || [ "$MATRIX" = "[]" ]; then
+            echo "::error title=No done-whens::Link an issue with done-whens (Closes #N) to this pull request."
+            exit 1
+          fi
+          test "$RESULT" = "success"

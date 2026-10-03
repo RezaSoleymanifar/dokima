@@ -1,33 +1,30 @@
 name: card
-# Runs after every test run on a pull request. A workflow_run trigger always uses
-# the default branch's copy of this file and of dokima/card.py, so the pull
-# request being judged cannot change how it is reported.
+# Rebuilds the PR's card whenever its checks or its worker finish. A workflow_run
+# trigger always uses the default branch's copy of this file and of dokima/card.py,
+# so the pull request being judged cannot change how it is reported.
 on:
   workflow_run:
-    workflows: [tests]
+    workflows: [done-whens, full suite, worker]
     types: [completed]
+concurrency:
+  group: card
+  cancel-in-progress: false
 permissions:
   contents: read
   actions: read
+  checks: read
   issues: read
   pull-requests: write
 jobs:
   card:
-    if: github.event.workflow_run.event == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Download test results
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run download ${{ github.event.workflow_run.id }} -R ${{ github.repository }} -n results -D results
+      - uses: actions/checkout@v5
       - name: Post the card
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: python3 dokima/card.py
