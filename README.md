@@ -6,7 +6,7 @@ Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You des
 
 No servers to run. No database. Your repo, its issues and its pull requests are the whole system.
 
-> Status: in active development. The first slice is being built now; see [Roadmap](#roadmap).
+> Status: in active development. The first slice is being built now; see [Roadmap](#roadmap). How it works and why, plus a build log with proof for every step: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## You check the verification, not the work
 
