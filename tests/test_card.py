@@ -86,6 +86,13 @@ def test_proof_link_lands_on_the_pytest_line():
     assert links["tests/t.py::t"] == "https://job#step:5:3"
 
 
+def test_proof_link_skips_the_step_that_only_installs_pytest():
+    job = {"html_url": "https://job", "steps": [{"number": 4, "name": "Run pip install pytest"},
+                                                {"number": 5, "name": "Run pytest -q"}]}
+    log = "2026Z ##[group]Run pip install pytest\n2026Z ##[group]Run pytest -q\n2026Z PASSED tests/t.py::t\n"
+    assert card.step_line_links(job, log, [result("passed")])["tests/t.py::t"] == "https://job#step:5:2"
+
+
 def test_proof_link_falls_back_to_the_test_step_without_a_log():
     job = {"html_url": "https://job", "steps": [{"number": 5, "name": "Run pytest -q"}]}
     assert card.step_line_links(job, "", [result("passed")])["tests/t.py::t"] == "https://job#step:5"

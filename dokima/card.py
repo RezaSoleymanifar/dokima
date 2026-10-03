@@ -103,7 +103,7 @@ def render(pr, issue, goals, results, run, current_sha, proof_link):
 
 def step_line_links(job, log_text, results):
     """Map each test to a link at the line in its run's log where pytest reported it."""
-    step = next((s for s in job.get("steps", []) if "pytest" in (s.get("name") or "")), None)
+    step = next((s for s in job.get("steps", []) if (s.get("name") or "").startswith("Run pytest")), None)
     lines = [re.sub(r"^\S+Z ", "", line) for line in log_text.splitlines()]
     start = next((i for i, line in enumerate(lines) if line.startswith("##[group]Run pytest")), None)
     links = {}
