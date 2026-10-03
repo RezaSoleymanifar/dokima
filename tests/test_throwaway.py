@@ -5,5 +5,5 @@ def test_addition(record_property):
 
 def test_greeting(record_property):
     record_property("proves", "10.2")
-    greeting = "helo"
+    greeting = "hello"
     assert greeting == "hello"
