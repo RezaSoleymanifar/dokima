@@ -1,5 +1,5 @@
 name: worker
-run-name: ${{ github.event.label.name == 'work' && format('worker for #{0}', github.event.issue.number) || format('worker: ignored label {0} on #{1}', github.event.label.name, github.event.issue.number) }}
+run-name: "worker for #${{ github.event.issue.number }}${{ github.event.label.name != 'work' && format(' (label {0}, ignored)', github.event.label.name) || '' }}"
 # Labeling an issue `work` opens a draft PR for it, waits for Reza's approval,
 # then runs Claude Code on a fresh GitHub machine to build what the issue asks.
 on:
