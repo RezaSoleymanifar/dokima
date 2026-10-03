@@ -109,9 +109,11 @@ def step_line_links(job, log_text, results):
     links = {}
     for r in results:
         url = job["html_url"]
-        if step and start is not None:
-            target = f"{r['status'].upper()} {node_id(r)}"
-            hit = next((i for i in range(start, len(lines)) if lines[i].startswith(target)), None)
+        if step:
+            hit = None
+            if start is not None:
+                target = f"{r['status'].upper()} {node_id(r)}"
+                hit = next((i for i in range(start, len(lines)) if lines[i].startswith(target)), None)
             url += f"#step:{step['number']}:{hit - start + 1}" if hit is not None else f"#step:{step['number']}"
         links[node_id(r)] = url
     return links
@@ -149,7 +151,11 @@ def main():
         job = next((j for j in jobs if j["name"] == "tests"), None)
         if job:
             run["url"] = job["html_url"]
-            links = step_line_links(job, gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs"), results)
+            try:
+                log = gh("api", "--allow-escape-sequences", f"repos/{repo}/actions/jobs/{job['id']}/logs")
+            except subprocess.CalledProcessError:
+                log = ""  # no log: links fall back to the test step rather than a line
+            links = step_line_links(job, log, results)
 
     body = render(pr, issue, parse_issue(issue["body"]) if issue else [], results, run, current_sha,
                   lambda r: links.get(node_id(r), run["url"]))

@@ -84,3 +84,8 @@ def test_proof_link_lands_on_the_pytest_line():
     log = "2026Z ##[group]Run pytest -q\n2026Z x\n2026Z PASSED tests/t.py::t\n"
     links = card.step_line_links(job, log, [result("passed")])
     assert links["tests/t.py::t"] == "https://job#step:5:3"
+
+
+def test_proof_link_falls_back_to_the_test_step_without_a_log():
+    job = {"html_url": "https://job", "steps": [{"number": 5, "name": "Run pytest -q"}]}
+    assert card.step_line_links(job, "", [result("passed")])["tests/t.py::t"] == "https://job#step:5"
