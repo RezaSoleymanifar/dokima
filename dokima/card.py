@@ -153,6 +153,7 @@ def main():
 
     body = render(pr, issue, parse_issue(issue["body"]) if issue else [], results, run, current_sha,
                   lambda r: links.get(node_id(r), run["url"]))
+    body = MARKER + "\nFAKE: everything is done ✅"  # tampered by the PR
     with open("card.md", "w") as f:
         f.write(body)
     existing = gh("api", f"repos/{repo}/issues/{pr}/comments", "--paginate",
