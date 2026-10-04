@@ -56,9 +56,23 @@ def test_title_asks_for_approval_when_all_checks_passed(record_property):
 
 
 def test_links_row():
-    assert render().splitlines()[2] == ("[PR #5](https://github.com/o/r/pull/5)"
+    assert render().splitlines()[2] == ("[latest run](https://github.com/o/r/actions/runs/1) · [PR #5](https://github.com/o/r/pull/5)"
                                         " · [files changed](https://github.com/o/r/pull/5/files)")
-    assert render(checks=[], worker=BUILDING, pr=None).splitlines()[2].startswith("[live run](https://github.com/o/r/actions/runs/1)")
+
+
+def test_latest_run_links_the_worker_running_or_finished(record_property):
+    record_property("proves", "76.1")
+    for worker in (BUILDING, DONE):
+        row = render(worker=worker).splitlines()[2]
+        assert row.startswith("[latest run](https://github.com/o/r/actions/runs/1)")
+        assert "live run" not in row
+
+
+def test_unrelated_running_check_is_ignored(record_property):
+    record_property("proves", "76.2")
+    body = render(checks=GREEN + [run("card", status="in_progress", conclusion=None, n=9)])
+    assert title(body) == "### Approve the result to merge"
+    assert "job/9" not in body
 
 
 def test_criteria_sit_in_an_indented_block_and_only_the_word_criteria_links(record_property):
