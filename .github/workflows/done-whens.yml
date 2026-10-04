@@ -2,9 +2,6 @@ name: done-whens
 # One GitHub check per done-when of the PR's linked issue, plus one gate check.
 on:
   pull_request:
-  # Re-check right after a review, so a plan adopted by a new approval is checked at once.
-  pull_request_review:
-    types: [submitted]
 permissions:
   contents: read
   issues: read

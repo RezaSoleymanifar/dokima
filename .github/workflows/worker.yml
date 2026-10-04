@@ -1,59 +1,96 @@
 name: worker
 run-name: "worker for #${{ github.event.issue.number }}${{ github.event.label.name != 'work' && format(' (label {0}, ignored)', github.event.label.name) || '' }}"
-# Labeling an issue `work` opens a draft PR for it. Nothing is built until an approver
-# (a code owner) approves that PR with GitHub's own Approve button; see build.yml.
+# Adding the `work` label to an issue approves its plan and starts the worker: a
+# fresh GitHub machine builds what the plan asks and opens (or updates) the PR.
+# Only a code owner's label counts. Removing the label stops a running build;
+# adding it again builds again from the plan as it stands then.
 on:
   issues:
-    types: [labeled]
-# One run per issue at a time; a second label waits, then sees the branch and stops.
+    types: [labeled, unlabeled]
+# Labeling or unlabeling `work` cancels the build already running for that issue.
+# Other labels use their own group, so they never interrupt a build.
 concurrency:
-  group: work-${{ github.event.issue.number }}
-  cancel-in-progress: false
+  group: work-${{ github.event.issue.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
 permissions:
   contents: read
+  issues: read
 jobs:
-  open:
-    if: github.event.label.name == 'work'
+  work:
+    if: github.event.action == 'labeled' && github.event.label.name == 'work'
     runs-on: ubuntu-24.04
-    outputs:
-      skip: ${{ steps.start.outputs.skip }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Only a code owner's label counts
+        id: who
+        env:
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          if python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Not started::$SENDER added work, but only a code owner's label starts the worker."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: The plan as approved
+        if: steps.who.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ github.event.issue.number }}
+        run: python3 -m dokima.plan issue "$N" > /tmp/issue.md && cat /tmp/issue.md
+      - name: Start from the issue's branch if it exists, else from main
+        if: steps.who.outputs.ok == 'true'
+        env:
+          N: ${{ github.event.issue.number }}
+        run: |
+          if git ls-remote --exit-code --heads origin "work/issue-$N" >/dev/null; then
+            git fetch -q origin "work/issue-$N" && git checkout -q -B "work/issue-$N" FETCH_HEAD
+          else
+            git checkout -q -b "work/issue-$N"
+          fi
+      - name: Install pytest and Claude Code
+        if: steps.who.outputs.ok == 'true'
+        run: pip install pytest && npm install -g @anthropic-ai/claude-code
+      - name: Worker (Claude Code)
+        if: steps.who.outputs.ok == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          claude -p "$(cat dokima/roles/worker.md)
+
+          The issue to build, as approved, is in /tmp/issue.md." \
+            --dangerously-skip-permissions --max-turns 40
+      - name: Tests pass before anything is pushed
+        if: steps.who.outputs.ok == 'true'
+        run: pytest -q
+      # The app's token is minted only now, after the agent has finished, and it
+      # cannot touch .github/ (the app has no workflows permission).
       - id: app
+        if: steps.who.outputs.ok == 'true'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
-      - name: Open a draft pull request for the issue
-        id: start
+      - name: Push and open the pull request
+        if: steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
           N: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
-          BODY: ${{ github.event.issue.body }}
         run: |
-          B="work/issue-$N"
-          if git ls-remote --exit-code --heads origin "$B" >/dev/null; then
-            echo "Issue #$N already has a worker branch; not starting a second run."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           BOT_ID=$(gh api "users/${SLUG}[bot]" --jq .id)
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
-          git checkout -b "$B"
-          # The first commit is the plan itself, so the PR's Files tab shows it
-          # right beside the Review button the approver uses.
-          mkdir -p .dokima/plans
-          printf '# #%s: %s\n\n%s\n' "$N" "$TITLE" "$BODY" | fold -s -w 60 > ".dokima/plans/$N.md"
-          git add ".dokima/plans/$N.md"
-          git commit -m "Plan for #$N"
-          git push origin "$B"
-          gh pr create --draft --head "$B" --base main --title "$TITLE" \
-            --body "Closes #$N. Opened by the worker. The plan is in Files changed; to start building, approve this PR there (Review, then Approve). Nothing is built until then."
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
+          git add -A
+          git commit -m "Build #$N"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
+          if [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --state open --json number --jq '.[].number')" ]; then
+            gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "Closes #$N"
+          fi

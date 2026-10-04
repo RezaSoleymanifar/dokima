@@ -1,10 +1,10 @@
-"""Turn an issue's done-whens into GitHub checks, and annotate the tests they ran.
+"""Turn an issue's criteria into GitHub checks, and annotate the tests they ran.
 
     python3 -m dokima.checks matrix          # print the check list for this PR
     python3 -m dokima.checks annotate r.xml  # print one annotation per test in a JUnit report
 
-A test proves a done-when by calling record_property("proves", "<issue>.<n>"),
-where n counts the issue's done-whens from 1, top to bottom.
+A test proves a criterion by calling record_property("proves", "<issue>.<n>"),
+where n counts the issue's criteria from 1, top to bottom.
 """
 import glob
 import json
@@ -13,14 +13,14 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-from dokima.card import parse_issue
+from dokima import plan
 
 PROVES = re.compile(r"""record_property\(\s*["']proves["']\s*,\s*["']([\d.]+)["']\s*\)""")
 TEST_DEF = re.compile(r"^def (test_\w+)\(")
 
 
 def find_tests(paths):
-    """Map each done-when key like '29.1' to the tests that prove it, as 'path::test'."""
+    """Map each criterion key like '29.1' to the tests that prove it, as 'path::test'."""
     found = {}
     for path in sorted(paths):
         current = None
@@ -36,21 +36,21 @@ def find_tests(paths):
 
 
 def check_name(key, text, limit=60):
-    """The check's name on GitHub: '29.1 · <done-when, shortened>'."""
+    """The check's name on GitHub: '29.1 · <criterion, shortened>'."""
     if len(text) > limit:
         text = text[: limit - 3] + "..."
     return f"{key} · {text}"
 
 
-def build_matrix(issue, tests):
-    """One check per done-when in the issue; empty when there is no issue or no done-whens."""
+def build_matrix(number, words, tests):
+    """One check per criterion in the plan; empty when there is no issue or no criteria."""
     rows = []
-    if not issue:
+    if not number:
         return rows
-    for goal in parse_issue(issue["body"]):
-        for dw in goal["done_whens"]:
-            key = f"{issue['number']}.{dw['n']}"
-            rows.append({"id": key, "name": check_name(key, dw["text"]), "tests": " ".join(tests.get(key, []))})
+    for goal in words["goals"]:
+        for c in goal["criteria"]:
+            key = f"{number}.{c['n']}"
+            rows.append({"id": key, "name": check_name(key, c["text"]), "tests": " ".join(tests.get(key, []))})
     return rows
 
 
@@ -71,10 +71,10 @@ def main(argv):
     repo = os.environ["GITHUB_REPOSITORY"]
     if argv[1] == "matrix":
         pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["number"]
-        # The plan as approved; edits after the approval are ignored.
-        from dokima import plan
-        rows = build_matrix(plan.approved_issue(repo, pr), find_tests(glob.glob("tests/test_*.py")))
-        print("matrix=" + json.dumps(rows))
+        number = plan.pr_issue_number(repo, pr)
+        # The plan as approved; edits made after the `work` label are not used.
+        words = plan.fetch_issue(repo, number)["plan"] if number else {"goals": []}
+        print("matrix=" + json.dumps(build_matrix(number, words, find_tests(glob.glob("tests/test_*.py")))))
     elif argv[1] == "annotate":
         for line in annotations(open(argv[2]).read(), repo, os.environ["HEAD_SHA"], os.environ["ID"]):
             print(line)
