@@ -84,24 +84,11 @@ def stage(approved, worker, pr, criterion_checks, full_suite):
     return "Checks failing"
 
 
-def live_run(worker, check_runs):
-    """Whatever is running now: the worker first, then any running check; None when nothing runs."""
-    if worker and worker["status"] in WORKER_ACTIVE:
-        return worker["html_url"]
-    for run in check_runs:
-        if run["status"] != "completed":
-            return run["html_url"]
-    return None
-
-
 def links_row(repo, issue, pr, worker, check_runs, page):
     """The links that matter, minus a link to the page the card is on ("issue" or "pr")."""
     links = []
-    live = live_run(worker, check_runs)
-    if live:
-        links.append(f"[live run]({live})")
-    elif worker and worker.get("conclusion") == "failure":
-        links.append(f"[worker run]({worker['html_url']})")
+    if worker:
+        links.append(f"[latest run]({worker['html_url']})")
     if page != "issue":
         links.append(f"[issue #{issue['number']}]({issue['url']})")
     if pr and page != "pr":
