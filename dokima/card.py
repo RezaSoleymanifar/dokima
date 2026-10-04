@@ -21,7 +21,7 @@ from dokima import plan  # noqa: E402
 
 WORKER_ACTIVE = {"queued", "in_progress", "requested", "pending", "waiting"}
 FULL_SUITE = "all tests"
-INDENT = "&emsp;"  # criteria sit indented under their goal
+INDENT = "&emsp;"  # used for the list of edits at the bottom of the card
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
 
 
@@ -41,10 +41,10 @@ def state(check):
 
 
 def criterion_line(repo, text, check):
-    """One criterion: its icon, then its words, which link to GitHub's proof once a check exists."""
+    """One criterion: its circle, then the word "Criteria" (the link to GitHub's proof once a check exists), then its words."""
     st = state(check)
-    words = text if st == "none" else f"[{text}]({check['html_url']})"
-    return f"{INDENT}{icon(repo, st)} {words}<br>"
+    word = "Criteria" if st == "none" else f"[Criteria]({check['html_url']})"
+    return f"{icon(repo, st)} {word}: {text}"
 
 
 def full_suite_line(repo, check):
@@ -94,16 +94,19 @@ def live_run(worker, check_runs):
     return None
 
 
-def links_row(repo, issue, pr, worker, check_runs):
+def links_row(repo, issue, pr, worker, check_runs, page):
+    """The links that matter, minus a link to the page the card is on ("issue" or "pr")."""
     links = []
     live = live_run(worker, check_runs)
     if live:
         links.append(f"[live run]({live})")
     elif worker and worker.get("conclusion") == "failure":
         links.append(f"[worker run]({worker['html_url']})")
-    links.append(f"[issue #{issue['number']}]({issue['url']})")
-    if pr:
+    if page != "issue":
+        links.append(f"[issue #{issue['number']}]({issue['url']})")
+    if pr and page != "pr":
         links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
+    if pr:
         links.append(f"[files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
 
@@ -114,20 +117,22 @@ def change_line(change):
     return f"{INDENT}{change[0]}: “{change[1]}”<br>"
 
 
-def render(repo, issue, words, pr, check_runs, worker):
-    """The card for `issue`, showing the plan `words` (the approved plan, or the current one)."""
+def render(repo, issue, words, pr, check_runs, worker, page="issue"):
+    """The card for `issue` on `page` ("issue" or "pr"), showing the plan `words` (the approved plan, or the current one)."""
     by_key = checks_by_key(check_runs)
     full_suite = next((r for r in check_runs if r["name"] == FULL_SUITE), None)
     title = stage(issue["approved_at"], worker, pr, list(by_key.values()), full_suite)
-    lines = [plan.CARD_START, f"### {title}", links_row(repo, issue, pr, worker, check_runs), ""]
+    lines = [plan.CARD_START, f"### {title}", links_row(repo, issue, pr, worker, check_runs, page), ""]
     if not words["goals"]:
         lines += ["This issue has no goals and criteria yet.", ""]
     for goal in words["goals"]:
-        lines += [f"**Goal: {goal['text']}**", ""]
+        # The criteria sit in one indented block (a description list), so every line, wrapped ones too, keeps the indent.
+        lines += [f"**Goal: {goal['text']}**", "", "<dl><dd>", ""]
         for c in goal["criteria"]:
             lines.append(criterion_line(repo, c["text"], by_key.get(f"{issue['number']}.{c['n']}")))
-            lines.append(f"{INDENT}<sub>Verified by: {c['verified_by'] or 'not stated'}</sub>")
+            lines.append(f"*Verified by: {c['verified_by'] or 'not stated'}*")
             lines.append("")
+        lines += ["</dd></dl>", ""]
     lines += [full_suite_line(repo, full_suite), ""]
     if words["not_checked"]:
         lines += [f"**Not checked:** {words['not_checked']}", ""]
@@ -135,7 +140,7 @@ def render(repo, issue, words, pr, check_runs, worker):
         lines.append("**Edited after approval, not in use yet.** Re-add `work` to use it:<br>")
         lines += [change_line(c) for c in issue["changes"]]
         lines.append("")
-    lines += ["<sub>Built by the card workflow from GitHub's records. No AI writes this card.</sub>", plan.CARD_END]
+    lines.append(plan.CARD_END)
     return "\n".join(lines)
 
 
@@ -204,7 +209,7 @@ def main():
     print(f"Card written into issue #{number}")
     if pr and pr["state"] == "open":
         with open("pr.md", "w") as f:
-            f.write(pr_body(render(repo, issue, issue["plan"], pr, check_runs, worker), pr.get("body")))
+            f.write(pr_body(render(repo, issue, issue["plan"], pr, check_runs, worker, page="pr"), pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
 
