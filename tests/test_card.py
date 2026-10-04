@@ -78,7 +78,7 @@ def test_each_done_when_shows_githubs_verdict_from_its_own_check(record_property
     assert f"{icon('passed')} [Done](https://github.com/o/r/actions/runs/2/job/1): first thing works<br>" in body
     assert f"{icon('failed')} [Failing](https://github.com/o/r/actions/runs/2/job/2): second thing works<br>" in body
     assert "[proof]" not in body
-    assert "<sub>Verified by: a test</sub>" in body
+    assert "&emsp;<sub>Verified by: a test</sub>" in body
     assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
     assert "**Not checked:** speed." in body
 
@@ -119,11 +119,11 @@ def test_verified_by_sits_under_its_done_when_in_small_text(record_property):
     record_property("proves", "65.3")
     lines = card.render(REPO, 5, ISSUE, GREEN, DONE).splitlines()
     i = next(n for n, l in enumerate(lines) if "first thing works" in l)
-    assert lines[i].endswith("<br>") and lines[i + 1] == "<sub>Verified by: a test</sub>"
+    assert lines[i].endswith("<br>") and lines[i + 1] == "&emsp;<sub>Verified by: a test</sub>"
 
 
 def test_full_suite_is_the_link(record_property):
-    record_property("proves", "65.4")
+    record_property("proves", "65.5")
     body = card.render(REPO, 5, ISSUE, GREEN, DONE)
     assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
     assert "**Full suite:**" not in body
@@ -145,3 +145,10 @@ def test_title_asks_for_approval_when_all_checks_passed(record_property):
     heading = title(card.render(REPO, 5, ISSUE, GREEN, DONE))
     assert heading == "### PR #5 · Approve the result to merge"
     assert "Ready to merge" not in heading
+
+
+def test_done_whens_are_indented_under_their_goal(record_property):
+    record_property("proves", "65.4")
+    body = card.render(REPO, 5, ISSUE, GREEN, DONE)
+    done = [line for line in body.splitlines() if "first thing works" in line or "second thing works" in line]
+    assert done and all(line.startswith("&emsp;") for line in done)

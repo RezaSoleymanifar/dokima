@@ -71,6 +71,7 @@ def state(check):
 
 
 WORDS = {"passed": "Done", "failed": "Failing", "running": "Checking"}
+INDENT = "&emsp;"  # done-whens sit indented under their goal
 
 
 def done_when_line(repo, text, check):
@@ -152,8 +153,8 @@ def render(repo, pr, issue, check_runs, worker):
         lines += [f"**{goal['text']}**", ""]
         for dw in goal["done_whens"]:
             check = by_key.get(f"{issue['number']}.{dw['n']}")
-            lines.append(done_when_line(repo, dw["text"], check) + "<br>")
-            lines.append(f"<sub>Verified by: {dw['verified_by'] or 'not stated'}</sub>")
+            lines.append(INDENT + done_when_line(repo, dw["text"], check) + "<br>")
+            lines.append(f"{INDENT}<sub>Verified by: {dw['verified_by'] or 'not stated'}</sub>")
             lines.append("")
     lines += [full_suite_line(repo, full_suite), ""]
     gap = not_checked(issue["body"]) if issue else None

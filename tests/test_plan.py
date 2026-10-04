@@ -101,7 +101,7 @@ def test_the_old_run_page_approval_is_gone(record_property):
 
 
 def test_build_is_one_job_whose_first_step_decides(record_property):
-    record_property("proves", "65.5")
+    record_property("proves", "65.6")
     text = read(".github/workflows/build.yml")
     jobs = text[text.index("jobs:"):]
     assert jobs.count("\n  build:") == 1 and "\n  decide:" not in jobs
