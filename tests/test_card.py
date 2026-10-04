@@ -56,31 +56,57 @@ def test_title_asks_for_approval_when_all_checks_passed(record_property):
 
 
 def test_links_row():
-    assert render().splitlines()[2] == ("[issue #40](https://github.com/o/r/issues/40) · [PR #5](https://github.com/o/r/pull/5)"
+    assert render().splitlines()[2] == ("[PR #5](https://github.com/o/r/pull/5)"
                                         " · [files changed](https://github.com/o/r/pull/5/files)")
     assert render(checks=[], worker=BUILDING, pr=None).splitlines()[2].startswith("[live run](https://github.com/o/r/actions/runs/1)")
 
 
-def test_card_look(record_property):
-    record_property("proves", "67.7")
+def test_criteria_sit_in_an_indented_block_and_only_the_word_criteria_links(record_property):
+    record_property("proves", "74.1")
     body = render(checks=GREEN[:1] + [run("40.2 · second thing works", conclusion="failure", n=2)] + GREEN[2:])
-    assert f"&emsp;{icon('passed')} [first thing works](https://github.com/o/r/actions/runs/2/job/1)<br>" in body
-    assert f"&emsp;{icon('failed')} [second thing works](https://github.com/o/r/actions/runs/2/job/2)<br>" in body
-    assert "&emsp;<sub>Verified by: a test that runs the first thing</sub>" in body
+    lines = body.splitlines()
+    start = lines.index("<dl><dd>")
+    end = lines.index("</dd></dl>")
+    assert f"{icon('passed')} [Criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works" in lines[start:end]
+    assert f"{icon('failed')} [Criteria](https://github.com/o/r/actions/runs/2/job/2): second thing works" in lines[start:end]
+    assert "[first thing works]" not in body
+    empty = render(checks=[], pr=None)
+    assert f"{icon('none')} Criteria: first thing works" in empty
     assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
-    assert icon("passed") == ('<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/passed.svg" '
-                              'width="16" height="16" align="absmiddle" alt="passed">')
+    assert not any(line.startswith("- ") for line in lines)
     for name in ("passed", "failed", "running", "none"):
         svg = open(os.path.join(os.path.dirname(__file__), "..", "dokima", "icons", f"{name}.svg")).read()
         assert svg.startswith("<svg fill=")
-    assert not any(line.startswith("- ") for line in body.splitlines())
-    empty = render(checks=[], pr=None)
-    assert f"&emsp;{icon('none')} first thing works<br>" in empty
-    assert f"{icon('none')} Full suite · no check yet" in empty
+
+
+def test_verified_by_is_italic_normal_size_right_under_its_criterion(record_property):
+    record_property("proves", "74.2")
+    lines = render().splitlines()
+    i = next(n for n, l in enumerate(lines) if l.endswith("Criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works"))
+    assert lines[i + 1] == "*Verified by: a test that runs the first thing*"
+    assert "<sub>" not in "\n".join(lines)
+
+
+def test_no_footer_and_no_gap(record_property):
+    record_property("proves", "74.3")
+    body = render()
+    assert "Built by the card workflow" not in body
+    lines = body.splitlines()
+    for n, line in enumerate(lines):
+        if line.startswith("*Verified by:"):
+            assert "Criteria" in lines[n - 1] and not lines[n - 1].endswith("<br>")
+
+
+def test_card_never_links_to_its_own_page(record_property):
+    record_property("proves", "74.4")
+    on_issue = render().splitlines()[2]
+    on_pr = card.render(REPO, ISSUE, WORDS, PR, GREEN, DONE, page="pr").splitlines()[2]
+    assert "[issue #40]" not in on_issue and "[PR #5]" in on_issue
+    assert "[PR #5]" not in on_pr and "[issue #40]" in on_pr
 
 
 def test_card_says_criteria_and_is_read_back_as_the_plan(record_property):
-    record_property("proves", "67.8")
+    record_property("proves", "74.5")
     body = render()
     assert "Done when" not in body
     assert plan.parse(card.issue_body(body, WORDS["notes"])) == WORDS
