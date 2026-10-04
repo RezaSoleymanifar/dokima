@@ -34,6 +34,7 @@ jobs:
           SLUG: ${{ steps.app.outputs.app-slug }}
           N: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
         run: |
           B="work/issue-$N"
           if git ls-remote --exit-code --heads origin "$B" >/dev/null; then
@@ -45,9 +46,14 @@ jobs:
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git checkout -b "$B"
-          git commit --allow-empty -m "Start work on #$N"
+          # The first commit is the plan itself, so the PR's Files tab shows it
+          # right beside the Review button the approver uses.
+          mkdir -p .dokima/plans
+          printf '# #%s: %s\n\n%s\n' "$N" "$TITLE" "$BODY" > ".dokima/plans/$N.md"
+          git add ".dokima/plans/$N.md"
+          git commit -m "Plan for #$N"
           git push origin "$B"
           gh pr create --draft --head "$B" --base main --title "$TITLE" \
-            --body "Closes #$N. Opened by the worker. To start building, approve this PR (Review, then Approve). Nothing is written until then."
+            --body "Closes #$N. Opened by the worker. The plan is in Files changed; to start building, approve this PR there (Review, then Approve). Nothing is built until then."
           echo "skip=false" >> "$GITHUB_OUTPUT"
 

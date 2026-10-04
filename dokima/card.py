@@ -106,7 +106,7 @@ def stage(worker, done_when_checks, full_suite):
 
 def live_run(worker, check_runs):
     """Whatever is running now: the worker first, then any running check; None when nothing runs."""
-    if worker and worker["status"] in WORKER_ACTIVE:
+    if worker and worker["status"] in WORKER_ACTIVE - {"waiting"}:
         return worker["html_url"]
     for run in check_runs:
         if run["status"] != "completed":
@@ -117,7 +117,7 @@ def live_run(worker, check_runs):
 def links_row(repo, pr, issue, worker, check_runs):
     links = []
     if worker and worker["status"] == "waiting":
-        links.append(f"[Approve]({worker['html_url']})")
+        links.append(f"[Approve the plan]({worker['html_url']})")
     live = live_run(worker, check_runs)
     if live:
         links.append(f"[live run]({live})")
