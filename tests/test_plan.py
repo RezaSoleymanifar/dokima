@@ -49,7 +49,7 @@ def test_only_an_approvers_approval_marks_the_plan_approved(record_property):
         {"user": {"login": OWNER}, "state": "DISMISSED", "submitted_at": "2026-10-03T12:00:00Z"},
         {"user": {"login": OWNER}, "state": "APPROVED", "submitted_at": "2026-10-03T15:00:00Z"},
     ]
-    assert plan.approved_at(reviews, APPROVERS) == "2026-10-03T12:00:00Z"
+    assert plan.approved_at(reviews, APPROVERS) == "2026-10-03T15:00:00Z"
     assert plan.approved_at(reviews[:2], APPROVERS) is None
 
 
@@ -98,3 +98,21 @@ def test_the_old_run_page_approval_is_gone(record_property):
         text = read(f".github/workflows/{name}")
         assert "environment:" not in text
     assert "approve:" not in read(".github/workflows/worker.yml")
+
+
+def test_a_later_approval_adopts_the_newer_plan(record_property):
+    record_property("proves", "63.1")
+    first = [{"user": {"login": OWNER}, "state": "DISMISSED", "submitted_at": "2026-10-03T12:00:00Z"}]
+    again = first + [{"user": {"login": OWNER}, "state": "APPROVED", "submitted_at": "2026-10-03T14:00:00Z"}]
+    at = plan.approved_at(first, APPROVERS)
+    assert plan.approved_version("v3", EDITS, at) == "v2: the approved plan"
+    assert plan.edits_after(EDITS, at) == [{"at": "2026-10-03T13:00:00Z", "by": "some-app[bot]"}]
+    at = plan.approved_at(again, APPROVERS)
+    assert plan.approved_version("v3", EDITS, at) == "v3: moved a done-when to Not checked"
+    assert plan.edits_after(EDITS, at) == []
+
+
+def test_done_whens_are_rechecked_after_a_review(record_property):
+    record_property("proves", "63.2")
+    text = read(".github/workflows/done-whens.yml")
+    assert "pull_request_review:" in text and "types: [submitted]" in text

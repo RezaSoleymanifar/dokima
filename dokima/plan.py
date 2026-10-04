@@ -41,10 +41,14 @@ def starts_build(state, reviewer, approver_names, branch, commits):
 
 
 def approved_at(reviews, approver_names):
-    """When an approver first approved this PR, or None. Nobody else's approval counts."""
+    """When an approver last approved this PR, or None. Nobody else's approval counts.
+
+    The latest approval wins, so an approver changes a plan on purpose by editing
+    it and approving again; edits made after their latest approval are ignored.
+    """
     times = [r["submitted_at"] for r in reviews
              if r["user"]["login"] in approver_names and r["state"] in APPROVAL_STATES and r.get("submitted_at")]
-    return min(times) if times else None
+    return max(times) if times else None
 
 
 def approved_version(body, edits, at):
