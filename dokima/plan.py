@@ -93,6 +93,9 @@ def main(argv):
         state, reviewer, branch, commits = argv[2:6]
         names = repo_approvers(os.environ["GITHUB_REPOSITORY_OWNER"])
         print("start=" + str(starts_build(state, reviewer, names, branch, int(commits))).lower())
+    elif argv[1] == "approvers":
+        # Comma-separated approvers, for `gh ... --add-assignee` / `--add-reviewer`.
+        print(",".join(sorted(repo_approvers(os.environ["GITHUB_REPOSITORY_OWNER"]))))
     elif argv[1] == "issue":
         # Writes the issue text as approved, for the worker to read.
         issue = approved_issue(os.environ["GITHUB_REPOSITORY"], argv[2])

@@ -86,3 +86,5 @@ jobs:
           git commit -m "Build #$N"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$BRANCH"
           gh pr ready "$BRANCH" -R "$GITHUB_REPOSITORY"
+          # The build's commits cancelled the plan approval; ask the approvers to review the result.
+          gh pr edit "$BRANCH" -R "$GITHUB_REPOSITORY" --add-reviewer "$(python3 -m dokima.plan approvers)"
