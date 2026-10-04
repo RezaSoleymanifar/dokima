@@ -66,6 +66,18 @@ def verdict(check):
     return "❌", f"[proof]({check['html_url']})"
 
 
+def done_when_line(text, check):
+    """One done-when: the verdict word is the link to GitHub's proof."""
+    if check is None:
+        return f"⚠️ Done when: {text} · no check yet"
+    url = check["html_url"]
+    if check["status"] != "completed":
+        return f"⏳ [Checking]({url}): {text}"
+    if check["conclusion"] == "success":
+        return f"✅ [Done]({url}): {text}"
+    return f"❌ [Failing]({url}): {text}"
+
+
 def checks_by_key(check_runs):
     """Index done-when checks by their key ('29.1') from names like '29.1 · ...'."""
     found = {}
@@ -129,8 +141,8 @@ def render(repo, pr, issue, check_runs, worker):
     for goal in goals:
         lines += [f"**{goal['text']}**", ""]
         for dw in goal["done_whens"]:
-            icon, proof = verdict(by_key.get(f"{issue['number']}.{dw['n']}"))
-            lines.append(f"- {icon} **Done when:** {dw['text']} · {proof}")
+            check = by_key.get(f"{issue['number']}.{dw['n']}")
+            lines.append(f"- {done_when_line(dw['text'], check)}")
             lines.append(f"  **Verified by:** {dw['verified_by'] or '⚠️ not stated'}")
         lines.append("")
     icon, proof = verdict(full_suite)
