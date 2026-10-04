@@ -49,7 +49,7 @@ jobs:
           # The first commit is the plan itself, so the PR's Files tab shows it
           # right beside the Review button the approver uses.
           mkdir -p .dokima/plans
-          printf '# #%s: %s\n\n%s\n' "$N" "$TITLE" "$BODY" > ".dokima/plans/$N.md"
+          printf '# #%s: %s\n\n%s\n' "$N" "$TITLE" "$BODY" | fold -s -w 60 > ".dokima/plans/$N.md"
           git add ".dokima/plans/$N.md"
           git commit -m "Plan for #$N"
           git push origin "$B"
