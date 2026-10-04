@@ -2,6 +2,8 @@
 
 Dokima's job is to move your attention from the work to the verification. The card is how it does that: every unit of work is reported the same way, twice.
 
+The same card sits at the top of the issue and at the top of its PR, so you see one status in both places.
+
 - **Before work starts:** each goal, its checks, and how each check will be verified. Plus what is deliberately *not* checked.
 - **After work ends:** each check marked passed or failed, with a link to the proof.
 
@@ -26,6 +28,12 @@ Goal: nothing reaches main unless tests pass
 
 Not checked: whether the tests themselves are good.
 ```
+
+## Reading the card
+
+Each criterion has a circle that shows GitHub's verdict on it. The words of the criterion link to the proof.
+
+The Approve button means "approve the result to merge". It is for the finished work, not the plan; you approve the plan by adding the `work` label to the issue.
 
 ## What counts as proof
 

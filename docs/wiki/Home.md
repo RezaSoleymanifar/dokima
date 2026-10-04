@@ -19,7 +19,7 @@ issue ──► Planner ──► you approve ──► Worker ──► Reviewe
 ```
 
 1. **You open an issue** saying what you want and how to tell it's done. See [Writing issues](Writing-issues).
-2. **The planner** turns it into a plan and the tests that will prove it, then waits for your go. *Planned.*
+2. **The planner** turns it into a plan and the tests that will prove it, then waits for your go. You approve the plan by adding the `work` label to the issue. *Planned.*
 3. **The worker** writes code to make those tests pass. It cannot change them.
 4. **The reviewer**, a fresh session that never talked to the worker, checks the change against the plan. *Planned.*
 5. **The gate** merges only when the full test suite passes against the latest main.
