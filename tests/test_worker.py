@@ -23,3 +23,12 @@ def test_work_label_runs_are_named_worker_for_issue(record_property):
     suffix = value[len("worker for #${{ github.event.issue.number }}"):]
     assert suffix.startswith("${{ github.event.label.name != 'work' && ")
     assert suffix.endswith("|| '' }}")
+
+
+def test_first_commit_is_the_plan_file(record_property):
+    record_property("proves", "54.1")
+    text = open(WORKFLOW).read()
+    assert "BODY: ${{ github.event.issue.body }}" in text
+    assert '> ".dokima/plans/$N.md"' in text
+    assert 'git add ".dokima/plans/$N.md"' in text
+    assert "--allow-empty" not in text

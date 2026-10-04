@@ -46,7 +46,7 @@ def test_title_shows_pr_and_each_stage(record_property):
 
 def test_approve_link_only_while_waiting(record_property):
     record_property("proves", "29.6")
-    assert f"[Approve]({WAITING['html_url']})" in links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
+    assert f"[Approve the plan]({WAITING['html_url']})" in links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
     for worker in (BUILDING, DONE, None):
         assert "Approve" not in card.render(REPO, 5, ISSUE, GREEN, worker)
 
@@ -62,7 +62,7 @@ def test_live_run_points_to_what_is_running_now(record_property):
 def test_one_row_of_links(record_property):
     record_property("proves", "29.8")
     row = links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
-    assert row == (f"[Approve]({WAITING['html_url']}) · [live run]({WAITING['html_url']}) · "
+    assert row == (f"[Approve the plan]({WAITING['html_url']}) · "
                    "[issue #40](https://github.com/o/r/issues/40) · [files changed](https://github.com/o/r/pull/5/files)")
 
 
@@ -97,3 +97,10 @@ def test_running_or_missing_checks_never_show_a_pass(record_property):
 
 def test_card_without_issue_says_so():
     assert "No linked issue" in card.render(REPO, 5, None, [], None)
+
+
+def test_waiting_card_says_approve_the_plan_and_has_no_live_run(record_property):
+    record_property("proves", "54.2")
+    row = links(card.render(REPO, 5, ISSUE, [], WAITING))
+    assert row.startswith(f"[Approve the plan]({WAITING['html_url']})")
+    assert "live run" not in row
