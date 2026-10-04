@@ -10,7 +10,6 @@ import glob
 import json
 import os
 import re
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -68,21 +67,13 @@ def annotations(junit_xml, repo, sha, done_when):
     return lines
 
 
-def linked_issue(repo, pr):
-    owner, name = repo.split("/")
-    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p)"
-             "{closingIssuesReferences(first:1){nodes{number title body url}}}}}")
-    out = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}", "-f", f"o={owner}", "-f", f"n={name}",
-                          "-F", f"p={pr}"], check=True, capture_output=True, text=True).stdout
-    nodes = json.loads(out)["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
-    return nodes[0] if nodes else None
-
-
 def main(argv):
     repo = os.environ["GITHUB_REPOSITORY"]
     if argv[1] == "matrix":
         pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["number"]
-        rows = build_matrix(linked_issue(repo, pr), find_tests(glob.glob("tests/test_*.py")))
+        # The plan as Reza approved it; edits after his approval are ignored.
+        from dokima import plan
+        rows = build_matrix(plan.approved_issue(repo, pr), find_tests(glob.glob("tests/test_*.py")))
         print("matrix=" + json.dumps(rows))
     elif argv[1] == "annotate":
         for line in annotations(open(argv[2]).read(), repo, os.environ["HEAD_SHA"], os.environ["ID"]):

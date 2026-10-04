@@ -1,7 +1,7 @@
 name: worker
 run-name: "worker for #${{ github.event.issue.number }}${{ github.event.label.name != 'work' && format(' (label {0}, ignored)', github.event.label.name) || '' }}"
-# Labeling an issue `work` opens a draft PR for it, waits for Reza's approval,
-# then runs Claude Code on a fresh GitHub machine to build what the issue asks.
+# Labeling an issue `work` opens a draft PR for it. Nothing is built until Reza
+# approves that PR with GitHub's own Approve button; see build.yml.
 on:
   issues:
     types: [labeled]
@@ -46,59 +46,6 @@ jobs:
           git commit --allow-empty -m "Start work on #$N"
           git push origin "$B"
           gh pr create --draft --head "$B" --base main --title "$TITLE" \
-            --body "Closes #$N. Opened by the worker; no code is written until this is approved."
+            --body "Closes #$N. Opened by the worker. To start building, approve this PR (Review, then Approve). Nothing is written until then."
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-  approve:
-    needs: open
-    if: needs.open.outputs.skip == 'false'
-    runs-on: ubuntu-24.04
-    environment: approval
-    steps:
-      - run: echo "Approved by a required reviewer."
-
-  build:
-    needs: [open, approve]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: work/issue-${{ github.event.issue.number }}
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Install pytest and Claude Code
-        run: pip install pytest && npm install -g @anthropic-ai/claude-code
-      - name: Worker (Claude Code)
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          N: ${{ github.event.issue.number }}
-          TITLE: ${{ github.event.issue.title }}
-          BODY: ${{ github.event.issue.body }}
-        run: |
-          printf 'Issue #%s: %s\n\n%s\n' "$N" "$TITLE" "$BODY" > /tmp/issue.md
-          claude -p "$(cat dokima/roles/worker.md)
-
-          The issue to build is issue number $N; its text is in /tmp/issue.md." \
-            --dangerously-skip-permissions --max-turns 40
-      - name: Tests pass before anything is pushed
-        run: pytest -q
-      # The app's token is minted only now, after the agent has finished, and it
-      # cannot touch .github/ (the app has no workflows permission).
-      - id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DOKIMA_APP_ID }}
-          private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - name: Commit, push and mark the pull request ready
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          N: ${{ github.event.issue.number }}
-        run: |
-          git config user.name "dokima-runtime[bot]"
-          git config user.email "337511017+dokima-runtime[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Build #$N"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
-          gh pr ready "work/issue-$N" -R "$GITHUB_REPOSITORY"

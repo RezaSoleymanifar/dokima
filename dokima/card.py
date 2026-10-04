@@ -14,6 +14,10 @@ import json
 import os
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from dokima import plan  # noqa: E402
 
 MARKER = "<!-- dokima-card -->"
 CHECKBOX = re.compile(r"^(\s*)[-*] \[( |x|X)\] (.+)$")
@@ -134,6 +138,10 @@ def render(repo, pr, issue, check_runs, worker):
     gap = not_checked(issue["body"]) if issue else None
     if gap:
         lines.append(f"**Not checked:** {gap}")
+    later = issue.get("edited_after") if issue else None
+    if later:
+        edits = ", ".join(f"{e['at'][:16].replace('T', ' ')} UTC by {e['by']}" for e in later)
+        lines.append(f"**Edited after approval (ignored):** {edits}")
     lines += ["", "<sub>Built by the card workflow from GitHub's records. No AI writes this card.</sub>"]
     return "\n".join(lines)
 
@@ -147,7 +155,7 @@ def find_pr(repo):
     pr = os.environ.get("PR_NUMBER")
     if pr:
         return pr
-    title = re.match(r"worker for #(\d+)$", os.environ.get("RUN_TITLE", ""))
+    title = re.match(r"(?:worker for #|build for work/issue-)(\d+)$", os.environ.get("RUN_TITLE", ""))
     owner = repo.split("/")[0]
     if title:
         prs = json.loads(gh("api", f"repos/{repo}/pulls?head={owner}:work/issue-{title.group(1)}&state=open"))
@@ -156,12 +164,24 @@ def find_pr(repo):
     return str(prs[0]["number"]) if prs else None
 
 
-def latest_worker_run(repo, branch):
-    m = re.fullmatch(r"work/issue-(\d+)", branch)
-    if not m:
+def pipeline_state(repo, pr, branch, open_run, build_run, approved, commits):
+    """What the worker pipeline is doing for this PR, as {"status", "html_url"}, or None.
+
+    A worker PR with only its start commit and no approval from Reza is waiting
+    for him; its Approve link goes to the PR's review page.
+    """
+    if not plan.WORK_BRANCH.fullmatch(branch):
         return None
-    runs = json.loads(gh("api", f"repos/{repo}/actions/workflows/worker.yml/runs?per_page=30"))["workflow_runs"]
-    title = f"worker for #{m.group(1)}"
+    for run in (build_run, open_run):
+        if run and run["status"] in WORKER_ACTIVE:
+            return run
+    if not approved and commits == 1:
+        return {"status": "waiting", "html_url": f"https://github.com/{repo}/pull/{pr}/files"}
+    return build_run or open_run
+
+
+def latest_run(repo, workflow, title):
+    runs = json.loads(gh("api", f"repos/{repo}/actions/workflows/{workflow}/runs?per_page=30"))["workflow_runs"]
     run = next((r for r in runs if r["display_title"] == title), None)
     return {"status": run["status"], "html_url": run["html_url"]} if run else None
 
@@ -172,15 +192,19 @@ def main():
     if not pr:
         print("No open pull request for this event; nothing to post.")
         return
-    head = json.loads(gh("api", f"repos/{repo}/pulls/{pr}"))["head"]
-    owner, name = repo.split("/")
-    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p)"
-             "{closingIssuesReferences(first:1){nodes{number title body url}}}}}")
-    data = json.loads(gh("api", "graphql", "-f", f"query={query}", "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}"))
-    nodes = data["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+    info = json.loads(gh("api", f"repos/{repo}/pulls/{pr}"))
+    head = info["head"]
+    issue = plan.approved_issue(repo, pr)
     check_runs = json.loads(gh("api", f"repos/{repo}/commits/{head['sha']}/check-runs?per_page=100"))["check_runs"]
+    m = plan.WORK_BRANCH.fullmatch(head["ref"])
+    worker = None
+    if m:
+        worker = pipeline_state(repo, pr, head["ref"],
+                                latest_run(repo, "worker.yml", f"worker for #{m.group(1)}"),
+                                latest_run(repo, "build.yml", f"build for {head['ref']}"),
+                                bool(issue and issue["approved_at"]), info["commits"])
 
-    body = render(repo, pr, nodes[0] if nodes else None, check_runs, latest_worker_run(repo, head["ref"]))
+    body = render(repo, pr, issue, check_runs, worker)
     with open("card.md", "w") as f:
         f.write(body)
     existing = gh("api", f"repos/{repo}/issues/{pr}/comments", "--paginate",
