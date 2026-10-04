@@ -1,2 +1,2 @@
-# Every file needs Reza's approving review to merge. A bot approval does not count.
+# Code owners: their approving review is needed to merge, and only their approval starts a build.
 * @RezaSoleymanifar

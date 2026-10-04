@@ -4,7 +4,7 @@ name: card
 # so the pull request being judged cannot change how it is reported.
 on:
   workflow_run:
-    workflows: [done-whens, full suite, worker]
+    workflows: [done-whens, full suite, worker, build]
     types: [completed]
 concurrency:
   group: card
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      # The card is posted by the Dokima app, so it shows as dokima-runtime[bot].
+      # The card is posted by the repo's Dokima app, so it shows as that app's bot.
       - id: app
         uses: actions/create-github-app-token@v2
         with:
