@@ -71,7 +71,7 @@ def main(argv):
     repo = os.environ["GITHUB_REPOSITORY"]
     if argv[1] == "matrix":
         pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["number"]
-        # The plan as Reza approved it; edits after his approval are ignored.
+        # The plan as approved; edits after the approval are ignored.
         from dokima import plan
         rows = build_matrix(plan.approved_issue(repo, pr), find_tests(glob.glob("tests/test_*.py")))
         print("matrix=" + json.dumps(rows))

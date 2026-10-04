@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      # The card is posted by the Dokima app, so it shows as dokima-runtime[bot].
+      # The card is posted by the repo's Dokima app, so it shows as that app's bot.
       - id: app
         uses: actions/create-github-app-token@v2
         with:

@@ -17,14 +17,16 @@ def test_worker_and_card_act_as_the_dokima_app(record_property):
         assert "private-key: ${{ secrets.DOKIMA_APP_KEY }}" in text
         assert "DOKIMA_TOKEN" not in text
         assert "github.token" not in text
-    assert 'user.name "dokima-runtime[bot]"' in read(".github/workflows/worker.yml")
+    worker = read(".github/workflows/worker.yml")
+    assert "SLUG: ${{ steps.app.outputs.app-slug }}" in worker
+    assert 'git config user.name "${SLUG}[bot]"' in worker
 
 
-def test_reza_owns_every_file(record_property):
+def test_one_code_owner_rule_covers_every_file(record_property):
     record_property("proves", "40.2")
     rules = [line.split() for line in read(".github/CODEOWNERS").splitlines()
              if line.strip() and not line.startswith("#")]
-    assert rules == [["*", "@RezaSoleymanifar"]]
+    assert len(rules) == 1 and rules[0][0] == "*" and len(rules[0]) > 1
 
 
 def test_app_cannot_change_rules_or_workflows(record_property):

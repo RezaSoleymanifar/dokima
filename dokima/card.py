@@ -179,8 +179,8 @@ def find_pr(repo):
 def pipeline_state(repo, pr, branch, open_run, build_run, approved, commits):
     """What the worker pipeline is doing for this PR, as {"status", "html_url"}, or None.
 
-    A worker PR with only its start commit and no approval from Reza is waiting
-    for him; its Approve link goes to the PR's review page.
+    A worker PR with only its start commit and no approval yet is waiting for an
+    approver; its Approve link goes to the PR's review page.
     """
     if not plan.WORK_BRANCH.fullmatch(branch):
         return None

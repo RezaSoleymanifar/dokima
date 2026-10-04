@@ -1,7 +1,7 @@
 name: worker
 run-name: "worker for #${{ github.event.issue.number }}${{ github.event.label.name != 'work' && format(' (label {0}, ignored)', github.event.label.name) || '' }}"
-# Labeling an issue `work` opens a draft PR for it. Nothing is built until Reza
-# approves that PR with GitHub's own Approve button; see build.yml.
+# Labeling an issue `work` opens a draft PR for it. Nothing is built until an approver
+# (a code owner) approves that PR with GitHub's own Approve button; see build.yml.
 on:
   issues:
     types: [labeled]
@@ -31,6 +31,7 @@ jobs:
         id: start
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
           N: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
         run: |
@@ -40,8 +41,9 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git config user.name "dokima-runtime[bot]"
-          git config user.email "337511017+dokima-runtime[bot]@users.noreply.github.com"
+          BOT_ID=$(gh api "users/${SLUG}[bot]" --jq .id)
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git checkout -b "$B"
           git commit --allow-empty -m "Start work on #$N"
           git push origin "$B"
