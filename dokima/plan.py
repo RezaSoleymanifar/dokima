@@ -34,6 +34,10 @@ NOT_CHECKED = re.compile(r"^\*\*Not checked:\*\*\s*(.+)$", re.I)
 CARD_GOAL = re.compile(r"^\*\*Goal: (.+)\*\*$")
 CARD_CRITERION = re.compile(r'^(?:&emsp;)?<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[(.*)\]\(https?://[^)\s]*\)|(.*?))<br>$')
 CARD_VERIFIED = re.compile(r"^(?:&emsp;)?<sub>Verified by: (.*)</sub>$")
+# Current card layout: criteria sit inside an indented block, as their circle, then
+# the word "Criteria" (a link once checked), then their words.
+BLOCK_CRITERION = re.compile(r'^<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[Criteria\]\(https?://[^)\s]*\)|Criteria): (.*?)(?:<br>)?$')
+BLOCK_VERIFIED = re.compile(r"^\*?Verified by: (.*?)\*?$")
 
 
 def parse(body):
@@ -51,15 +55,15 @@ def parse(body):
             in_card = False
             continue
         goal = CARD_GOAL.match(stripped)
-        crit = CARD_CRITERION.match(stripped)
-        ver = CARD_VERIFIED.match(stripped)
+        crit = (BLOCK_CRITERION.match(stripped) if in_card else None) or CARD_CRITERION.match(stripped)
+        ver = (BLOCK_VERIFIED.match(stripped) if in_card else None) or CARD_VERIFIED.match(stripped)
         box = CHECKBOX.match(line)
         checked = NOT_CHECKED.match(stripped)
         if goal or (box and not box.group(1)):
             goals.append({"text": GOAL_PREFIX.sub("", (goal.group(1) if goal else box.group(3)).strip()), "criteria": []})
         elif (crit or box) and goals:
             n += 1
-            text = (crit.group(1) if crit and crit.group(1) is not None else crit.group(2)) if crit else box.group(3)
+            text = next(g for g in crit.groups() if g is not None) if crit else box.group(3)
             goals[-1]["criteria"].append({"n": n, "text": CRITERION_PREFIX.sub("", text.strip()), "verified_by": None})
         elif (ver or VERIFIED.match(line)) and goals and goals[-1]["criteria"]:
             goals[-1]["criteria"][-1]["verified_by"] = (ver or VERIFIED.match(line)).group(1).strip()
