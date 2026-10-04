@@ -100,7 +100,7 @@ def stage(worker, done_when_checks, full_suite):
     if any(r["status"] != "completed" for r in runs):
         return "Checking"
     if all(r["conclusion"] == "success" for r in runs):
-        return "Ready to merge"
+        return "Approve the result to merge"
     return "Checks failing"
 
 

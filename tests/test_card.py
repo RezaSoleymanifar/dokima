@@ -41,14 +41,14 @@ def test_title_shows_pr_and_each_stage(record_property):
     assert title(card.render(REPO, 5, ISSUE, running, DONE)) == "### PR #5 · Checking"
     failing = GREEN[:1] + [run("40.2 · second thing works", conclusion="failure")] + GREEN[2:]
     assert title(card.render(REPO, 5, ISSUE, failing, DONE)) == "### PR #5 · Checks failing"
-    assert title(card.render(REPO, 5, ISSUE, GREEN, DONE)) == "### PR #5 · Ready to merge"
+    assert title(card.render(REPO, 5, ISSUE, GREEN, DONE)) == "### PR #5 · Approve the result to merge"
 
 
 def test_approve_link_only_while_waiting(record_property):
     record_property("proves", "29.6")
     assert f"[Approve the plan]({WAITING['html_url']})" in links(card.render(REPO, 5, ISSUE, GREEN, WAITING))
     for worker in (BUILDING, DONE, None):
-        assert "Approve" not in card.render(REPO, 5, ISSUE, GREEN, worker)
+        assert "Approve the plan" not in card.render(REPO, 5, ISSUE, GREEN, worker)
 
 
 def test_live_run_points_to_what_is_running_now(record_property):
@@ -104,3 +104,10 @@ def test_waiting_card_says_approve_the_plan_and_has_no_live_run(record_property)
     row = links(card.render(REPO, 5, ISSUE, [], WAITING))
     assert row.startswith(f"[Approve the plan]({WAITING['html_url']})")
     assert "live run" not in row
+
+
+def test_title_asks_for_approval_when_all_checks_passed(record_property):
+    record_property("proves", "58.1")
+    heading = title(card.render(REPO, 5, ISSUE, GREEN, DONE))
+    assert heading == "### PR #5 · Approve the result to merge"
+    assert "Ready to merge" not in heading
