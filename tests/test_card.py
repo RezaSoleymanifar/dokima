@@ -68,11 +68,14 @@ def test_one_row_of_links(record_property):
 
 def test_each_done_when_shows_githubs_verdict_from_its_own_check(record_property):
     record_property("proves", "29.9")
+    record_property("proves", "44.1")
+    record_property("proves", "44.2")
     checks = [run("40.1 · first thing works", n=1), run("40.2 · second thing works", conclusion="failure", n=2),
               run("all tests", n=3)]
     body = card.render(REPO, 5, ISSUE, checks, DONE)
-    assert "- ✅ **Done when:** first thing works · [proof](https://github.com/o/r/actions/runs/2/job/1)" in body
-    assert "- ❌ **Done when:** second thing works · [proof](https://github.com/o/r/actions/runs/2/job/2)" in body
+    assert "- ✅ [Done](https://github.com/o/r/actions/runs/2/job/1): first thing works" in body
+    assert "- ❌ [Failing](https://github.com/o/r/actions/runs/2/job/2): second thing works" in body
+    assert "[proof]" not in body.split("**Full suite:**")[0]
     assert "  **Verified by:** a test" in body
     assert "**Full suite:** ✅ [proof](https://github.com/o/r/actions/runs/2/job/3)" in body
     assert "**Not checked:** speed." in body
@@ -80,10 +83,15 @@ def test_each_done_when_shows_githubs_verdict_from_its_own_check(record_property
 
 def test_running_or_missing_checks_never_show_a_pass(record_property):
     record_property("proves", "29.9")
+    record_property("proves", "44.2")
+    record_property("proves", "44.3")
     assert card.verdict(None) == ("⚠️", "no check yet")
     assert card.verdict(run("x", status="in_progress", conclusion=None))[0] == "⏳"
     body = card.render(REPO, 5, ISSUE, [run("40.1 · first thing works")], DONE)
-    assert "- ⚠️ **Done when:** second thing works · no check yet" in body
+    assert "- ⚠️ Done when: second thing works · no check yet" in body
+    assert "second thing works](" not in body and "[Checking]" not in body
+    running = card.render(REPO, 5, ISSUE, [run("40.1 · first thing works", status="in_progress", conclusion=None, n=9)], DONE)
+    assert "- ⏳ [Checking](https://github.com/o/r/actions/runs/2/job/9): first thing works" in running
     assert "**Full suite:** ⚠️ no check yet" in body
 
 
