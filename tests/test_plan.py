@@ -38,7 +38,7 @@ def test_build_runs_on_his_review_and_decides_with_mains_code(record_property):
     assert "pull_request_review:" in text and "types: [submitted]" in text
     assert "python3 -m dokima.plan starts" in text
     assert "ref: main" in text
-    assert "needs.decide.outputs.start == 'true'" in text
+    assert "steps.decide.outputs.start == 'true'" in text
 
 
 def test_only_an_approvers_approval_marks_the_plan_approved(record_property):
@@ -98,3 +98,14 @@ def test_the_old_run_page_approval_is_gone(record_property):
         text = read(f".github/workflows/{name}")
         assert "environment:" not in text
     assert "approve:" not in read(".github/workflows/worker.yml")
+
+
+def test_build_is_one_job_whose_first_step_decides(record_property):
+    record_property("proves", "65.5")
+    text = read(".github/workflows/build.yml")
+    jobs = text[text.index("jobs:"):]
+    assert jobs.count("\n  build:") == 1 and "\n  decide:" not in jobs
+    steps = jobs.split("\n      - ")
+    assert "ref: main" in steps[1] and "id: decide" in steps[2]
+    assert "rm -rf _main" in steps[2]
+    assert all("if: steps.decide.outputs.start == 'true'" in step for step in steps[3:])

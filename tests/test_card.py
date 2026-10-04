@@ -66,33 +66,67 @@ def test_one_row_of_links(record_property):
                    "[issue #40](https://github.com/o/r/issues/40) · [files changed](https://github.com/o/r/pull/5/files)")
 
 
+def icon(name):
+    return card.icon(REPO, name)
+
+
 def test_each_done_when_shows_githubs_verdict_from_its_own_check(record_property):
     record_property("proves", "29.9")
-    record_property("proves", "44.1")
-    record_property("proves", "44.2")
     checks = [run("40.1 · first thing works", n=1), run("40.2 · second thing works", conclusion="failure", n=2),
               run("all tests", n=3)]
     body = card.render(REPO, 5, ISSUE, checks, DONE)
-    assert "- ✅ [Done](https://github.com/o/r/actions/runs/2/job/1): first thing works" in body
-    assert "- ❌ [Failing](https://github.com/o/r/actions/runs/2/job/2): second thing works" in body
-    assert "[proof]" not in body.split("**Full suite:**")[0]
-    assert "  **Verified by:** a test" in body
-    assert "**Full suite:** ✅ [proof](https://github.com/o/r/actions/runs/2/job/3)" in body
+    assert f"{icon('passed')} [Done](https://github.com/o/r/actions/runs/2/job/1): first thing works<br>" in body
+    assert f"{icon('failed')} [Failing](https://github.com/o/r/actions/runs/2/job/2): second thing works<br>" in body
+    assert "[proof]" not in body
+    assert "<sub>Verified by: a test</sub>" in body
+    assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
     assert "**Not checked:** speed." in body
 
 
 def test_running_or_missing_checks_never_show_a_pass(record_property):
     record_property("proves", "29.9")
-    record_property("proves", "44.2")
-    record_property("proves", "44.3")
-    assert card.verdict(None) == ("⚠️", "no check yet")
-    assert card.verdict(run("x", status="in_progress", conclusion=None))[0] == "⏳"
+    assert card.state(None) == "none"
+    assert card.state(run("x", status="in_progress", conclusion=None)) == "running"
     body = card.render(REPO, 5, ISSUE, [run("40.1 · first thing works")], DONE)
-    assert "- ⚠️ Done when: second thing works · no check yet" in body
-    assert "second thing works](" not in body and "[Checking]" not in body
+    assert f"{icon('none')} Done when: second thing works · no check yet" in body
     running = card.render(REPO, 5, ISSUE, [run("40.1 · first thing works", status="in_progress", conclusion=None, n=9)], DONE)
-    assert "- ⏳ [Checking](https://github.com/o/r/actions/runs/2/job/9): first thing works" in running
-    assert "**Full suite:** ⚠️ no check yet" in body
+    assert f"{icon('running')} [Checking](https://github.com/o/r/actions/runs/2/job/9): first thing works" in running
+    assert f"{icon('none')} Full suite · no check yet" in body
+
+
+def test_card_goes_into_the_pr_description_with_only_the_closes_line(record_property):
+    record_property("proves", "65.1")
+    assert card.description("CARD", "Closes #63.\n\nSome prose.\n") == "CARD\n\nCloses #63"
+    assert card.description("CARD", None) == "CARD"
+    src = open(os.path.join(os.path.dirname(__file__), "..", "dokima", "card.py")).read()
+    assert 'gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr}", "-F", "body=@body.md")' in src
+
+
+def test_verdicts_use_githubs_circle_icons_centered(record_property):
+    record_property("proves", "65.2")
+    tag = card.icon("o/r", "passed")
+    assert tag == ('<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/passed.svg" '
+                   'width="16" height="16" align="absmiddle" alt="passed">')
+    root = os.path.join(os.path.dirname(__file__), "..", "dokima", "icons")
+    for name in ("passed", "failed", "running", "none"):
+        assert open(os.path.join(root, f"{name}.svg")).read().startswith("<svg fill=")
+    body = card.render(REPO, 5, ISSUE, GREEN, DONE)
+    assert "✅" not in body and "❌" not in body and "⚠️" not in body
+    assert not any(line.startswith("- ") for line in body.splitlines())
+
+
+def test_verified_by_sits_under_its_done_when_in_small_text(record_property):
+    record_property("proves", "65.3")
+    lines = card.render(REPO, 5, ISSUE, GREEN, DONE).splitlines()
+    i = next(n for n, l in enumerate(lines) if "first thing works" in l)
+    assert lines[i].endswith("<br>") and lines[i + 1] == "<sub>Verified by: a test</sub>"
+
+
+def test_full_suite_is_the_link(record_property):
+    record_property("proves", "65.4")
+    body = card.render(REPO, 5, ISSUE, GREEN, DONE)
+    assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
+    assert "**Full suite:**" not in body
 
 
 def test_card_without_issue_says_so():

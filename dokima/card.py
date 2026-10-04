@@ -3,7 +3,7 @@
 
 The card is the PR's front page: its stage, the links that matter, and each
 done-when of the linked issue with GitHub's own verdict from that done-when's
-check. It computes no verdicts itself: ✅ appears only when GitHub recorded the
+check. It computes no verdicts itself: a pass appears only when GitHub recorded the
 done-when's check as passed on the PR's latest commit.
 
 It runs from the default branch (a workflow_run trigger), never from the PR's
@@ -55,27 +55,37 @@ def not_checked(body):
     return None
 
 
-def verdict(check):
+def icon(repo, name):
+    """One of GitHub's own circle icons (Octicons, MIT), served from this repo, centered on its line."""
+    url = f"https://raw.githubusercontent.com/{repo}/main/dokima/icons/{name}.svg"
+    return f'<img src="{url}" width="16" height="16" align="absmiddle" alt="{name}">'
+
+
+def state(check):
     """GitHub's verdict for one check run (already filtered to the PR's latest commit)."""
     if check is None:
-        return "⚠️", "no check yet"
+        return "none"
     if check["status"] != "completed":
-        return "⏳", f"[running]({check['html_url']})"
-    if check["conclusion"] == "success":
-        return "✅", f"[proof]({check['html_url']})"
-    return "❌", f"[proof]({check['html_url']})"
+        return "running"
+    return "passed" if check["conclusion"] == "success" else "failed"
 
 
-def done_when_line(text, check):
-    """One done-when: the verdict word is the link to GitHub's proof."""
-    if check is None:
-        return f"⚠️ Done when: {text} · no check yet"
-    url = check["html_url"]
-    if check["status"] != "completed":
-        return f"⏳ [Checking]({url}): {text}"
-    if check["conclusion"] == "success":
-        return f"✅ [Done]({url}): {text}"
-    return f"❌ [Failing]({url}): {text}"
+WORDS = {"passed": "Done", "failed": "Failing", "running": "Checking"}
+
+
+def done_when_line(repo, text, check):
+    """One done-when: an icon, then the verdict word as the link to GitHub's proof."""
+    st = state(check)
+    if st == "none":
+        return f"{icon(repo, st)} Done when: {text} · no check yet"
+    return f"{icon(repo, st)} [{WORDS[st]}]({check['html_url']}): {text}"
+
+
+def full_suite_line(repo, check):
+    st = state(check)
+    if st == "none":
+        return f"{icon(repo, st)} Full suite · no check yet"
+    return f"{icon(repo, st)} [Full suite]({check['html_url']})"
 
 
 def checks_by_key(check_runs):
@@ -135,27 +145,35 @@ def render(repo, pr, issue, check_runs, worker):
     lines = [MARKER, f"### PR #{pr} · {stage(worker, done_when_checks, full_suite)}",
              links_row(repo, pr, issue, worker, check_runs), ""]
     if not issue:
-        lines += ["⚠️ No linked issue. Add `Closes #N` to the description.", ""]
+        lines += ["No linked issue. Add `Closes #N` to the description.", ""]
     elif not goals:
-        lines += [f"⚠️ Issue #{issue['number']} has no goals and done-whens yet.", ""]
+        lines += [f"Issue #{issue['number']} has no goals and done-whens yet.", ""]
     for goal in goals:
         lines += [f"**{goal['text']}**", ""]
         for dw in goal["done_whens"]:
             check = by_key.get(f"{issue['number']}.{dw['n']}")
-            lines.append(f"- {done_when_line(dw['text'], check)}")
-            lines.append(f"  **Verified by:** {dw['verified_by'] or '⚠️ not stated'}")
-        lines.append("")
-    icon, proof = verdict(full_suite)
-    lines.append(f"**Full suite:** {icon} {proof}")
+            lines.append(done_when_line(repo, dw["text"], check) + "<br>")
+            lines.append(f"<sub>Verified by: {dw['verified_by'] or 'not stated'}</sub>")
+            lines.append("")
+    lines += [full_suite_line(repo, full_suite), ""]
     gap = not_checked(issue["body"]) if issue else None
     if gap:
-        lines.append(f"**Not checked:** {gap}")
+        lines += [f"**Not checked:** {gap}", ""]
     later = issue.get("edited_after") if issue else None
     if later:
         edits = ", ".join(f"{e['at'][:16].replace('T', ' ')} UTC by {e['by']}" for e in later)
-        lines.append(f"**Edited after approval (ignored):** {edits}")
-    lines += ["", "<sub>Built by the card workflow from GitHub's records. No AI writes this card.</sub>"]
+        lines += [f"**Edited after approval (ignored):** {edits}", ""]
+    lines += ["<sub>Built by the card workflow from GitHub's records. No AI writes this card.</sub>"]
     return "\n".join(lines)
+
+
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
+
+
+def description(card, body):
+    """The PR description: the card, then the line linking the issue, and nothing else."""
+    found = CLOSES.search(body or "")
+    return card + ("\n\n" + found.group(0) if found else "")
 
 
 def gh(*args):
@@ -216,18 +234,15 @@ def main():
                                 latest_run(repo, "build.yml", f"build for {head['ref']}"),
                                 bool(issue and issue["approved_at"]), info["commits"])
 
-    body = render(repo, pr, issue, check_runs, worker)
-    with open("card.md", "w") as f:
-        f.write(body)
-    existing = gh("api", f"repos/{repo}/issues/{pr}/comments", "--paginate",
-                  "--jq", f'.[] | select(.body | contains("{MARKER}")) | .id').split()
-    if existing:
-        gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{existing[0]}", "-F", "body=@card.md")
-        print(f"Updated card on PR #{pr}")
-    else:
-        gh("api", f"repos/{repo}/issues/{pr}/comments", "-F", "body=@card.md")
-        print(f"Posted card on PR #{pr}")
-
+    card = render(repo, pr, issue, check_runs, worker)
+    with open("body.md", "w") as f:
+        f.write(description(card, info.get("body")))
+    gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr}", "-F", "body=@body.md")
+    # Cards used to be comments; remove an old one so there is only ever one card.
+    for old in gh("api", f"repos/{repo}/issues/{pr}/comments", "--paginate",
+                  "--jq", f'.[] | select(.body | contains("{MARKER}")) | .id').split():
+        gh("api", "-X", "DELETE", f"repos/{repo}/issues/comments/{old}")
+    print(f"Card written into the description of PR #{pr}")
 
 if __name__ == "__main__":
     main()
