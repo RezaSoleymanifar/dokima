@@ -1,23 +1,111 @@
 #!/usr/bin/env python3
-"""The approved plan: who can start a build, and what the plan said when they did.
+"""The plan: what it says, who approved it, and what changed since.
 
-An approver starts a build with GitHub's own Approve button on the worker's
-pull request. Approvers are the code owners in the repo's CODEOWNERS file (the
-owners of `*`), or the repository owner when there is no such file. From that
-moment the plan is frozen: the worker, the gate and the card all read the issue
-as it was when it was approved, taken from GitHub's own edit history. Later
-edits change nothing, and the card lists them as ignored.
+An issue's plan is approved when an approver adds the `work` label. Approvers
+are the code owners in CODEOWNERS (the owners of `*`), or the repository owner
+when there is no such file. The plan is frozen at the moment the label was
+added: the worker, the checks and the card all read the issue as it stood then,
+taken from GitHub's own edit history. Edits made while the label is on are not
+used; the card lists what changed. To use them, remove `work` and add it again.
+
+The plan is read from the card (the issue's text once the card has been written
+into it) or from the older checkbox format. Only words count: the card's icons
+and links change as checks run, but they are never part of the plan.
 """
+import difflib
 import json
 import os
 import re
 import subprocess
 import sys
 
+LABEL = "work"
 WORK_BRANCH = re.compile(r"work/issue-(\d+)")
-# A dismissed review keeps its submit time; new commits dismiss the plan
-# approval (dismiss stale reviews is on), so it still marks when the plan was approved.
-APPROVAL_STATES = {"APPROVED", "DISMISSED"}
+CARD_START = "<!-- dokima-card -->"
+CARD_END = "<!-- /dokima-card -->"
+
+# Older checkbox format: "- [ ] Goal: ..." then indented "- [ ] Done when: ..." and "Verified by: ...".
+CHECKBOX = re.compile(r"^(\s*)[-*] \[( |x|X)\] (.+)$")
+VERIFIED = re.compile(r"^\s+Verified by:\s*(.+)$", re.I)
+CRITERION_PREFIX = re.compile(r"^(?:Done when|Criteria|Criterion):\s*", re.I)
+GOAL_PREFIX = re.compile(r"^Goal:\s*", re.I)
+NOT_CHECKED = re.compile(r"^\*\*Not checked:\*\*\s*(.+)$", re.I)
+# Card format, written by the card workflow.
+CARD_GOAL = re.compile(r"^\*\*Goal: (.+)\*\*$")
+CARD_CRITERION = re.compile(r'^(?:&emsp;)?<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[(.*)\]\(https?://[^)\s]*\)|(.*?))<br>$')
+CARD_VERIFIED = re.compile(r"^(?:&emsp;)?<sub>Verified by: (.*)</sub>$")
+
+
+def parse(body):
+    """The plan's words: goals with their criteria (numbered from 1 across the issue), Not checked, and notes.
+
+    Notes are any other lines outside the card, kept as they were written.
+    """
+    goals, n, gap, notes, in_card = [], 0, None, [], False
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if stripped == CARD_START:
+            in_card = True
+            continue
+        if stripped == CARD_END:
+            in_card = False
+            continue
+        goal = CARD_GOAL.match(stripped)
+        crit = CARD_CRITERION.match(stripped)
+        ver = CARD_VERIFIED.match(stripped)
+        box = CHECKBOX.match(line)
+        checked = NOT_CHECKED.match(stripped)
+        if goal or (box and not box.group(1)):
+            goals.append({"text": GOAL_PREFIX.sub("", (goal.group(1) if goal else box.group(3)).strip()), "criteria": []})
+        elif (crit or box) and goals:
+            n += 1
+            text = (crit.group(1) if crit and crit.group(1) is not None else crit.group(2)) if crit else box.group(3)
+            goals[-1]["criteria"].append({"n": n, "text": CRITERION_PREFIX.sub("", text.strip()), "verified_by": None})
+        elif (ver or VERIFIED.match(line)) and goals and goals[-1]["criteria"]:
+            goals[-1]["criteria"][-1]["verified_by"] = (ver or VERIFIED.match(line)).group(1).strip()
+        elif checked:
+            gap = checked.group(1).strip()
+        elif not in_card:
+            notes.append(line)
+    while notes and not notes[0].strip():
+        notes.pop(0)
+    while notes and not notes[-1].strip():
+        notes.pop()
+    return {"goals": goals, "not_checked": gap, "notes": "\n".join(notes)}
+
+
+def lines(plan):
+    """The plan as plain lines of words, for comparing two versions."""
+    out = []
+    for goal in plan["goals"]:
+        out.append(f"Goal: {goal['text']}")
+        for c in goal["criteria"]:
+            out.append(c["text"])
+            out.append(f"Verified by: {c['verified_by'] or ''}")
+    if plan["not_checked"]:
+        out.append(f"Not checked: {plan['not_checked']}")
+    return out
+
+
+def changes(approved, current):
+    """What changed in the plan's words since it was approved, as ("Changed", old, new), ("Added", new) or ("Removed", old)."""
+    a, b = lines(approved), lines(current)
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if op == "replace":
+            olds, news = a[i1:i2], b[j1:j2]
+            for k in range(max(len(olds), len(news))):
+                if k < len(olds) and k < len(news):
+                    out.append(("Changed", olds[k], news[k]))
+                elif k < len(news):
+                    out.append(("Added", news[k]))
+                else:
+                    out.append(("Removed", olds[k]))
+        elif op == "insert":
+            out += [("Added", x) for x in b[j1:j2]]
+        elif op == "delete":
+            out += [("Removed", x) for x in a[i1:i2]]
+    return out
 
 
 def approvers(codeowners, repo_owner):
@@ -34,21 +122,15 @@ def repo_approvers(repo_owner, root="."):
     return approvers(open(path).read() if os.path.exists(path) else "", repo_owner)
 
 
-def starts_build(state, reviewer, approver_names, branch, commits):
-    """True only for an approver's approval on a worker PR that has no work yet (just its start commit)."""
-    return (state.lower() == "approved" and reviewer in approver_names
-            and bool(WORK_BRANCH.fullmatch(branch)) and commits == 1)
-
-
-def approved_at(reviews, approver_names):
-    """When an approver last approved this PR, or None. Nobody else's approval counts.
-
-    The latest approval wins, so an approver changes a plan on purpose by editing
-    it and approving again; edits made after their latest approval are ignored.
-    """
-    times = [r["submitted_at"] for r in reviews
-             if r["user"]["login"] in approver_names and r["state"] in APPROVAL_STATES and r.get("submitted_at")]
-    return max(times) if times else None
+def approved_at(events, approver_names):
+    """When an approver last added the `work` label, if it is still on; else None. Nobody else's label counts."""
+    added = [e["created_at"] for e in events if e.get("event") == "labeled"
+             and (e.get("label") or {}).get("name") == LABEL and (e.get("actor") or {}).get("login") in approver_names]
+    removed = [e["created_at"] for e in events if e.get("event") == "unlabeled"
+               and (e.get("label") or {}).get("name") == LABEL]
+    if not added or (removed and max(removed) >= max(added)):
+        return None
+    return max(added)
 
 
 def approved_version(body, edits, at):
@@ -59,48 +141,60 @@ def approved_version(body, edits, at):
     return max(before, key=lambda e: e["editedAt"])["diff"] if before else body
 
 
-def edits_after(edits, at):
-    """Edits made after the approval, oldest first: these are ignored."""
-    if not at:
-        return []
-    later = [e for e in edits if e["editedAt"] > at]
-    return [{"at": e["editedAt"], "by": (e.get("editor") or {}).get("login", "someone")}
-            for e in sorted(later, key=lambda e: e["editedAt"])]
-
-
 def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
-def approved_issue(repo, pr):
-    """The PR's linked issue, with its body as approved and the list of ignored later edits."""
+def fetch_issue(repo, number):
+    """The issue with its plan as approved (or as it is, when not approved) and what changed since."""
     owner, name = repo.split("/")
-    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p)"
-             "{closingIssuesReferences(first:1){nodes{number title body url"
-             " userContentEdits(first:100){nodes{editedAt diff editor{login}}}}}}}}")
-    data = json.loads(gh("api", "graphql", "-f", f"query={query}", "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}"))
-    nodes = data["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
-    if not nodes:
-        return None
-    issue = nodes[0]
+    query = ("query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i)"
+             "{number title body url userContentEdits(first:100){nodes{editedAt diff}}}}}")
+    data = json.loads(gh("api", "graphql", "-f", f"query={query}", "-f", f"o={owner}", "-f", f"n={name}", "-F", f"i={number}"))
+    issue = data["data"]["repository"]["issue"]
     edits = [e for e in issue.pop("userContentEdits")["nodes"] if e.get("diff") is not None]
-    at = approved_at(json.loads(gh("api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100")), repo_approvers(owner))
-    issue["body"] = approved_version(issue["body"], edits, at)
-    issue["approved_at"] = at
-    issue["edited_after"] = edits_after(edits, at)
+    events = json.loads(gh("api", f"repos/{repo}/issues/{number}/events?per_page=100", "--paginate"))
+    at = approved_at(events, repo_approvers(owner))
+    current = parse(issue["body"])
+    approved = parse(approved_version(issue["body"], edits, at)) if at else current
+    issue.update(approved_at=at, plan=approved, current_body=issue["body"],
+                 changes=changes(approved, current) if at else [])
     return issue
 
 
+def pr_issue_number(repo, pr):
+    """The issue a PR closes, or None."""
+    owner, name = repo.split("/")
+    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p)"
+             "{closingIssuesReferences(first:1){nodes{number}}}}}")
+    data = json.loads(gh("api", "graphql", "-f", f"query={query}", "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}"))
+    nodes = data["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+    return nodes[0]["number"] if nodes else None
+
+
+def as_text(number, title, plan):
+    """The approved plan as plain text, for the worker to read."""
+    out = [f"Issue #{number}: {title}", ""]
+    for goal in plan["goals"]:
+        out.append(f"- Goal: {goal['text']}")
+        for c in goal["criteria"]:
+            out.append(f"  - Criterion {number}.{c['n']}: {c['text']}")
+            out.append(f"    Verified by: {c['verified_by'] or 'not stated'}")
+    if plan["not_checked"]:
+        out += ["", f"Not checked: {plan['not_checked']}"]
+    if plan["notes"]:
+        out += ["", plan["notes"]]
+    return "\n".join(out)
+
+
 def main(argv):
-    if argv[1] == "starts":
-        # Used by the build workflow: prints start=true|false for GITHUB_OUTPUT.
-        state, reviewer, branch, commits = argv[2:6]
-        names = repo_approvers(os.environ["GITHUB_REPOSITORY_OWNER"])
-        print("start=" + str(starts_build(state, reviewer, names, branch, int(commits))).lower())
+    if argv[1] == "approvers":
+        # Comma-separated approvers.
+        print(",".join(sorted(repo_approvers(os.environ["GITHUB_REPOSITORY_OWNER"]))))
     elif argv[1] == "issue":
-        # Writes the issue text as approved, for the worker to read.
-        issue = approved_issue(os.environ["GITHUB_REPOSITORY"], argv[2])
-        print(f"Issue #{issue['number']}: {issue['title']}\n\n{issue['body']}")
+        # The issue's plan as approved, for the worker to read.
+        issue = fetch_issue(os.environ["GITHUB_REPOSITORY"], argv[2])
+        print(as_text(issue["number"], issue["title"], issue["plan"]))
 
 
 if __name__ == "__main__":

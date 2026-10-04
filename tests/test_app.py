@@ -16,10 +16,12 @@ def test_worker_and_card_act_as_the_dokima_app(record_property):
         assert "app-id: ${{ vars.DOKIMA_APP_ID }}" in text
         assert "private-key: ${{ secrets.DOKIMA_APP_KEY }}" in text
         assert "DOKIMA_TOKEN" not in text
-        assert "github.token" not in text
     worker = read(".github/workflows/worker.yml")
-    assert "SLUG: ${{ steps.app.outputs.app-slug }}" in worker
-    assert 'git config user.name "${SLUG}[bot]"' in worker
+    push = worker[worker.index("name: Push and open the pull request"):]
+    assert "GH_TOKEN: ${{ steps.app.outputs.token }}" in push and "SLUG: ${{ steps.app.outputs.app-slug }}" in push
+    assert 'git config user.name "${SLUG}[bot]"' in push
+    card = read(".github/workflows/card.yml")
+    assert "GH_TOKEN: ${{ steps.app.outputs.token }}" in card[card.index("name: Write the card"):]
 
 
 def test_one_code_owner_rule_covers_every_file(record_property):
