@@ -75,6 +75,7 @@ Write your result into the hand-back folder named below. Code checks its shape a
 and nothing is posted.
 - A plan: `plan.json` holding {"objective": "...", "criteria": ["...", ...], "non_goals": ["...", ...], "scope": ["...", ...]},
   plus your tests in the repo. Criterion k in the list is N.k; every criterion needs at least one test and every test
-  names a criterion of this plan. Change no file outside the tests.
+  names a criterion of this plan. Change no file outside the tests. You may change or delete an older test when the
+  change makes it wrong; give each one a reason in "test_changes": {"path::test_name": "why"}. The owner sees them all.
 - A question: `question.md` holding the one question.
 Splits are not handed back yet. If the issue needs one, ask the owner whether to split, naming the children you propose.
