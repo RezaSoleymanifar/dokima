@@ -1,6 +1,24 @@
 # Dokima
 
-**Agents are capable but unreliable. Dokima makes the system around them trustworthy.**
+**Coding agents now out-code us on narrow tasks. The bottleneck is knowing their work is actually done.**
+
+Dokima moves your effort from writing code to verifying it: you assign, agents build, and nothing merges until it's proven. That clears the bottleneck, so you can hand off more work and run a fleet of agents with confidence.
+
+## A management structure for agents
+
+Remote engineering teams work because of structure: tickets, plans, reviews, and a rule that nothing ships unchecked. Dokima gives agents that same structure. It is the organization around your agents that makes sure they deliver the work they were asked for, proven.
+
+## One history, any agent, any device
+
+Today the story of a codebase is scattered across chat sessions, coding agents and devices, with no single place to see it. Dokima writes everything into native Git and GitHub: issues, plans, tests, failed attempts and lessons learned. Whatever agent or device you use next, it builds on the full history, permanently, with zero setup.
+
+## Project management for agents
+
+**Dokima is Jira for agent teams.** You define the work, define what "done" means, and assign it. Agents plan, build and test it, and you get it back verified, every time. Run many at once and follow everything on one GitHub project board, all with GitHub's own tools.
+
+## Unattended until it's actually done
+
+Coding agents tend to stop before the work is finished, and leaving them running on your own machine is risky. Dokima runs each step on a fresh, isolated machine with no access to your system or keys, and the work isn't done until its checks pass. Every plan, attempt and result is written back to the issue, so the next run picks up exactly where the last one stopped.
 
 Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You describe a task in a GitHub issue. Isolated AI sessions plan it, build it and review it, and nothing reaches your main branch until it is proven.
 
