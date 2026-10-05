@@ -81,11 +81,11 @@ def test_criteria_sit_in_an_indented_block_and_only_the_word_criteria_links(reco
     lines = body.splitlines()
     start = lines.index("<dl><dd>")
     end = lines.index("</dd></dl>")
-    assert f"{icon('passed')} [Criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works" in lines[start:end]
-    assert f"{icon('failed')} [Criteria](https://github.com/o/r/actions/runs/2/job/2): second thing works" in lines[start:end]
+    assert f"{icon('passed')} [Acceptance criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works" in lines[start:end]
+    assert f"{icon('failed')} [Acceptance criteria](https://github.com/o/r/actions/runs/2/job/2): second thing works" in lines[start:end]
     assert "[first thing works]" not in body
     empty = render(checks=[], pr=None)
-    assert f"{icon('none')} Criteria: first thing works" in empty
+    assert f"{icon('none')} Acceptance criteria: first thing works" in empty
     assert f"{icon('passed')} [Full suite](https://github.com/o/r/actions/runs/2/job/3)" in body
     assert not any(line.startswith("- ") for line in lines)
     for name in ("passed", "failed", "running", "none"):
@@ -96,7 +96,7 @@ def test_criteria_sit_in_an_indented_block_and_only_the_word_criteria_links(reco
 def test_verified_by_is_italic_normal_size_right_under_its_criterion(record_property):
     record_property("proves", "74.2")
     lines = render().splitlines()
-    i = next(n for n, l in enumerate(lines) if l.endswith("Criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works"))
+    i = next(n for n, l in enumerate(lines) if l.endswith("Acceptance criteria](https://github.com/o/r/actions/runs/2/job/1): first thing works"))
     assert lines[i + 1] == "*Verified by: a test that runs the first thing*"
     assert "<sub>" not in "\n".join(lines)
 
@@ -108,7 +108,7 @@ def test_no_footer_and_no_gap(record_property):
     lines = body.splitlines()
     for n, line in enumerate(lines):
         if line.startswith("*Verified by:"):
-            assert "Criteria" in lines[n - 1] and not lines[n - 1].endswith("<br>")
+            assert "Acceptance criteria" in lines[n - 1] and not lines[n - 1].endswith("<br>")
 
 
 def test_card_never_links_to_its_own_page(record_property):
