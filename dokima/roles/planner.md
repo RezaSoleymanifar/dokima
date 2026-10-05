@@ -37,7 +37,7 @@ not because the test crashes. Run them yourself before you finish and read the f
 Current runner (the only one Dokima supports today): python3 -m pytest, tests in tests/, and each test names its criterion with
     record_property("proves", "N.k")
 
-# How the reviewer grades your plan
+# Before you finish: how the reviewer grades your plan
 The reviewer reads your plan and runs your tests before the worker starts. It sends the plan back if any of 1 to 4 fail,
 and notes 5 to 8 without blocking. Walk this list yourself before you finish.
 1. Every criterion has a test, or is marked (manual) with a reason. If a criterion promises A, B and C, the tests prove
