@@ -65,6 +65,8 @@ def test_approve_only_means_merge(record_property):
     workflows = os.path.join(ROOT, ".github", "workflows")
     assert not os.path.exists(os.path.join(workflows, "build.yml"))
     for name in os.listdir(workflows):
+        if name == "board.yml":  # only moves board cards on a review; it never starts a build
+            continue
         assert "pull_request_review" not in read(f".github/workflows/{name}")
     assert ".dokima/plans" not in read(".github/workflows/worker.yml")
     assert "Approve the plan" not in read("dokima/card.py")
