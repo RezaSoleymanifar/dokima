@@ -4,6 +4,14 @@
 
 Dokima moves your effort from writing code to verifying it: you assign, agents build, and nothing merges until it's proven. That clears the bottleneck, so you can hand off more work and run a fleet of agents with confidence.
 
+## A management structure for agents
+
+Remote engineering teams work because of structure: tickets, plans, reviews, and a rule that nothing ships unchecked. Dokima gives agents that same structure. It is the organization around your agents that makes sure they deliver the work they were asked for, proven.
+
+## One history, any agent, any device
+
+Today the story of a codebase is scattered across chat sessions, coding agents and devices, with no single place to see it. Dokima writes everything into native Git and GitHub: issues, plans, tests, failed attempts and lessons learned. Whatever agent or device you use next, it builds on the full history, permanently, with zero setup.
+
 Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You describe a task in a GitHub issue; isolated AI sessions plan it, build it and review it; and nothing reaches your main branch until it is proven.
 
 No servers to run. No database. Your repo, its issues and its pull requests are the whole system.
