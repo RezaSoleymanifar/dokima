@@ -1,6 +1,6 @@
 # Dokima
 
-**Agents are capable but unreliable. Dokima makes the system around them trustworthy.**
+**Agents out-code us on narrow tasks. The bottleneck is knowing their work is done. Dokima moves your effort from writing code to verifying it.**
 
 Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You describe a task in a GitHub issue. Isolated AI sessions plan it, build it and review it, and nothing reaches your main branch until it is proven.
 
