@@ -69,3 +69,12 @@ siblings must merge first. Code files the children as sub-issues with blocked-by
 # One question
 Only if you cannot plan without the owner's answer. One full question ending in "?", with options and your
 recommendation first, so the owner can answer with one word. A question you could answer by reading the code is not one.
+
+# What you hand back
+Write your result into the hand-back folder named below. Code checks its shape and posts it; anything else is rejected
+and nothing is posted.
+- A plan: `plan.json` holding {"objective": "...", "criteria": ["...", ...], "non_goals": ["...", ...], "scope": ["...", ...]},
+  plus your tests in the repo. Criterion k in the list is N.k; every criterion needs at least one test and every test
+  names a criterion of this plan. Change no file outside the tests.
+- A question: `question.md` holding the one question.
+Splits are not handed back yet. If the issue needs one, ask the owner whether to split, naming the children you propose.
