@@ -71,34 +71,39 @@ def test_only_a_code_owners_plan_label_starts_it_and_the_planner_holds_no_key(re
 
 # 80.2: tests come with the plan, each tagged with a criterion of the plan
 
+def tc(added=None, changed=None, deleted=None):
+    return {"added": added if added is not None else dict(TAGS), "changed": changed or {}, "deleted": deleted or {}}
+
+
 def test_good_plan_with_a_test_per_criterion_passes(record_property):
     record_property("proves", "80.2")
-    assert planner.problems("9", PLAN, ["tests/test_jobs.py"], TAGS) == []
+    assert planner.problems("9", dict(PLAN, test_changes={}), ["tests/test_jobs.py"], tc()) == []
 
 
 def test_criterion_without_a_test_is_rejected(record_property):
     record_property("proves", "80.2")
-    bad = planner.problems("9", PLAN, ["tests/test_jobs.py"], {"tests/test_jobs.py::test_id": ["9.1"]})
+    bad = planner.problems("9", dict(PLAN, test_changes={}), ["tests/test_jobs.py"], tc({"tests/test_jobs.py::test_id": ["9.1"]}))
     assert bad == ["criterion 9.2 has no test"], f"80.2: got {bad}"
 
 
 def test_test_for_a_criterion_not_in_the_plan_is_rejected(record_property):
     record_property("proves", "80.2")
-    bad = planner.problems("9", PLAN, ["tests/test_jobs.py"], dict(TAGS, **{"tests/test_jobs.py::test_x": ["9.3", "4.1"]}))
+    bad = planner.problems("9", dict(PLAN, test_changes={}), ["tests/test_jobs.py"], tc(dict(TAGS, **{"tests/test_jobs.py::test_x": ["9.3", "4.1"]})))
     assert "tests/test_jobs.py::test_x proves 9.3, which is not a criterion of this plan" in bad
     assert "tests/test_jobs.py::test_x proves 4.1, which is not a criterion of this plan" in bad
 
 
 def test_changes_outside_tests_or_no_tests_are_rejected(record_property):
     record_property("proves", "80.2")
-    assert "dokima/jobs.py is outside tests/; the planner may only write tests" in planner.problems("9", PLAN, ["tests/t.py", "dokima/jobs.py"], TAGS)
-    assert "the plan came with no tests" in planner.problems("9", PLAN, [], {})
+    plan_ = dict(PLAN, test_changes={})
+    assert "dokima/jobs.py is outside tests/; the planner may only write tests" in planner.problems("9", plan_, ["tests/t.py", "dokima/jobs.py"], tc())
+    assert "the plan came with no tests" in planner.problems("9", plan_, [], tc({}))
 
 
 def test_tags_are_read_from_each_test(record_property):
     record_property("proves", "80.2")
     src = 'def test_a(record_property):\n    record_property("proves", "9.1")\n\ndef test_b(record_property):\n    record_property("proves", "9.2")\n'
-    assert planner.test_tags(["tests/t.py"], read=lambda p: src) == {"tests/t.py::test_a": ["9.1"], "tests/t.py::test_b": ["9.2"]}
+    assert {n: keys for n, (_, keys) in planner.test_functions(src).items()} == {"test_a": ["9.1"], "test_b": ["9.2"]}
 
 
 def test_changed_files_counts_committed_and_new_files_since_the_start(record_property, tmp_path, monkeypatch):
@@ -168,3 +173,105 @@ def test_no_one_line_command_is_cut_short_by_a_yaml_comment(record_property):
         for line in open(os.path.join(os.path.dirname(WORKFLOW), workflow)):
             value = line.strip()[len("run:"):] if line.strip().startswith("run:") else ""
             assert " #" not in value, f"80.1: in {workflow}, YAML reads everything after ' #' as a comment: {line.strip()}"
+
+
+# 100.1: the check judges only the tests the planner touched
+
+OLD_FILE = ('def test_a(record_property):\n    record_property("proves", "58.1")\n    assert 1\n\n'
+            'def test_b(record_property):\n    record_property("proves", "74.1")\n    assert "old guard"\n')
+
+
+def test_untouched_older_tests_in_a_touched_file_are_ignored(record_property):
+    record_property("proves", "100.1")
+    new_file = OLD_FILE + '\n\ndef test_new(record_property):\n    record_property("proves", "9.1")\n'
+    got = planner.test_changes(["tests/t.py"], lambda p: OLD_FILE, lambda p: new_file)
+    assert got == {"added": {"tests/t.py::test_new": ["9.1"]}, "changed": {}, "deleted": {}}, f"100.1: got {got}"
+    plan_ = dict(PLAN, criteria=["one"], test_changes={})
+    assert planner.problems("9", plan_, ["tests/t.py"], got) == [], "100.1: untouched older tests were judged"
+
+
+def test_replay_of_the_first_live_run_on_87(record_property, tmp_path, monkeypatch):
+    record_property("proves", "100.1")
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+    git("init", "-q"); git("config", "user.name", "t"); git("config", "user.email", "t@t")
+    (tmp_path / "tests").mkdir(); (tmp_path / "tests/test_card.py").write_text(OLD_FILE)
+    git("add", "-A"); git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+    (tmp_path / "tests/test_card.py").write_text(OLD_FILE.replace('"old guard"', '"types"'))
+    (tmp_path / "tests/test_guard.py").write_text('def test_bot_issue(record_property):\n    record_property("proves", "87.1")\n')
+    monkeypatch.chdir(tmp_path)
+    files = planner.changed_files(base)
+    got = planner.test_changes([f for f in files if f.endswith(".py")], planner.read_at(base), planner.read_now)
+    assert list(got["changed"]) == ["tests/test_card.py::test_b"] and "tests/test_card.py::test_a" not in got["changed"], f"100.1: got {got}"
+    plan_ = {"objective": "o", "criteria": ["c"], "non_goals": [], "scope": ["s"],
+             "test_changes": {"tests/test_card.py::test_b": "it checked the old guard's exact words"}}
+    assert planner.problems("87", plan_, files, got) == [], "100.1: the #87 plan would still be rejected"
+
+
+# 100.2: older tests may change or go, each with a reason the owner sees
+
+def test_changed_or_deleted_older_test_needs_a_reason(record_property):
+    record_property("proves", "100.2")
+    touched = tc(changed={"tests/t.py::test_b": (["74.1"], ["74.1"])}, deleted={"tests/t.py::test_c": ["58.2"]})
+    bad = planner.problems("9", dict(PLAN, test_changes={}), ["tests/t.py"], touched)
+    assert "tests/t.py::test_b is an older test the planner changed or deleted, with no reason in test_changes" in bad
+    assert "tests/t.py::test_c is an older test the planner changed or deleted, with no reason in test_changes" in bad
+    ok = dict(PLAN, test_changes={"tests/t.py::test_b": "why b", "tests/t.py::test_c": "why c"})
+    assert planner.problems("9", ok, ["tests/t.py"], touched) == [], "100.2: reasons given but still rejected"
+
+
+def test_a_changed_older_test_may_not_take_on_a_stranger_criterion(record_property):
+    record_property("proves", "100.2")
+    touched = tc(changed={"tests/t.py::test_b": (["74.1"], ["74.1", "61.3"])})
+    bad = planner.problems("9", dict(PLAN, test_changes={"tests/t.py::test_b": "why"}), ["tests/t.py"], touched)
+    assert any("now proves 61.3" in b for b in bad), f"100.2: got {bad}"
+
+
+def test_the_plan_lists_every_older_test_change_with_its_reason(record_property):
+    record_property("proves", "100.2")
+    plan_ = dict(PLAN, test_changes={"tests/t.py::test_b": "it checked exact wording"})
+    body = planner.render("9", "x", plan_, TAGS, ["tests/t.py::test_b"])
+    assert "**Changes to older tests:**\n- `tests/t.py::test_b`: it checked exact wording" in body, "100.2: change not listed"
+    assert "Changes to older tests" not in planner.render("9", "x", plan_, TAGS), "100.2: listed with no older changes"
+
+
+def test_bad_test_changes_shape_is_rejected(record_property, tmp_path):
+    record_property("proves", "100.2")
+    with pytest.raises(planner.Garbled, match="test_changes"):
+        planner.read_output(write(tmp_path, "plan.json", dict(PLAN, test_changes={"tests/t.py::test_b": ""})))
+
+
+# 100.3: a rejected run says why on the issue
+
+def test_rejection_reason_is_saved_and_posted_with_a_run_link(record_property, tmp_path, monkeypatch):
+    record_property("proves", "100.3")
+    calls = []
+    monkeypatch.setattr(planner, "gh", lambda *a, **k: calls.append(a) or "")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r"); monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    out = write(tmp_path, "question.md", "no question here")
+    assert planner.main(["x", "check", "9", out]) == 1
+    assert calls == [], "100.3: something was posted by the check itself"
+    assert planner.main(["x", "rejected", "9", out]) == 0
+    assert [c[:2] for c in calls] == [("issue", "comment")]
+    assert "**Plan rejected:** question.md must hold one question" in calls[0][-1], f"100.3: {calls[0][-1]}"
+    assert "https://github.com/o/r/actions/runs/42" in calls[0][-1], "100.3: no link to the run"
+
+
+def test_a_run_that_failed_before_handing_back_still_says_so(record_property, tmp_path, monkeypatch):
+    record_property("proves", "100.3")
+    calls = []
+    monkeypatch.setattr(planner, "gh", lambda *a, **k: calls.append(a) or "")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    planner.main(["x", "rejected", "9", str(tmp_path)])
+    assert "the planner run failed before handing anything back" in calls[0][-1]
+
+
+def test_workflow_posts_the_reason_only_on_failure_and_never_hands_the_planner_a_key(record_property):
+    record_property("proves", "100.3")
+    text, parts = steps()
+    step = next(p for p in parts if p.startswith("name: Say on the issue why the plan was rejected"))
+    assert "if: failure()" in step and "dokima.planner rejected" in step
+    names = [p.split("\n")[0] for p in parts]
+    assert names.index("name: Planner (Claude Code)") < names.index("id: app"), "100.3: key minted before the planner ran"
+    for name in ("name: Push the tests", "name: Write the plan into the issue, or post the question"):
+        assert "if: success()" in parts[names.index(name)], f"100.3: {name} could run after a rejection"
