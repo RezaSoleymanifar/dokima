@@ -1,10 +1,12 @@
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
-from dokima import plan, planner
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from dokima import plan, planner  # noqa: E402
 
 WORKFLOW = os.path.join(os.path.dirname(__file__), "..", ".github/workflows/planner.yml")
 PLAN = {"objective": "Slow calls return a job id", "criteria": ["A slow call returns a job id within 20 s", "The job id is unique"],
