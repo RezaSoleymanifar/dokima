@@ -41,9 +41,9 @@ def state(check):
 
 
 def criterion_line(repo, text, check):
-    """One criterion: its circle, then the word "Criteria" (the link to GitHub's proof once a check exists), then its words."""
+    """One criterion: its circle, then the words "Acceptance criteria" (the link to GitHub's proof once a check exists), then its words."""
     st = state(check)
-    word = "Criteria" if st == "none" else f"[Criteria]({check['html_url']})"
+    word = "Acceptance criteria" if st == "none" else f"[Acceptance criteria]({check['html_url']})"
     return f"{icon(repo, st)} {word}: {text}"
 
 
@@ -111,10 +111,10 @@ def render(repo, issue, words, pr, check_runs, worker, page="issue"):
     title = stage(issue["approved_at"], worker, pr, list(by_key.values()), full_suite)
     lines = [plan.CARD_START, f"### {title}", links_row(repo, issue, pr, worker, check_runs, page), ""]
     if not words["goals"]:
-        lines += ["This issue has no goals and criteria yet.", ""]
+        lines += ["This issue has no objective and acceptance criteria yet.", ""]
     for goal in words["goals"]:
         # The criteria sit in one indented block (a description list), so every line, wrapped ones too, keeps the indent.
-        lines += [f"**Goal: {goal['text']}**", "", "<dl><dd>", ""]
+        lines += [f"**Objective: {goal['text']}**", "", "<dl><dd>", ""]
         for c in goal["criteria"]:
             lines.append(criterion_line(repo, c["text"], by_key.get(f"{issue['number']}.{c['n']}")))
             lines.append(f"*Verified by: {c['verified_by'] or 'not stated'}*")

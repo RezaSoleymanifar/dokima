@@ -4,7 +4,7 @@ Dokima's job is to move your attention from the work to the verification. The ca
 
 The same card sits at the top of the issue and at the top of its PR, so you see one status in both places.
 
-- **Before work starts:** each goal, its checks, and how each check will be verified. Plus what is deliberately *not* checked.
+- **Before work starts:** each objective, its acceptance criteria, and how each check will be verified. Plus what is deliberately *not* checked.
 - **After work ends:** each check marked passed or failed, with a link to the proof.
 
 ## Example
@@ -12,7 +12,7 @@ The same card sits at the top of the issue and at the top of its PR, so you see 
 **Before**
 
 ```markdown
-Goal: nothing reaches main unless tests pass
+Objective: nothing reaches main unless tests pass
 - ☐ A failing pull request can't merge. Verify: open one with a broken test, attempt the merge.
 - ☐ A passing pull request can merge. Verify: fix the test, show it green and mergeable.
 
@@ -22,7 +22,7 @@ Not checked: whether the tests themselves are good.
 **After**
 
 ```markdown
-Goal: nothing reaches main unless tests pass
+Objective: nothing reaches main unless tests pass
 - ✅ A failing pull request can't merge. Proof: <link to the red test run and blocked merge>
 - ✅ A passing pull request can merge. Proof: <link to the green test run>
 

@@ -24,30 +24,36 @@ WORK_BRANCH = re.compile(r"work/issue-(\d+)")
 CARD_START = "<!-- dokima-card -->"
 CARD_END = "<!-- /dokima-card -->"
 
-# Older checkbox format: "- [ ] Goal: ..." then indented "- [ ] Done when: ..." and "Verified by: ...".
+# Checkbox format: "- [ ] Objective: ..." then indented "- [ ] Acceptance criteria: ..." and "Verified by: ...".
+# The older words (Goal, Done when) read the same.
 CHECKBOX = re.compile(r"^(\s*)[-*] \[( |x|X)\] (.+)$")
 VERIFIED = re.compile(r"^\s+Verified by:\s*(.+)$", re.I)
-CRITERION_PREFIX = re.compile(r"^(?:Done when|Criteria|Criterion):\s*", re.I)
-GOAL_PREFIX = re.compile(r"^Goal:\s*", re.I)
+CRITERION_PREFIX = re.compile(r"^(?:Acceptance criteria|Acceptance criterion|Done when|Criteria|Criterion):\s*", re.I)
+GOAL_PREFIX = re.compile(r"^(?:Objective|Goal):\s*", re.I)
 NOT_CHECKED = re.compile(r"^\*\*Not checked:\*\*\s*(.+)$", re.I)
 # Card format, written by the card workflow.
-CARD_GOAL = re.compile(r"^\*\*Goal: (.+)\*\*$")
+CARD_GOAL = re.compile(r"^\*\*(?:Objective|Goal): (.+)\*\*$")
 CARD_CRITERION = re.compile(r'^(?:&emsp;)?<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[(.*)\]\(https?://[^)\s]*\)|(.*?))<br>$')
 CARD_VERIFIED = re.compile(r"^(?:&emsp;)?<sub>Verified by: (.*)</sub>$")
 # Current card layout: criteria sit inside an indented block, as their circle, then
-# the word "Criteria" (a link once checked), then their words.
-BLOCK_CRITERION = re.compile(r'^<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[Criteria\]\(https?://[^)\s]*\)|Criteria): (.*?)(?:<br>)?$')
+# the words "Acceptance criteria" (a link once checked), then their words. Older cards said "Criteria".
+BLOCK_CRITERION = re.compile(r'^<img [^>]*alt="(?:passed|failed|running|none)"[^>]*> (?:\[(?:Acceptance criteria|Criteria)\]\(https?://[^)\s]*\)|Acceptance criteria|Criteria): (.*?)(?:<br>)?$')
 BLOCK_VERIFIED = re.compile(r"^\*?Verified by: (.*?)\*?$")
 
 
 def parse(body):
     """The plan's words: goals with their criteria (numbered from 1 across the issue), Not checked, and notes.
 
-    Notes are any other lines outside the card, kept as they were written.
+    Notes are any other lines outside the card, kept as they were written. A folded section
+    (<details> ... </details>, such as Context) is always notes: nothing inside it is plan.
     """
-    goals, n, gap, notes, in_card = [], 0, None, [], False
+    goals, n, gap, notes, in_card, in_fold = [], 0, None, [], False, False
     for line in (body or "").splitlines():
         stripped = line.strip()
+        if not in_card and (in_fold or stripped.startswith("<details")):
+            in_fold = "</details>" not in stripped
+            notes.append(line)
+            continue
         if stripped == CARD_START:
             in_card = True
             continue
