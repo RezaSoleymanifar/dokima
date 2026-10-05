@@ -160,3 +160,11 @@ def test_a_question_is_posted_as_a_comment_and_the_body_is_untouched(record_prop
     assert planner.main(["x", "post", "9", write(tmp_path, "question.md", "Which way?")]) == 0
     assert [c[:2] for c in calls] == [("issue", "comment")], f"80.3: expected one comment, got {calls}"
     assert calls[0][-1].endswith("Which way?")
+
+
+def test_no_one_line_command_is_cut_short_by_a_yaml_comment(record_property):
+    record_property("proves", "80.1")
+    for workflow in ("planner.yml", "worker.yml"):
+        for line in open(os.path.join(os.path.dirname(WORKFLOW), workflow)):
+            value = line.strip()[len("run:"):] if line.strip().startswith("run:") else ""
+            assert " #" not in value, f"80.1: in {workflow}, YAML reads everything after ' #' as a comment: {line.strip()}"
