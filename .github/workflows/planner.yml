@@ -42,7 +42,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           N: ${{ github.event.issue.number }}
-        run: gh issue view "$N" -R "$GITHUB_REPOSITORY" --json number,title,body -q '"Issue #\(.number): \(.title)\n\n\(.body)"' > /tmp/issue.md && cat /tmp/issue.md
+        run: |
+          gh issue view "$N" -R "$GITHUB_REPOSITORY" --json number,title,body -q '"Issue #\(.number): \(.title)\n\n\(.body)"' > /tmp/issue.md
+          cat /tmp/issue.md
       - name: Start from the issue's branch if it exists, else from main
         if: steps.who.outputs.ok == 'true'
         env:
