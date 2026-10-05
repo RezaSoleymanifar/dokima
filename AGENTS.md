@@ -53,7 +53,7 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 6. **Review.** The reviewer leaves a PR review and a list of proposed issues.
 7. **Merge.** The owner approves. Auto-merge and the merge queue merge it once every check passes (planned).
 
-Commands count only as the first line of an owner's comment: `/plan`, `/work`, `/review` (re-run the reviewer, for example after replying in prose to its proposals) and `/issue` (create every issue on the latest proposed list, each linking back). Amending the current issue goes through `/plan`. (Commands are planned; today `plan` and `work` labels start the stages.)
+Commands count only as the first line of an owner's comment: `/plan`, `/work`, `/review` followed by prose in the same comment (re-runs the reviewer with your words, for example changes to its proposed issues) and `/issue` (create every issue on the latest proposed list, each linking back). Amending the current issue goes through `/plan`. (Commands are planned; today `plan` and `work` labels start the stages.)
 
 ## Labels and the board
 
