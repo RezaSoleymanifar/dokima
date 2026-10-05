@@ -18,8 +18,8 @@ Raise a doubt only with evidence you can point at: a file and line, a commit, an
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
 # The plan
-**Goal: one sentence, what changes for the owner when this is done.**
-Criteria, numbered N.1, N.2 ... (N is the issue number). Each is something you can observe: what the owner sees, a file,
+**Objective: one sentence, what changes for the owner when this is done.**
+Acceptance criteria, numbered N.1, N.2 ... (N is the issue number). Each is something you can observe: what the owner sees, a file,
 an exit code, a number with its unit. Never an adjective. Include the empty, error and waiting states the issue implies.
 Non-goals (optional): what this deliberately does not do.
 Scope: every file the worker may change, one per line, path or path:name. Changes outside it are flagged loudly on the PR.
