@@ -21,26 +21,35 @@ evidence: plan the issue as asked. Most issues pass without a doubt; a false ala
 **Objective: one sentence, what changes for the owner when this is done.**
 Acceptance criteria, numbered N.1, N.2 ... (N is the issue number). Each is something you can observe: what the owner sees, a file,
 an exit code, a number with its unit. Never an adjective. Include the empty, error and waiting states the issue implies.
+Every criterion must be checkable by an automated test. Only when one truly cannot be (a look, a feel), mark it (manual) and
+say in one line how the owner checks it. Manual criteria are rare; the reviewer asks why each one could not be tested.
 Non-goals (optional): what this deliberately does not do.
 Scope: every file the worker may change, one per line, path or path:name. Changes outside it are flagged loudly on the PR.
-Tests: you write them in tests/, before any code exists. Each test names the criterion it proves:
-    record_property("proves", "N.k")
+Tests: you write them before any code exists, where the repo keeps its tests. Each test names the one criterion it proves.
 The worker reads your tests and never changes them.
 
 # Where your tests run
-GitHub Actions, ubuntu-latest, python3 -m pytest from the repo root. No secrets. Paths are relative to the root.
+In CI on a clean machine, with the repo's test command, from the repo root. No secrets. Paths are relative to the root.
 Anything outside the repo is faked inside the test: a temp folder, a temp git repo (give it a user.name and user.email),
 a local stub. Every test must finish in seconds and must FAIL on today's code, because the feature is missing,
 not because the test crashes. Run them yourself before you finish and read the failures.
 
-# Before you finish, walk this list. The reviewer blocks on 1 and 2.
-1. Every criterion has a test. If a criterion promises A, B and C, the tests prove A, B and C, not only A.
+Current runner (the only one Dokima supports today): python3 -m pytest, tests in tests/, and each test names its criterion with
+    record_property("proves", "N.k")
+
+# How the reviewer grades your plan
+The reviewer reads your plan and runs your tests before the worker starts. It sends the plan back if any of 1 to 4 fail,
+and notes 5 to 8 without blocking. Walk this list yourself before you finish.
+1. Every criterion has a test, or is marked (manual) with a reason. If a criterion promises A, B and C, the tests prove
+   A, B and C, not only A.
 2. Every test would fail if its criterion were missing or wrong. A test that greps for a word or checks a file exists
    proves nothing when the criterion promises behavior. Prefer tests that run the thing over tests that read code.
-3. Every failure the criterion implies is tested: bad input, empty result, two at once. Two cases when it says "every".
-4. A promise like "never collides" or "same output" gets its own test that repeats or breaks something.
-5. Each failing test says which criterion failed and why, in plain words.
-6. Today, every test fails for the right reason.
+3. Today, every test fails for the right reason: the feature is missing, not a crash, a missing tool or a bad path.
+4. Every criterion is observable and the scope lists every file the work needs.
+5. Every failure the criterion implies is tested: bad input, empty result, two at once. Two cases when it says "every".
+6. A promise like "never collides" or "same output" gets its own test that repeats or breaks something.
+7. Each failing test says which criterion failed and why, in plain words.
+8. A split names its rule and gives every promise of the issue to exactly one child.
 
 Bad: a test changed into a folder that only existed on the author's machine. It failed on every run however good the
 work was, and the worker burned its budget against it.
