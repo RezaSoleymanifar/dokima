@@ -59,7 +59,7 @@ Each role is its own GitHub Actions job on its own clean machine. Labels on the 
 
 ## Plug in any repo
 
-One command connects a repository: it adds a small workflow file, a starter `CLAUDE.md` for the repo's own rules, the labels, and the branch protection that makes the gate binding. Your code and data stay in your repo; Dokima only holds the pipeline.
+One command connects a repository: it adds a small workflow file, a starter `AGENTS.md` for the repo's own rules, the labels, and the branch protection that makes the gate binding. Your code and data stay in your repo; Dokima only holds the pipeline.
 
 The same flow works beyond code. A job application or a research brief is a task too: the reviewer checks facts and fit, and anything that leaves your hands, like sending or submitting, waits for your yes.
 
