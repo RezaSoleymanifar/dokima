@@ -1,12 +1,14 @@
 # Dokima
 
-**Agents are capable but unreliable. Dokima makes the system around them trustworthy.**
+**Coding agents now out-code us on narrow tasks. The bottleneck is knowing their work is actually done.**
+
+Dokima moves your effort from writing code to verifying it: you assign, agents build, and nothing merges until it's proven. That clears the bottleneck, so you can hand off more work and run a fleet of agents with confidence.
 
 Dokima is an agent runtime that uses GitHub Actions as its orchestrator. You describe a task in a GitHub issue; isolated AI sessions plan it, build it and review it; and nothing reaches your main branch until it is proven.
 
 No servers to run. No database. Your repo, its issues and its pull requests are the whole system.
 
-> Status: in active development. The first slice is being built now; see [Roadmap](#roadmap). Full documentation: the [Dokima wiki](https://github.com/RezaSoleymanifar/dokima/wiki).
+> Status: in active development. The first slice is being built now; see [Roadmap](#roadmap). Full documentation: the [Dokima wiki](https://github.com/dokima-dev/dokima/wiki).
 
 ## You check the verification, not the work
 
