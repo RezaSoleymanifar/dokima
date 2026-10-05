@@ -73,16 +73,16 @@ jobs:
       - name: Check what the planner handed back
         if: steps.who.outputs.ok == 'true'
         run: python3 -m dokima.planner check "${{ github.event.issue.number }}" /tmp/dokima-out
-      # The app's token is minted only now, after the planner has finished and its
-      # output has passed the check.
+      # The app's token is minted only now, after the planner has finished. It writes
+      # the plan only when the check passed, and otherwise only says why it failed.
       - id: app
-        if: steps.who.outputs.ok == 'true'
+        if: always() && steps.who.outputs.ok == 'true'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
       - name: Push the tests
-        if: steps.who.outputs.ok == 'true'
+        if: success() && steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
@@ -96,7 +96,12 @@ jobs:
           git commit -m "Tests for #$N"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
       - name: Write the plan into the issue, or post the question
-        if: steps.who.outputs.ok == 'true'
+        if: success() && steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: python3 -m dokima.planner post "${{ github.event.issue.number }}" /tmp/dokima-out
+      - name: Say on the issue why the plan was rejected
+        if: failure() && steps.who.outputs.ok == 'true' && steps.app.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.planner rejected "${{ github.event.issue.number }}" /tmp/dokima-out
