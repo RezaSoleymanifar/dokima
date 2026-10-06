@@ -8,6 +8,7 @@ The plan's own check lives in dokima/planner.py; this module adds review.json an
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,60 +22,165 @@ def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
-def issue_text(repo, number):
-    """The issue as it stands: title, body and every comment with its author, oldest first."""
-    d = json.loads(gh("issue", "view", str(number), "-R", repo, "--json", "number,title,body,comments"))
-    parts = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"]
-    for c in d["comments"]:
-        parts += ["", f"### {c['author']['login']} ({c['createdAt']})", "", c["body"]]
-    return "\n".join(parts) + "\n"
-
-
+MARK = "<!-- dokima-record -->"
+BOT = os.environ.get("DOKIMA_BOT", "dokima-runtime")
 HANDBACK = {"planner": "plan.json", "reviewer": "review.json", "worker": "work.json"}
 
 
-def records_dir(number):
-    """Where an issue's records live: one JSON file per agent run, in order, on the issue's branch."""
-    return os.path.join(".dokima", str(number))
+def linked_prs(repo, number):
+    """Pull requests built for the issue: from its work or try branch."""
+    found = []
+    for head in (f"work/issue-{number}", f"try/issue-{number}"):
+        found += json.loads(gh("pr", "list", "-R", repo, "--head", head, "--state", "all", "--json", "number"))
+    return sorted({p["number"] for p in found})
 
 
-def records(number):
-    """Every record of the issue, oldest first, as (path, data)."""
-    d = records_dir(number)
-    paths = sorted(glob.glob(os.path.join(d, "*.json"))) if os.path.isdir(d) else []
-    return [(p, json.load(open(p))) for p in paths]
+def conversation(repo, number):
+    """The issue and its pull requests as one list of comments, oldest first, each saying where it was written."""
+    d = json.loads(gh("issue", "view", str(number), "-R", repo, "--json", "number,title,body,comments"))
+    items = [{**c, "where": f"issue #{number}"} for c in d["comments"]]
+    for pr in linked_prs(repo, number):
+        p = json.loads(gh("pr", "view", str(pr), "-R", repo, "--json", "comments,reviews"))
+        items += [{**c, "where": f"PR #{pr}"} for c in p["comments"]]
+        items += [{"author": r["author"], "body": r["body"], "createdAt": r["submittedAt"], "where": f"PR #{pr} review ({r['state'].lower()})"}
+                  for r in p["reviews"] if r.get("body")]
+        for n in json.loads(gh("api", f"repos/{repo}/pulls/{pr}/comments", "--paginate")):
+            items.append({"author": {"login": n["user"]["login"]}, "body": n["body"], "createdAt": n["created_at"],
+                          "where": f"PR #{pr} line note on {n['path']}:{n.get('line') or n.get('original_line')}"})
+    items.sort(key=lambda c: c["createdAt"])
+    return d, items
 
 
-def latest(number, role, passed=True):
+def issue_text(d, items):
+    """The issue as it stands: title, body and every comment with its author and where it was written, oldest first."""
+    parts = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"]
+    for c in items:
+        parts += ["", f"### {c['author']['login']} on {c['where']} ({c['createdAt']})", "", c["body"]]
+    return "\n".join(parts) + "\n"
+
+
+def records(items):
+    """Every agent record in the conversation, oldest first. Only comments the bot posted count: anyone can paste text."""
+    out = []
+    for c in items:
+        body = c.get("body") or ""
+        if (c.get("author") or {}).get("login") != BOT or MARK not in body:
+            continue
+        m = re.search(r"```json\n(.*?)\n```", body, re.S)
+        try:
+            out.append(json.loads(m.group(1)) if m else None)
+        except json.JSONDecodeError:
+            continue
+    return [r for r in out if isinstance(r, dict)]
+
+
+def latest(recs, role, passed=True):
     """The newest record of a role whose hand-back passed its check, or None."""
-    for path, r in reversed(records(number)):
+    for r in reversed(recs):
         if r.get("role") == role and (r.get("check", {}).get("passed") or not passed):
             return r
     return None
 
 
-def record(number, role, stage, out, check_text, passed, meta):
-    """Write this run's record: its hand-back, the code check's verdict and where it came from. Returns the path.
+def approved(recs):
+    """True when the newest passed plan has a plan review after it, and the newest such review approves it."""
+    plans = [i for i, r in enumerate(recs) if r.get("role") == "planner" and r.get("check", {}).get("passed")]
+    if not plans:
+        return False
+    reviews = [r for r in recs[plans[-1] + 1:] if r.get("role") == "reviewer" and r.get("stage") == "plan"
+               and r.get("check", {}).get("passed")]
+    return bool(reviews) and reviews[-1]["handback"].get("verdict") == "approve"
 
-    The record is written by code after the agent has stopped, so the agent never writes or edits a record."""
-    d = records_dir(number)
-    os.makedirs(d, exist_ok=True)
-    seq = len(glob.glob(os.path.join(d, "*.json"))) + 1
-    path = os.path.join(d, f"{seq:02d}-{role}{'-' + stage if stage else ''}.json")
+
+def is_record(c, role=None, stage=None):
+    """True when a comment is a record the bot posted, of the given role and stage when given."""
+    if (c.get("author") or {}).get("login") != BOT or MARK not in (c.get("body") or ""):
+        return False
+    r = records([c])
+    return bool(r) and (role is None or (r[0].get("role") == role and (r[0].get("stage") or "") == (stage or "")))
+
+
+def owner_notes(items, role, stage, owners):
+    """The owner's words since this agent's last run (every comment, review and line note), numbered N1, N2...
+
+    On a first run that is everything the owner has written. Each must be answered by id in the hand-back."""
+    last = max([i for i, c in enumerate(items) if is_record(c, role, stage)], default=-1)
+    notes = [c for c in items[last + 1:] if (c.get("author") or {}).get("login") in owners and (c.get("body") or "").strip()]
+    return [{"id": f"N{i}", "where": c["where"], "at": c["createdAt"], "text": c["body"]} for i, c in enumerate(notes, 1)]
+
+
+def open_blockers(recs, stage):
+    """The blockers of the newest review at this stage, unless it approved; these must be answered by id."""
+    for r in reversed(recs):
+        if r.get("role") == "reviewer" and (r.get("stage") or "") == stage and r.get("check", {}).get("passed"):
+            return [] if r["handback"].get("verdict") == "approve" else r["handback"].get("blockers", [])
+    return []
+
+
+def problems_round(role, h, pack_dir):
+    """Every open blocker and every owner note this round must be answered by id; nothing skipped, nothing invented."""
+    load = lambda name: json.load(open(os.path.join(pack_dir, name))) if os.path.exists(os.path.join(pack_dir, name)) else []
+    notes, blockers = {n["id"] for n in load("owner_notes.json")}, {b["id"] for b in load("open_blockers.json")}
+    bad = []
+    answered = [a.get("id") for a in h.get("owner_notes", []) if isinstance(a, dict)]
+    if sorted(answered) != sorted(notes):
+        missing, extra = sorted(notes - set(answered)), sorted(set(answered) - notes)
+        bad += [f"owner note {n} is not answered" for n in missing] + [f"owner note {n} does not exist" for n in extra]
+    if role == "reviewer":
+        for a in h.get("owner_notes", []):
+            if not isinstance(a.get("addressed"), bool) or not str(a.get("evidence", "")).strip():
+                bad.append(f"owner note {a.get('id')} needs addressed true or false, and evidence")
+        if any(a.get("addressed") is False for a in h.get("owner_notes", [])) and h.get("verdict") == "approve":
+            bad.append("an owner note that is not addressed is a blocker, so the review cannot approve")
+        carried = set(h.get("resolved", [])) | {b.get("id") for b in h.get("blockers", [])}
+        bad += [f"earlier blocker {b} is neither resolved nor still listed" for b in sorted(blockers - carried)]
+    else:
+        for a in h.get("owner_notes", []):
+            if a.get("answer") not in ("done", "disagree") or not str(a.get("why", "")).strip():
+                bad.append(f"owner note {a.get('id')} needs done or disagree, and why")
+        replied = {r.get("blocker") for r in h.get("replies", []) if isinstance(r, dict)}
+        bad += [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
+    return bad
+
+
+def build_record(role, stage, out, check_text, passed, meta):
+    """This run's record: its hand-back, the code check's verdict and where it came from. Written by code, never the agent."""
     hb = os.path.join(out, HANDBACK[role])
     try:
         handback = json.load(open(hb))
     except (OSError, json.JSONDecodeError) as e:
         handback = {"missing": f"{HANDBACK[role]}: {e}"}
-    dropped = os.path.join(out, "dropped.txt")
     rec = {"role": role, "stage": stage or None, **meta, "handback": handback,
-           "check": {"passed": passed, "problems": [l for l in check_text.splitlines() if l.strip()]}}
+           "check": {"passed": passed, "problems": [l for l in check_text.splitlines() if l.strip()] if not passed else []}}
+    dropped = os.path.join(out, "dropped.txt")
     if os.path.exists(dropped):
         rec["dropped_by_fence"] = [l for l in open(dropped).read().splitlines() if l.strip()]
-    with open(path, "w") as f:
-        json.dump(rec, f, indent=1)
-        f.write("\n")
-    return path
+    return rec
+
+
+def render(rec):
+    """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
+    role, h = rec["role"], rec["handback"]
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker"}[role]
+    lines = [MARK, f"**{head}**" + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
+    if not rec["check"]["passed"]:
+        lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
+    elif role == "planner" and h.get("kind") == "feature":
+        lines += ["", f"Proposes a split: {h.get('feature', '')}", ""]
+        lines += [f"{i}. {st.get('title', '')}" for i, st in enumerate(h.get("stories", []), 1)]
+    elif role == "planner":
+        lines += ["", h.get("user_story") or h.get("question") or ""]
+    elif role == "reviewer":
+        lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
+        lines += [f"- **{b.get('id')}** ({b.get('criterion')}): {b.get('problem')}" for b in h.get("blockers", [])]
+    else:
+        lines += ["", h.get("summary", "")]
+    if role == "planner" and h.get("questions"):
+        lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
+        lines += [f"- {q}" for q in h["questions"]]
+    lines += ["", f"<details><summary>Full record · <a href=\"{rec.get('run', '')}\">run</a></summary>", "", "```json",
+              json.dumps(rec, indent=1), "```", "", "</details>"]
+    return "\n".join(lines) + "\n"
 
 
 def models_used(log_dir):
@@ -91,32 +197,27 @@ def models_used(log_dir):
     return sorted(seen)
 
 
-def approved(number):
-    """True when the newest passed plan has a plan review after it, and the newest such review approves it."""
-    recs = records(number)
-    plans = [i for i, (_, r) in enumerate(recs) if r.get("role") == "planner" and r.get("check", {}).get("passed")]
-    if not plans:
-        return False
-    reviews = [r for _, r in recs[plans[-1] + 1:] if r.get("role") == "reviewer" and r.get("stage") == "plan"
-               and r.get("check", {}).get("passed")]
-    return bool(reviews) and reviews[-1]["handback"].get("verdict") == "approve"
-
-
 def pack(repo, number, role, stage, dest):
-    """Build the starting pack: the issue with every comment, every earlier record, and the latest passed plan.
-
-    The pull request review also gets the worker's session log from its run, to look for gaming."""
+    """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
+    and the newest passed plan. The pull request review also gets the worker's session log from its run."""
+    d, items = conversation(repo, number)
+    recs = records(items)
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
-    open(os.path.join(dest, "issue.md"), "w").write(issue_text(repo, number))
-    for path, _ in records(number):
-        shutil.copy(path, os.path.join(dest, "in", os.path.basename(path)))
-    plan = latest(number, "planner")
-    if role == "worker" and not approved(number):
+    owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+    json.dump(owner_notes(items, role, stage, owners), open(os.path.join(dest, "owner_notes.json"), "w"), indent=1)
+    answers_to = {"planner": "plan", "worker": "pr", "reviewer": stage}[role]
+    json.dump(open_blockers(recs, answers_to), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
+    open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
+    for i, r in enumerate(recs, 1):
+        name = f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
+        json.dump(r, open(os.path.join(dest, "in", name), "w"), indent=1)
+    plan = latest(recs, "planner")
+    if role == "worker" and not approved(recs):
         return False
     if plan:
         json.dump(plan["handback"], open(os.path.join(dest, "plan.json"), "w"), indent=1)
     if stage == "pr":
-        work = latest(number, "worker", passed=False)
+        work = latest(recs, "worker", passed=False)
         if work and work.get("run_id"):
             gh("run", "download", str(work["run_id"]), "-R", repo, "-n", f"worker-{number}", "-D", os.path.join(dest, "worker-run"))
     return bool(plan)
@@ -246,8 +347,38 @@ def problems_pack(role, stage, dest):
     return bad
 
 
+COMMANDS = {"/plan": "planner", "/work": "worker", "/review": "reviewer"}
+
+
+def command_of(body):
+    """The stage a comment starts: its first line's first word, when that word is a command; otherwise None."""
+    first = (body or "").strip().splitlines()[0].split() if (body or "").strip() else []
+    return COMMANDS.get(first[0].lower()) if first else None
+
+
+def issue_of_pr(head, body):
+    """The issue a pull request was built for: from its branch (work/issue-N or try/issue-N), else 'Closes #N'."""
+    m = re.match(r"(?:work|try)/issue-(\d+)$", head or "") or re.search(r"(?i)\b(?:closes|fixes|resolves) #(\d+)", body or "")
+    return m.group(1) if m else None
+
+
+def route(body, on_pr, number, head="", pr_body=""):
+    """What a code owner's comment starts: {role, stage, issue}, or None when it starts nothing.
+
+    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue."""
+    role = command_of(body)
+    if not role:
+        return None
+    issue = issue_of_pr(head, pr_body) if on_pr else str(number)
+    if not issue:
+        return None
+    stage = ("pr" if on_pr else "plan") if role == "reviewer" else ""
+    return {"role": role, "stage": stage, "issue": issue}
+
+
 def main(argv):
-    """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE | agent record N ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR"""
+    """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE |
+    agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -259,12 +390,34 @@ def main(argv):
             print(b)
         return 1 if bad else 0
     if argv[1] == "record":
-        number, role, stage, out, check_file, passed, log_dir = argv[2:9]
+        role, stage, out, check_file, passed, log_dir = argv[2:8]
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "commit_before": os.environ.get("BASE"),
                 "started_by": os.environ.get("GITHUB_ACTOR"), "models": models_used(log_dir),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
-        print(record(number, role, stage, out, text, passed == "true", meta))
+        rec = build_record(role, stage, out, text, passed == "true", meta)
+        json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
+    if argv[1] == "check-round":
+        try:
+            h = json.load(open(argv[3]))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"{argv[3]}: {e}")
+            return 1
+        bad = problems_round(argv[2], h if isinstance(h, dict) else {}, argv[4])
+        for b in bad:
+            print(b)
+        return 1 if bad else 0
+    if argv[1] == "route":
+        on_pr = os.environ.get("ON_PR") == "true"
+        head, pr_body = os.environ.get("HEAD", ""), ""
+        if on_pr:
+            p = json.loads(gh("pr", "view", os.environ["NUMBER"], "-R", os.environ["GITHUB_REPOSITORY"], "--json", "headRefName,body"))
+            head, pr_body = p["headRefName"], p["body"]
+        r = route(os.environ.get("BODY", ""), on_pr, os.environ.get("NUMBER", ""), head, pr_body)
+        for k, v in (r or {}).items():
+            print(f"{k}={v}")
         return 0
     print(main.__doc__)
     return 2

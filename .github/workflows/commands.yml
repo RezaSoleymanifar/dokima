@@ -1,0 +1,46 @@
+name: commands
+run-name: "${{ github.event.comment.body }}"
+# The listener. A code owner's comment whose first line starts with /plan, /work or /review starts that stage, on the
+# issue or on its pull request. Everything after the command, and every other comment, review and line note, reaches
+# the agent through its pack. A comment with no command starts nothing, and bots never start anything. Reviews are
+# not listened to: Approve only ever means merge. On an issue /review grades the plan; on a pull request, the work.
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+jobs:
+  route:
+    if: >-
+      github.event.comment.user.type == 'User' && startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-24.04
+    outputs:
+      role: ${{ steps.r.outputs.role }}
+      stage: ${{ steps.r.outputs.stage }}
+      issue: ${{ steps.r.outputs.issue }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - id: r
+        env:
+          BODY: ${{ github.event.comment.body }}
+          ON_PR: ${{ github.event.issue.pull_request != null }}
+          NUMBER: ${{ github.event.issue.number }}
+          SENDER: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" || { echo "::notice::$SENDER is not a code owner."; exit 0; }
+          python3 -m dokima.agent route >> "$GITHUB_OUTPUT"
+  run:
+    needs: route
+    if: needs.route.outputs.role != ''
+    uses: ./.github/workflows/agent.yml
+    secrets: inherit
+    with:
+      role: ${{ needs.route.outputs.role }}
+      stage: ${{ needs.route.outputs.stage }}
+      issue: ${{ needs.route.outputs.issue }}
