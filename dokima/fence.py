@@ -5,6 +5,7 @@ its own machine reaches them. What gets pushed is decided here, by code: every t
 to the build's starting commit, and every other change outside the plan's scope is undone. The dropped paths are listed
 so the owner sees them.
 """
+import json
 import os
 import re
 import subprocess
@@ -53,8 +54,10 @@ def fence(base, scope):
 
 
 def main(argv):
-    """fence BASE ISSUE_FILE: apply the fence and print each dropped path."""
-    dropped = fence(argv[1], scope_of(open(argv[2]).read()))
+    """fence BASE PLAN: apply the fence and print each dropped path. PLAN is plan.json, or the issue text holding the plan."""
+    text = open(argv[2]).read()
+    scope = json.loads(text).get("scope", []) if argv[2].endswith(".json") else scope_of(text)
+    dropped = fence(argv[1], scope)
     for p in dropped:
         print(p)
     return 0
