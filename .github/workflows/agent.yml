@@ -1,10 +1,10 @@
 name: agent
 run-name: "${{ inputs.role }}${{ inputs.role == 'reviewer' && format(' ({0})', inputs.stage) || '' }} for #${{ inputs.issue }}"
-# Runs one agent by hand on a fresh GitHub machine: the components of Dokima's flow, before the pipeline wires them.
-# Code builds the agent's starting pack from GitHub's records (the issue and its comments, plus the JSON hand-backs of
-# the runs named in `from`). The agent runs its own deterministic check before it finishes, and code runs it again.
-# The hand-back JSON and the full session log are saved on this run's page; pass this run's id in `from` to the next.
-# Work happens on try/issue-N, so this never touches the label-driven flow on work/issue-N.
+# Runs one agent on a fresh GitHub machine: the components of Dokima's flow, before the pipeline wires them.
+# Everything the agent needs is gathered by code: the issue with every comment, and every earlier record in
+# .dokima/N/ on try/issue-N. The agent runs its own deterministic check before it finishes; code runs it again,
+# then writes this run's record (hand-back, check verdict, run, models) into .dokima/N/ and pushes it. Records never
+# expire: they are the data the cards will be drawn from. Session logs stay on the run page.
 on:
   workflow_dispatch:
     inputs:
@@ -20,10 +20,6 @@ on:
       issue:
         description: Issue number
         required: true
-      from:
-        description: Earlier run ids whose hand-backs to bring in, comma-separated (oldest first)
-        required: false
-        default: ""
 concurrency:
   group: agent-${{ inputs.issue }}
   cancel-in-progress: false
@@ -42,6 +38,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PACK: /tmp/pack
       OUT: /tmp/dokima-out
+      MODEL: claude-opus-5-5
     steps:
       - uses: actions/checkout@v5
         with:
@@ -58,7 +55,6 @@ jobs:
             || { echo "::error title=Not started::$SENDER is not a code owner."; exit 1; }
       - name: Starting branch
         run: |
-          git -c protocol.version=2 fetch -q origin main
           if git ls-remote --exit-code --heads origin "try/issue-$N" >/dev/null; then
             git fetch -q origin "try/issue-$N" && git checkout -q -B "try/issue-$N" FETCH_HEAD
             if [ "$ROLE" = worker ]; then
@@ -72,16 +68,10 @@ jobs:
           echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Build the starting pack
         run: |
-          python3 -m dokima.agent pack "$N" "$PACK" "${{ inputs.from }}"
-          PLAN=$(ls "$PACK"/in/run-*-plan.json 2>/dev/null | sort -t- -k2 -n | tail -1)
-          echo "PLAN=$PLAN" >> "$GITHUB_ENV"
-          if [ "$ROLE" != planner ] && [ -z "$PLAN" ]; then
-            echo "::error title=No plan::Bring in the planner's run with 'from'."; exit 1
-          fi
-          if [ "$STAGE" = pr ]; then
-            git diff origin/main...HEAD > "$PACK/diff.patch"
-          fi
-          ls -R "$PACK" | head -50
+          python3 -m dokima.agent pack "$N" "$ROLE" "$STAGE" "$PACK" \
+            || { echo "::error title=No plan::No passed plan in .dokima/$N yet, or (for the worker) no plan review approving the newest plan."; exit 1; }
+          if [ "$STAGE" = pr ]; then git diff origin/main...HEAD -- . ':(exclude).dokima' > "$PACK/diff.patch"; fi
+          ls -R "$PACK" | head -60
       - name: Install pytest and Claude Code
         run: pip install pytest && npm install -g @anthropic-ai/claude-code
       - name: All tests, run by code before the reviewer reads the pull request
@@ -89,6 +79,10 @@ jobs:
         run: |
           python3 -m pytest -q -rA --junitxml="$PACK/tests.xml" > "$PACK/tests.txt" 2>&1 || true
           tail -5 "$PACK/tests.txt"
+      - name: Code checks the pack has everything this role needs
+        run: |
+          python3 -m dokima.agent check-pack "$ROLE" "$STAGE" "$PACK" > /tmp/pack-check.txt \
+            || { echo "::error title=Incomplete pack::$(paste -sd'; ' /tmp/pack-check.txt)"; exit 1; }
       - name: The agent (Claude Code)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -96,52 +90,62 @@ jobs:
         run: |
           mkdir -p "$OUT"
           case "$ROLE$STAGE" in
-            planner)     GRADE=plan-grade;   CHECK="python3 -m dokima.planner check $N $OUT" ;;
-            reviewerplan) GRADE=plan-grade;  CHECK="python3 -m dokima.agent check review $OUT/review.json" ;;
-            reviewerpr)  GRADE=result-grade; CHECK="python3 -m dokima.agent check review $OUT/review.json" ;;
-            worker)      GRADE=result-grade; CHECK="python3 -m dokima.agent check work $OUT/work.json" ;;
+            planner)      GRADE=plan-grade;   CHECK="python3 -m dokima.planner check $N $OUT" ;;
+            reviewerplan) GRADE=plan-grade;   CHECK="python3 -m dokima.agent check review $OUT/review.json" ;;
+            reviewerpr)   GRADE=result-grade; CHECK="python3 -m dokima.agent check review $OUT/review.json" ;;
+            worker)       GRADE=result-grade; CHECK="python3 -m dokima.agent check work $OUT/work.json" ;;
           esac
           echo "CHECK=$CHECK" >> "$GITHUB_ENV"
           claude -p "$(cat dokima/roles/$GRADE.md dokima/roles/$ROLE.md)
 
           # Your pack
-          Issue #$N, as it stands with every comment, is in $PACK/issue.md. Earlier hand-backs, if any, are in $PACK/in/
-          (named run-<run id>-<file>, oldest run first; the newest plan.json there is the plan).$( [ "$STAGE" = pr ] && echo " The pull request's diff against main is $PACK/diff.patch; all tests, run by code on this machine, are in $PACK/tests.txt and $PACK/tests.xml. The worker's session log is in $PACK/in/run-<id>-session-log/." )
+          - $PACK/issue.md: issue #$N as it stands, with every comment (the owner's words and answers are here).
+          - $PACK/in/: every earlier record of this issue, oldest first (NN-role.json). Each holds that run's hand-back,
+            the code check's verdict and the run it came from. Answer open blockers by id from the newest review.
+          - $PACK/plan.json: the newest plan that passed its check (absent until the planner has one).$( [ "$STAGE" = pr ] && echo "
+          - $PACK/diff.patch: the work against main. $PACK/tests.txt and tests.xml: all tests, run by code on this machine.
+          - $PACK/worker-run/: the worker's session log." )
           You are on branch try/issue-$N. Your stage is: ${STAGE:-$ROLE}.
           Hand back into $OUT. Before you finish, run this check on your hand-back and fix everything it reports:
             $CHECK" \
-            --dangerously-skip-permissions --max-turns 60
+            --model "$MODEL" --dangerously-skip-permissions --max-turns 60
       - name: Code checks the hand-back
-        run: $CHECK
+        if: always()
+        run: |
+          set +e; $CHECK > "$OUT/check.txt" 2>&1; rc=$?; set -e
+          cat "$OUT/check.txt"
+          echo "PASSED=$([ $rc = 0 ] && echo true || echo false)" >> "$GITHUB_ENV"
       - name: Fence - only in-scope changes, the planner's tests as committed
         if: env.ROLE == 'worker'
         run: |
-          python3 -m dokima.fence "$BASE" "$PLAN" > "$OUT/dropped.txt"
+          python3 -m dokima.fence "$BASE" "$PACK/plan.json" > "$OUT/dropped.txt"
           [ -s "$OUT/dropped.txt" ] && echo "::warning title=Dropped by the fence::$(paste -sd, "$OUT/dropped.txt")" || true
-          python3 -m pytest -q 2>&1 | tail -3 || true
+          git checkout -q "$BASE" -- .dokima 2>/dev/null || true
+      - name: Write this run's record
+        if: always()
+        run: |
+          REC=$(python3 -m dokima.agent record "$N" "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects)
+          echo "REC=$REC" >> "$GITHUB_ENV"
+          { echo "## $REC"; echo '```json'; cat "$REC"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Save the hand-back and the full session log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.role }}${{ inputs.role == 'reviewer' && format('-{0}', inputs.stage) || '' }}-${{ inputs.issue }}
+          name: ${{ inputs.role }}-${{ inputs.issue }}
           path: |
             /tmp/dokima-out/
             /home/runner/.claude/projects/
           if-no-files-found: warn
-          retention-days: 30
-      - name: Show the hand-back
-        if: always()
-        run: |
-          for f in "$OUT"/*.json; do [ -f "$f" ] && { echo "**$(basename "$f")**"; echo '```json'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; done; true
-      # The app's token is minted only now, after the agent has finished and its hand-back passed.
+          retention-days: 90
+      # The app's token is minted only now, after the agent has finished.
       - id: app
-        if: env.ROLE != 'reviewer'
+        if: always() && env.REC != ''
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - name: Push to try/issue-N
-        if: env.ROLE != 'reviewer'
+      - name: Push the record (and the planner's tests or the worker's code) to try/issue-N
+        if: always() && env.REC != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
@@ -149,7 +153,13 @@ jobs:
           BOT_ID=$(gh api "users/${SLUG}[bot]" --jq .id)
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
-          if [ "$ROLE" = planner ]; then git add tests; else git add -A; fi
-          git diff --cached --quiet && { echo "Nothing to push."; exit 0; }
-          git commit -qm "$ROLE for #$N (agent run ${{ github.run_id }})"
+          git add "$REC"
+          if [ "$PASSED" = true ] && [ "$ROLE" = planner ]; then git add tests; fi
+          if [ "$PASSED" = true ] && [ "$ROLE" = worker ]; then git add -A -- . ':(exclude).dokima'; fi
+          git commit -qm "$ROLE${STAGE:+ ($STAGE)} for #$N: record $(basename "$REC")"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:try/issue-$N"
+      - name: Fail closed on a bad hand-back or the wrong model
+        if: always()
+        run: |
+          python3 -c "import json,sys; r=json.load(open('$REC')); m=r.get('models') or []; bad=[x for x in m if x!='$MODEL']; sys.exit(print('models:', m) or (1 if bad or not m else 0))"
+          [ "$PASSED" = true ] || { echo "::error title=Hand-back rejected::$(paste -sd'; ' "$OUT/check.txt")"; exit 1; }
