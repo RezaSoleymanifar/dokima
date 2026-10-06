@@ -1,4 +1,4 @@
-"""Keep the project board's Status and "Waiting on" current, from GitHub events.
+"""Keep the project board's Status and Action ("Needs you") current, from GitHub events.
 
     python3 -m dokima.board     # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number")
 
@@ -19,33 +19,33 @@ def linked(body):
 
 
 def decide(event, p):
-    """[(kind, number, status, waiting)]: kind is "issue" or "pr"; waiting None clears it."""
+    """[(kind, number, status, needs_you)]: kind is "issue" or "pr"; needs_you True marks it for the owner."""
     out = []
     if event == "issues":
         n, action = p["issue"]["number"], p["action"]
         if action == "labeled" and p["label"]["name"] == "plan":
-            out.append(("issue", n, "Plan", "Dokima"))
+            out.append(("issue", n, "Plan", False))
         elif action == "labeled" and p["label"]["name"] == "work":
-            out.append(("issue", n, "Work", "Dokima"))
+            out.append(("issue", n, "Work", False))
         elif action == "closed":
-            out.append(("issue", n, "Done", None))
+            out.append(("issue", n, "Done", False))
     elif event == "issue_comment" and p["action"] == "created":
         if p["comment"]["user"]["type"] == "Bot" and p["comment"]["body"].startswith(YOUR_TURN):
-            out.append(("issue", p["issue"]["number"], "Plan", "You"))
+            out.append(("issue", p["issue"]["number"], "Plan", True))
     elif event in ("pull_request", "pull_request_target"):
         pr, action = p["pull_request"], p["action"]
         both = [("pr", pr["number"])] + [("issue", n) for n in linked(pr.get("body"))]
         if action in ("opened", "reopened", "synchronize"):
-            out += [(k, n, "Review", "Dokima") for k, n in both]
+            out += [(k, n, "Review", False) for k, n in both]
         elif action == "closed":
-            out += [(k, n, "Done", None) for k, n in both if k == "pr" or pr.get("merged")]
+            out += [(k, n, "Done", False) for k, n in both if k == "pr" or pr.get("merged")]
     elif event == "pull_request_review" and p["action"] == "submitted":
         pr = p["pull_request"]
         if p["review"]["state"].lower() == "changes_requested":
-            out += [("pr", pr["number"], "Work", "Dokima")] + [("issue", n, "Work", "Dokima") for n in linked(pr.get("body"))]
+            out += [("pr", pr["number"], "Work", False)] + [("issue", n, "Work", False) for n in linked(pr.get("body"))]
     elif event == "workflow_run" and p["action"] == "completed":
         for pr in p["workflow_run"].get("pull_requests") or []:
-            out.append(("pr", pr["number"], "Review", "You"))
+            out.append(("pr", pr["number"], "Review", True))
     return out
 
 
@@ -91,10 +91,10 @@ def sync(event, payload, spec, repo, q=gql):
     if not spec or not changes:
         return []
     board = Board(spec, repo, q)
-    for kind, number, status, waiting in changes:
+    for kind, number, status, needs_you in changes:
         iid = board.item(kind, number)
         board.set(iid, "Status", status)
-        board.set(iid, "Waiting on", waiting)
+        board.set(iid, "Action", "Needs you" if needs_you else None)
     return changes
 
 
