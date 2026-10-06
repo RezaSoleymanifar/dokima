@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
-  issues: read
+  issues: write
 jobs:
   work:
     environment: keys
@@ -61,6 +61,12 @@ jobs:
       - name: Install pytest and Claude Code
         if: steps.who.outputs.ok == 'true'
         run: pip install pytest && npm install -g @anthropic-ai/claude-code
+      - name: Red before work, the plan's tests must fail on main
+        if: steps.who.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ github.event.issue.number }}
+        run: python3 -m dokima.red "$N"
       - name: Worker (Claude Code)
         if: steps.who.outputs.ok == 'true'
         env:
