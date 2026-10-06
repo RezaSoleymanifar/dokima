@@ -41,7 +41,6 @@ jobs:
       N: ${{ inputs.issue }}
       ROLE: ${{ inputs.role }}
       STAGE: ${{ inputs.role == 'reviewer' && inputs.stage || '' }}
-      GH_TOKEN: ${{ github.token }}
       PACK: /tmp/pack
       OUT: /tmp/dokima-out
       MODEL: claude-opus-5-5
@@ -60,6 +59,8 @@ jobs:
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" \
             || { echo "::error title=Not started::$SENDER is not a code owner."; exit 1; }
       - name: Starting branch
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git ls-remote --exit-code --heads origin "try/issue-$N" >/dev/null; then
             git fetch -q origin "try/issue-$N" && git checkout -q -B "try/issue-$N" FETCH_HEAD
@@ -76,6 +77,8 @@ jobs:
           echo "LOG=$LOG" >> "$GITHUB_ENV"
           echo "LOG_URL=${{ github.server_url }}/${{ github.repository }}/blob/logs/$LOG" >> "$GITHUB_ENV"
       - name: Build the starting pack
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           export OWNERS=$(python3 -m dokima.plan approvers)
           python3 -m dokima.agent pack "$N" "$ROLE" "$STAGE" "$PACK" \
