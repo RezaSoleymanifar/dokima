@@ -16,6 +16,7 @@ permissions:
   issues: read
 jobs:
   plan:
+    environment: keys
     if: github.event.label.name == 'plan'
     runs-on: ubuntu-24.04
     steps:
