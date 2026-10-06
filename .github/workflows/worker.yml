@@ -53,6 +53,8 @@ jobs:
         run: |
           if git ls-remote --exit-code --heads origin "work/issue-$N" >/dev/null; then
             git fetch -q origin "work/issue-$N" && git checkout -q -B "work/issue-$N" FETCH_HEAD
+            # Build on today's main, not on whatever main was when the branch began.
+            git -c user.name=dokima -c user.email=dokima@users.noreply.github.com merge -q --no-edit origin/main
           else
             git checkout -q -b "work/issue-$N"
           fi
