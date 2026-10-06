@@ -119,6 +119,47 @@ def problems_round(role, h, pack_dir):
     return [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
 
 
+def story_body(parent, i, story, parent_title):
+    """A story's issue body, drawn by code from the approved plan, so the child planner starts from exactly what was agreed."""
+    lines = ["<!-- dokima-card -->", "<!-- /dokima-card -->", "",
+             f"<details open><summary>From the approved plan of #{parent}, story {i}</summary>", "",
+             f"**Part of:** #{parent} {parent_title}", "", f"**User story:** {story.get('user_story', '')}", ""]
+    if story.get("context"):
+        lines += [f"**Context:** {story['context']}", ""]
+    lines += ["**Acceptance criteria:**"]
+    lines += [f"- {c.get('text', '')} ([source]({c.get('source', '')}))" for c in story.get("acceptance_criteria", [])]
+    if story.get("non_functional"):
+        lines += ["", "**Non-functional:**"] + [f"- {n.get('text', '')} ({n.get('why', '')})" for n in story["non_functional"]]
+    return "\n".join(lines + ["", "</details>"]) + "\n"
+
+
+def file_split(repo, parent, recs):
+    """File the stories of the newest approved split as sub-issues of the parent, in order, with their blocked-by links.
+
+    Returns the record of what was filed. Filing twice files nothing new: the newest split record is returned instead."""
+    done = latest(recs, "split", passed=True)
+    if done:
+        return done
+    plan = latest(recs, "planner")["handback"]
+    title = json.loads(gh("issue", "view", str(parent), "-R", repo, "--json", "title"))["title"]
+    filed = []
+    for i, st in enumerate(plan["stories"], 1):
+        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title)).strip()
+        number = int(url.rstrip("/").split("/")[-1])
+        node = json.loads(gh("api", f"repos/{repo}/issues/{number}"))["id"]
+        gh("api", "-X", "POST", f"repos/{repo}/issues/{parent}/sub_issues", "-F", f"sub_issue_id={node}")
+        filed.append({"story": i, "issue": number, "title": st["title"], "id": node,
+                      "blocked_by": [d + 1 for d in st.get("depends_on", [])]})
+    by_story = {f["story"]: f for f in filed}
+    for f in filed:
+        for d in f["blocked_by"]:
+            try:
+                gh("api", "-X", "POST", f"repos/{repo}/issues/{f['issue']}/dependencies/blocked_by", "-F", f"issue_id={by_story[d]['id']}")
+            except subprocess.CalledProcessError:
+                f.setdefault("link_failed", []).append(by_story[d]["issue"])
+    return {"role": "split", "stage": None, "handback": {"stories": filed}, "check": {"passed": True, "problems": []}}
+
+
 def build_record(role, stage, out, check_text, passed, meta):
     """This run's record: its hand-back, the code check's verdict and where it came from. Written by code, never the agent."""
     hb = os.path.join(out, HANDBACK[role])
@@ -137,7 +178,7 @@ def build_record(role, stage, out, check_text, passed, meta):
 def render(rec):
     """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
     role, h = rec["role"], rec["handback"]
-    head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker"}[role]
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
     lines = [MARK, f"**{head}**" + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
     if not rec["check"]["passed"]:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
@@ -149,6 +190,14 @@ def render(rec):
     elif role == "reviewer":
         lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
         lines += [f"- **{b.get('id')}** ({b.get('criterion')}): {b.get('problem')}" for b in h.get("blockers", [])]
+        if h.get("issues_found"):
+            lines += ["", "**Issues found outside this one** (proposals until you file them):"]
+            lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
+    elif role == "split":
+        num = {f["story"]: f["issue"] for f in h.get("stories", [])}
+        lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" (blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
+                         for f in h.get("stories", [])]
+        lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
     else:
         lines += ["", h.get("summary", "")]
     if role == "planner" and h.get("questions"):
@@ -218,6 +267,8 @@ def run_report(path):
 def footnote(rec):
     """One line under every card: model, time, turns, tokens and cost, and the link to the full conversation."""
     r = rec.get("report") or {}
+    if rec.get("role") == "split":
+        return f"<sub>Filed by code, no model · [run]({rec.get('run', '')})</sub>"
     pretty = lambda m: (lambda x: f"{x.group(1).title()} {x.group(2)}.{x.group(3)}" if x else m)(re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m))
     parts = [", ".join(pretty(m) for m in rec.get("models") or []) or "model unknown"]
     if r.get("duration_ms"):
@@ -281,10 +332,6 @@ def problems_questions(qs):
 def problems_review(r):
     """Everything wrong with a review.json, as plain sentences; empty when it is well formed."""
     bad = []
-    if r.get("stage") not in ("plan", "pr"):
-        bad.append('stage must be "plan" or "pr"')
-    if not isinstance(r.get("round"), int) or r.get("round", 0) < 1:
-        bad.append("round must be a whole number from 1")
     if r.get("verdict") not in VERDICTS:
         bad.append("verdict must be approve, block or escalate")
     if not str(r.get("summary", "")).strip():
@@ -311,8 +358,9 @@ def problems_review(r):
         bad.append("a block needs at least one blocker")
     if len(r.get("notes", [])) > 3:
         bad.append("at most three notes")
-    if r.get("stage") == "plan" and r.get("outside_plan"):
-        bad.append("outside_plan is for a pull request only")
+    for i, f in enumerate(r.get("issues_found") or [], 1):
+        if not isinstance(f, dict) or not all(str(f.get(k, "")).strip() for k in ("title", "why", "evidence")):
+            bad.append(f"issue found {i} needs a title, why and evidence")
     if "questions" in r:
         bad.append("the reviewer never asks the owner; escalate on round three instead")
     return bad
@@ -379,6 +427,13 @@ def problems_pack(role, stage, dest):
     issue = os.path.join(dest, "issue.md")
     if os.path.exists(issue) and "## Comments" not in open(issue).read():
         bad.append("issue.md has no comments section")
+    plan_path = os.path.join(dest, "plan.json")
+    if key == "worker" and os.path.isfile(plan_path):
+        try:
+            if json.load(open(plan_path)).get("kind") == "feature":
+                bad.append("plan.json is a split: /work files its stories as sub-issues, no worker builds it")
+        except (json.JSONDecodeError, AttributeError):
+            pass
     for name in ("plan.json",):
         path = os.path.join(dest, name)
         if os.path.isfile(path):
@@ -465,6 +520,24 @@ def main(argv):
     if argv[1] == "transcript":
         secrets = [v for k, v in os.environ.items() if k.startswith("SCRUB_")]
         sys.stdout.write(transcript(argv[2], secrets))
+        return 0
+    if argv[1] == "split":
+        repo, parent = os.environ["GITHUB_REPOSITORY"], argv[2]
+        _, items = conversation(repo, parent)
+        recs = records(items)
+        if not approved(recs) or latest(recs, "planner")["handback"].get("kind") != "feature":
+            print("The newest plan is not an approved split.")
+            return 1
+        rec = file_split(repo, parent, recs)
+        rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+        if not any(r.get("role") == "split" for r in recs):
+            gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
+        return 0
+    if argv[1] == "kind":
+        _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
+        recs = records(items)
+        plan = latest(recs, "planner")
+        print(plan["handback"].get("kind", "") if plan and approved(recs) else "")
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

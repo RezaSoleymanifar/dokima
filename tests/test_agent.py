@@ -21,7 +21,10 @@ def test_a_good_review_passes_and_each_malformation_is_named(record_property):
     assert agent.problems_review(GOOD_REVIEW) == []
     assert agent.problems_review({**GOOD_REVIEW, "verdict": "approve"}) == ["an approve has no blockers"]
     assert agent.problems_review({**GOOD_REVIEW, "blockers": []}) == ["a block needs at least one blocker"]
-    assert "stage must be" in agent.problems_review({**GOOD_REVIEW, "stage": "x"})[0]
+    found = [{"title": "Board ignores closed PRs", "why": "cards go stale", "evidence": "board.py:40"}]
+    assert agent.problems_review({**GOOD_REVIEW, "issues_found": found}) == []
+    assert agent.problems_review({**GOOD_REVIEW, "issues_found": [{"title": "x"}]}) == ["issue found 1 needs a title, why and evidence"]
+    assert "1. Board ignores closed PRs: cards go stale" in agent.render(rec("reviewer", "plan", {**GOOD_REVIEW, "issues_found": found}))
     bare = agent.problems_review({**GOOD_REVIEW, "blockers": [{"id": "B1"}]})
     assert {"blocker B1 has no criterion", "blocker B1 has no evidence", "blocker B1 has no fix"} <= set(bare)
     assert agent.problems_review({**GOOD_REVIEW, "notes": [{}] * 4}) == ["at most three notes"]
@@ -277,3 +280,49 @@ def test_the_footnote_reports_claudes_own_numbers_and_links_the_conversation(rec
     assert all(x in f for x in ("Opus 5.5", "4.0 min", "23 turns", "401,000 tokens in, 18,000 out", "$3.20 at API prices", "[conversation](https://g/log.md)"))
     bare = agent.footnote({"models": ["claude-opus-5-5"], "report": agent.run_report(str(tmp_path / "none.json"))})
     assert "min" not in bare and "$" not in bare and "tokens" not in bare
+
+
+SPLIT = {"kind": "feature", "feature": "f", "stories": [
+    {"title": "First", "user_story": "u1", "acceptance_criteria": [{"text": "a", "source": "https://x/1"}], "non_functional": [], "depends_on": []},
+    {"title": "Second", "user_story": "u2", "acceptance_criteria": [{"text": "b", "source": "https://x/2"}], "non_functional": [], "depends_on": [0]}]}
+
+
+def test_an_approved_split_is_filed_as_sub_issues_with_their_order(record_property, monkeypatch):
+    """Each story becomes a sub-issue of the parent, in order, with blocked-by links to the stories it depends on; filing twice files nothing."""
+    record_property("proves", "agent.20")
+    calls = []
+    def fake_gh(*args):
+        calls.append(args)
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"title": "Parent"})
+        if args[:2] == ("issue", "create"):
+            return f"https://github.com/o/r/issues/{200 + sum(1 for c in calls if c[:2] == ('issue', 'create'))}\n"
+        if args[0] == "api" and args[1].startswith("repos/o/r/issues/2"):
+            return json.dumps({"id": 9000 + int(args[1].split("/")[-1])})
+        return "{}"
+    monkeypatch.setattr(agent, "gh", fake_gh)
+    recs = [rec("planner", handback=SPLIT), rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})]
+    r = agent.file_split("o/r", 139, recs)
+    assert [(f["story"], f["issue"], f["blocked_by"]) for f in r["handback"]["stories"]] == [(1, 201, []), (2, 202, [1])]
+    titles = [c[c.index("--title") + 1] for c in calls if c[:2] == ("issue", "create")]
+    assert titles == ["First", "Second"]
+    assert ("api", "-X", "POST", "repos/o/r/issues/139/sub_issues", "-F", "sub_issue_id=9201") in calls
+    assert ("api", "-X", "POST", "repos/o/r/issues/202/dependencies/blocked_by", "-F", "issue_id=9201") in calls
+    body = [c[c.index("--body") + 1] for c in calls if c[:2] == ("issue", "create")][1]
+    assert "Part of:** #139 Parent" in body and "u2" in body and "[source](https://x/2)" in body
+    card = agent.render(r)
+    assert "#202 Second (blocked by #201)" in card and "no model" in card
+    calls.clear()
+    again = agent.file_split("o/r", 139, recs + [r])
+    assert again == r and not [c for c in calls if c[:2] == ("issue", "create")], "filing twice filed new issues"
+
+
+def test_a_worker_handed_a_split_refuses(record_property, tmp_path):
+    """The worker's pack check names a split plan, so no worker ever builds a whole feature."""
+    record_property("proves", "agent.21")
+    d = tmp_path / "p"
+    (d / "in").mkdir(parents=True)
+    (d / "issue.md").write_text("# Issue #9: t\n\nbody\n\n## Comments\n")
+    (d / "plan.json").write_text(json.dumps(SPLIT))
+    assert agent.problems_pack("worker", "", str(d)) == ["plan.json is a split: /work files its stories as sub-issues, no worker builds it"]
+    assert agent.problems_pack("reviewer", "plan", str(d)) == []
