@@ -26,7 +26,7 @@ def test_tampering_is_undone_and_in_scope_work_survives(record_property, tmp_pat
 
     Simulates a worker that changes the app (allowed) and also edits the planner's test, adds a conftest that would
     skip everything, edits the README and adds a stray file, then checks what survives the fence and what it names."""
-    record_property("proves", "fence.1")
+    record_property("proves", "144.1")
     base = repo(tmp_path, monkeypatch)
     (tmp_path / "app.py").write_text("x = 2\n")
     (tmp_path / "tests" / "test_app.py").write_text("def test_x():\n    assert True\n")
@@ -43,7 +43,7 @@ def test_tampering_is_undone_and_in_scope_work_survives(record_property, tmp_pat
 
 def test_an_honest_build_is_untouched(record_property, tmp_path, monkeypatch):
     """A worker that changes only in-scope, non-test files loses nothing and nothing is named."""
-    record_property("proves", "fence.2")
+    record_property("proves", "144.2")
     base = repo(tmp_path, monkeypatch)
     (tmp_path / "app.py").write_text("x = 3\n")
     assert fence.fence(base, fence.scope_of(ISSUE)) == [], "an honest build had changes dropped"
@@ -52,6 +52,6 @@ def test_an_honest_build_is_untouched(record_property, tmp_path, monkeypatch):
 
 def test_scope_is_read_from_the_plan(record_property):
     """The Scope list on the issue is read exactly, stopping at the next section."""
-    record_property("proves", "fence.3")
+    record_property("proves", "144.3")
     assert fence.scope_of(ISSUE) == ["app.py", "tests/test_app.py"]
     assert fence.scope_of("No scope here.") == []
