@@ -1,7 +1,7 @@
 """The planner's hand-back: one plan.json in the agreed shape, read by code, shown on the run page.
 
-Covers #138: the prompt teaches the agreed terms and examples, code accepts the story, feature and
-question kinds, test labels come from what the plan declares, and every run shows what it handed back.
+Covers #138: the prompt teaches the agreed terms and examples, code accepts the story and feature
+kinds (#154 took the lone question away), test labels come from what the plan declares, and every run shows what it handed back.
 """
 import json
 import os
@@ -65,7 +65,7 @@ def test_a_story_is_read_with_criteria_then_non_functional(record_property, tmp_
     (lambda s: s["non_functional"][0].pop("why"), "text and why"),
     (lambda s: s.pop("tests"), "tests as a map"),
     (lambda s: s.update(user_story=" "), "user_story"),
-    (lambda s: s.update(kind="essay"), "kind must be"),
+    (lambda s: s.update(kind="essay"), "user_story"),
 ])
 def test_a_story_missing_a_rule_is_rejected_with_why(record_property, tmp_path, change, why):
     """A story with a criterion with no source, a requirement with no reason, or no declared tests is rejected, saying why.
@@ -79,14 +79,12 @@ def test_a_story_missing_a_rule_is_rejected_with_why(record_property, tmp_path, 
         hand_back(tmp_path, broken)
 
 
-def test_a_question_and_a_feature_are_shown_as_handed_back(record_property, tmp_path):
-    """A question and a feature are handed back in plan.json and shown to the owner, not rejected.
+def test_a_feature_is_shown_as_handed_back(record_property, tmp_path):
+    """A feature is handed back in plan.json and shown to the owner, not rejected.
 
-    Hands back each kind and checks it is read; a feature with one story is rejected.
+    Hands back a feature with two stories and checks it is read; a feature with one story is rejected.
     """
     record_property("proves", "138.2")
-    kind, text = hand_back(tmp_path, {"kind": "question", "question": "Split it?", "options": ["Yes", "No"], "recommendation": "Yes"})
-    assert kind == "question" and "Split it?" in text and "Recommended: Yes" in text, "138.2: question not read"
     story = {"title": "t", "user_story": "u", "acceptance_criteria": [], "depends_on": []}
     assert hand_back(tmp_path, {"kind": "feature", "feature": "f", "stories": [story, story]})[0] == "feature", "138.2: feature not read"
     with pytest.raises(planner.Garbled, match="2 to 5"):

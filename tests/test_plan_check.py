@@ -1,0 +1,248 @@
+"""The planner check (#154): only real plans, sources on this issue, named tests that exist under this plan's criteria.
+
+Every test here runs the check the way the agent workflow runs it, `python3 -m dokima.planner check N OUT`, through
+planner.main, inside a temp git repo that holds one older test at the starting commit and the planner's new tests on
+top. A good plan passes (exit 0); each broken one fails (exit 1) and its reason, saved to OUT/rejected.txt for the
+issue, is read back. GITHUB_REPOSITORY is set to o/r and the issue is #9, so this issue's link is
+https://github.com/o/r/issues/9.
+"""
+import copy
+import json
+import os
+import re
+import subprocess
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from dokima import planner  # noqa: E402
+
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+ISSUE = "https://github.com/o/r/issues/9"
+OLD_TESTS = ('def test_old(record_property):\n    """An older test, already in the repo."""\n'
+             '    record_property("proves", "50.1")\n    assert True\n')
+NEW_TESTS = ('def test_id(record_property):\n    """A slow call returns a job id."""\n'
+             '    record_property("proves", "9.1")\n    assert True\n\n\n'
+             'def test_unique(record_property):\n    """Job ids never repeat."""\n'
+             '    record_property("proves", "9.2")\n    assert True\n')
+STORY = {"kind": "user_story", "user_story": "Slow calls return a job id.",
+         "acceptance_criteria": [{"text": "A slow call returns a job id within 20 s.", "source": ISSUE},
+                                 {"text": "Job ids never repeat.", "source": ISSUE + "#issuecomment-123456"}],
+         "non_functional": [{"text": "A failed call says why.", "why": "the owner is never left guessing",
+                             "principle": "fail closed"}],
+         "scope": ["dokima/jobs.py"], "out_of_scope": ["No retries."],
+         "tests": {"9.1": ["tests/test_jobs.py::test_id"], "9.2": ["tests/test_jobs.py::test_unique"],
+                   "9.3": ["tests/test_jobs.py::test_unique"]},
+         "test_changes": {}}
+FEATURE = {"kind": "feature", "feature": "Slow calls run as jobs.",
+           "stories": [{"title": "Job ids", "user_story": "Slow calls return a job id.",
+                        "acceptance_criteria": [{"text": "A slow call returns a job id.", "source": ISSUE}],
+                        "non_functional": [], "depends_on": []},
+                       {"title": "Job status", "user_story": "Owners see each job's status.",
+                        "acceptance_criteria": [{"text": "A job's status is shown.", "source": ISSUE}],
+                        "non_functional": [], "depends_on": [0]}]}
+
+
+@pytest.fixture
+def check(tmp_path, monkeypatch):
+    """A function that hands back the given files and runs the check on issue #9: returns (exit code, reason).
+
+    Each call empties the hand-back folder first, so one test can run the check on a good plan and then a broken one.
+    """
+    repo, out = tmp_path / "repo", tmp_path / "out"
+    repo.mkdir()
+    out.mkdir()
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True).stdout
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_old.py").write_text(OLD_TESTS)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    monkeypatch.setenv("PLANNER_BASE", git("rev-parse", "HEAD").strip())
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    (repo / "tests" / "test_jobs.py").write_text(NEW_TESTS)
+    monkeypatch.chdir(repo)
+
+    def run(files, crit):
+        for old in out.iterdir():
+            old.unlink()
+        for name, content in files.items():
+            (out / name).write_text(content if isinstance(content, str) else json.dumps(content))
+        try:
+            rc = planner.main(["x", "check", "9", str(out)])
+        except Exception as e:  # a crash posts nothing on the issue
+            pytest.fail(f"{crit}: the check crashed with {type(e).__name__}: {e}, instead of rejecting with a reason")
+        rejected = out / "rejected.txt"
+        return rc, rejected.read_text() if rejected.exists() else ""
+    return run
+
+
+def story(change):
+    """A copy of the good story with one change applied."""
+    s = copy.deepcopy(STORY)
+    change(s)
+    return s
+
+
+# 154.1: only a plan, a user_story or a feature, is a hand-back
+
+@pytest.mark.parametrize("files", [
+    {},
+    {"question.md": "Split it into two issues?"},
+    {"plan.json": {"objective": "Slow calls return a job id.", "criteria": ["A job id within 20 s.", "Ids never repeat."],
+                   "non_goals": [], "scope": ["dokima/jobs.py"]}},
+    {"plan.json": {"kind": "question", "question": "Split it?", "options": ["Yes", "No"], "recommendation": "Yes"}},
+    {"plan.json": story(lambda s: s.update(kind="question", question="Split it?"))},
+    {"plan.json": story(lambda s: s.update(kind="essay"))},
+], ids=["nothing", "question.md", "no kind", "question kind", "story marked question", "unknown kind"])
+def test_anything_but_a_story_or_a_feature_is_rejected_saying_the_planner_always_hands_back_a_plan(record_property, check, files):
+    """A question.md, a plan.json with no kind or of kind question is rejected: the planner always hands back a plan.
+
+    First checks a good user_story, a good feature and a story carrying its questions all still pass. Then hands back
+    one of the wrong kinds, runs the check, and checks it fails with a reason that says the planner always hands back
+    a plan, a user_story or a feature, with its questions listed inside it.
+    """
+    record_property("proves", "154.1")
+    for good in (STORY, FEATURE, dict(STORY, questions=["Should ids be numbers? I planned for strings."])):
+        rc, why = check({"plan.json": good}, "154.1")
+        assert rc == 0 and not why, f"154.1: a good {good['kind']} was rejected: {why!r}"
+    rc, why = check(files, "154.1")
+    assert rc == 1, f"154.1: {sorted(files) or 'an empty hand-back'} was accepted; only a user_story or a feature may pass"
+    for words in ("always hands back", "user_story", "feature", "questions"):
+        assert words in why, f"154.1: the reason does not say the planner always hands back a user_story or a feature with its questions inside ({words!r} missing): {why!r}"
+
+
+def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_property):
+    """The planner's prompt offers only the user_story and feature kinds, and the planner workflow never looks for question.md.
+
+    Reads dokima/roles/planner.md: every "kind" it shows is user_story or feature (both still shown), the line naming the
+    kinds and the line saying how the planner ends never offer a question, and the questions list is still taught.
+    Reads .github/workflows/planner.yml and checks question.md appears nowhere while plan.json is still shown.
+    """
+    record_property("proves", "154.1")
+    text = open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read()
+    flat = " ".join(text.split())
+    shown = set(re.findall(r'"kind":\s*"(\w+)"', text))
+    assert shown == {"user_story", "feature"}, f"154.1: the prompt shows the kinds {sorted(shown)}, not exactly user_story and feature"
+    kinds = re.search(r"Exactly one kind:[^.]*\.", flat)
+    assert kinds and "question" not in kinds.group(0), f"154.1: the prompt still offers a question kind: {kinds and kinds.group(0)!r}"
+    ends = re.search(r"End with exactly one of[^.]*\.", flat)
+    assert ends and "question" not in ends.group(0), f"154.1: the prompt still lets the planner end with a question: {ends and ends.group(0)!r}"
+    assert '"questions": [' in flat, "154.1: the prompt no longer teaches the plan's questions list"
+    wf = open(os.path.join(ROOT, ".github", "workflows", "planner.yml")).read()
+    assert "question.md" not in wf, "154.1: the planner workflow still looks for question.md"
+    assert "/tmp/dokima-out/plan.json" in wf, "154.1: the planner workflow no longer shows plan.json"
+
+
+# 154.2: every criterion's source is this issue or one of its comments
+
+@pytest.mark.parametrize("source", [
+    "https://github.com/o/r/issues/139",
+    "https://github.com/o/r/issues/91",
+    "https://github.com/o/r/issues/9139#issuecomment-1",
+    "https://github.com/o/x/issues/9",
+    "https://github.com/o/r/pull/9",
+    "https://example.com/o/r/issues/9",
+    "#9 above",
+    "the owner said so",
+], ids=["parent issue", "longer number", "other issue's comment", "other repo", "pull request", "other host", "bare number", "prose"])
+def test_a_source_outside_this_issue_is_rejected_and_named(record_property, check, source):
+    """A criterion whose source is not this issue's link or one of its comment links is rejected, and the reason names it.
+
+    First checks a story sourced to this issue's link, and one sourced to two of its comments, both pass. Then puts a
+    wrong source on the second criterion, runs the check, and checks it fails with the source in the reason.
+    """
+    record_property("proves", "154.2")
+    for sources in ([ISSUE, ISSUE], [ISSUE + "#issuecomment-1", ISSUE + "#issuecomment-987654321"]):
+        good = story(lambda s: [c.update(source=src) for c, src in zip(s["acceptance_criteria"], sources)])
+        rc, why = check({"plan.json": good}, "154.2")
+        assert rc == 0 and not why, f"154.2: sources {sources} on issue #9 were rejected: {why!r}"
+    rc, why = check({"plan.json": story(lambda s: s["acceptance_criteria"][1].update(source=source))}, "154.2")
+    assert rc == 1, f"154.2: a criterion sourced to {source!r} was accepted on issue #9"
+    assert source in why, f"154.2: the reason does not name the source {source!r}: {why!r}"
+
+
+# 154.3: every named test exists and is filed under one of this plan's criteria
+
+@pytest.mark.parametrize("name", ["tests/test_jobs.py::test_ghost", "tests/test_nowhere.py::test_id"],
+                         ids=["no such test", "no such file"])
+def test_a_named_test_that_is_not_in_the_repo_is_rejected_and_named(record_property, check, name):
+    """A test the plan names that is not in the repo is rejected, and the reason names it.
+
+    Adds a missing test beside a real one under a criterion, runs the check, and checks it fails naming the test.
+    """
+    record_property("proves", "154.3")
+    rc, why = check({"plan.json": story(lambda s: s["tests"]["9.1"].append(name))}, "154.3")
+    assert rc == 1, f"154.3: the plan names {name}, which is not in the repo, and was accepted"
+    assert name in why, f"154.3: the reason does not name the missing test {name}: {why!r}"
+
+
+@pytest.mark.parametrize("key, name", [
+    ("139.1", "tests/test_jobs.py::test_id"),
+    ("9.4", "tests/test_jobs.py::test_id"),
+    ("139.1", "tests/test_old.py::test_old"),
+    ("9.4", "tests/test_old.py::test_old"),
+], ids=["another issue, new test", "past the last, new test", "another issue, older test", "past the last, older test"])
+def test_a_test_filed_under_a_key_that_is_not_a_criterion_is_rejected_and_named(record_property, check, key, name):
+    """A test filed under a key that is not one of this plan's three criteria is rejected, and the reason names the key.
+
+    Files a new test, then an older test, under another issue's number and under 9.4 (past the last criterion), runs the
+    check, and checks it fails with the key in the reason.
+    """
+    record_property("proves", "154.3")
+    rc, why = check({"plan.json": story(lambda s: s["tests"].update({key: [name]}))}, "154.3")
+    assert rc == 1, f"154.3: {name} filed under {key}, which is not a criterion of this plan, was accepted"
+    assert key in why, f"154.3: the reason does not name the key {key}: {why!r}"
+
+
+# 154.4: an older test already in the repo counts as proof
+
+def test_a_criterion_proven_only_by_an_older_test_counts_as_proven(record_property, check):
+    """A criterion proven only by an older test already in the repo counts as proven, not as 'has no test'.
+
+    Files the unchanged older test tests/test_old.py::test_old alone under the third criterion, runs the check, and
+    checks it passes.
+    """
+    record_property("proves", "154.4")
+    rc, why = check({"plan.json": story(lambda s: s["tests"].update({"9.3": ["tests/test_old.py::test_old"]}))}, "154.4")
+    assert "9.3 has no test" not in why, f"154.4: a criterion proven by an older test was called 'has no test': {why!r}"
+    assert rc == 0 and not why, f"154.4: a plan proving 9.3 with an older test was rejected: {why!r}"
+
+
+# 154.5: a value of the wrong type is rejected naming the field, never a crash
+
+@pytest.mark.parametrize("change, field", [
+    (lambda s: s["acceptance_criteria"][0].update(text=5), "text"),
+    (lambda s: s["acceptance_criteria"][0].update(source=9), "source"),
+    (lambda s: s["non_functional"][0].update(text=3), "text"),
+    (lambda s: s["non_functional"][0].update(why=3), "why"),
+    (lambda s: s.update(acceptance_criteria={"text": "x", "source": ISSUE}), "acceptance_criteria"),
+    (lambda s: s.update(non_functional="none"), "non_functional"),
+    (lambda s: s.update(user_story=5), "user_story"),
+    (lambda s: s.update(scope="dokima/jobs.py"), "scope"),
+    (lambda s: s.update(out_of_scope="No retries."), "out_of_scope"),
+    (lambda s: s["tests"].update({"9.1": "tests/test_jobs.py::test_id"}), "tests"),
+    (lambda s: s.update(test_changes=["tests/test_old.py::test_old"]), "test_changes"),
+    (lambda s: s.update(questions="Why?"), "questions"),
+    (lambda s: s.update(kind=5), "kind"),
+    ([], "plan.json"),
+    ("a plan", "plan.json"),
+    (5, "plan.json"),
+], ids=["criterion text", "criterion source", "requirement text", "requirement why", "criteria not a list",
+        "requirements not a list", "user_story", "scope", "out_of_scope", "tests", "test_changes", "questions", "kind",
+        "plan.json a list", "plan.json a string", "plan.json a number"])
+def test_a_value_of_the_wrong_type_is_rejected_naming_the_field(record_property, check, change, field):
+    """A plan.json with a number where text belongs, or a string where a list belongs, is rejected naming the field.
+
+    Breaks one field's type at a time in a good story (or makes the whole plan.json a list, a string or a number), runs
+    the check, and checks it fails with a reason naming that field (or plan.json) instead of crashing.
+    """
+    record_property("proves", "154.5")
+    rc, why = check({"plan.json": story(change) if callable(change) else json.dumps(change)}, "154.5")
+    assert rc == 1, f"154.5: a wrong type in {field} was accepted"
+    assert field in why, f"154.5: the reason does not name the field {field}: {why!r}"
+
+
