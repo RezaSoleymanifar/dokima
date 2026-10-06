@@ -67,10 +67,18 @@ jobs:
           N: ${{ github.event.issue.number }}
         run: |
           mkdir -p /tmp/dokima-out
-          claude -p "$(cat dokima/roles/planner.md)
+          claude -p "$(cat dokima/roles/plan-grade.md dokima/roles/planner.md)
 
           The issue to plan is in /tmp/issue.md; its number N is $N. Hand back into /tmp/dokima-out." \
             --dangerously-skip-permissions --max-turns 40
+      - name: Save the planner's full session log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-session-${{ github.event.issue.number }}-${{ github.run_attempt }}
+          path: /home/runner/.claude/projects/
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Show what the planner handed back
         if: always()
         run: |

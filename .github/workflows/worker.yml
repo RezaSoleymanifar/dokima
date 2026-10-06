@@ -66,10 +66,28 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          claude -p "$(cat dokima/roles/worker.md)
+          claude -p "$(cat dokima/roles/result-grade.md dokima/roles/worker.md)
 
           The issue to build, as approved, is in /tmp/issue.md." \
             --dangerously-skip-permissions --max-turns 40
+      - name: Save the worker's full session log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-session-${{ github.event.issue.number }}-${{ github.run_attempt }}
+          path: /home/runner/.claude/projects/
+          if-no-files-found: ignore
+          retention-days: 30
+      # The judges run on fresh machines from what gets pushed. The fence decides what that is: the planner's tests
+      # exactly as committed, and only in-scope changes. Nothing the worker did to this machine reaches them.
+      - name: Fence - only in-scope changes, the planner's tests as committed
+        if: steps.who.outputs.ok == 'true'
+        run: |
+          python3 -m dokima.fence "$BUILD_BASE" /tmp/issue.md > /tmp/dropped.txt
+          if [ -s /tmp/dropped.txt ]; then
+            echo "::warning title=Dropped by the fence::$(paste -sd, /tmp/dropped.txt)"
+            { echo "## Dropped by the fence"; sed 's/^/- /' /tmp/dropped.txt; } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Tests pass before anything is pushed
         if: steps.who.outputs.ok == 'true'
         run: pytest -q
@@ -103,5 +121,9 @@ jobs:
         run: |
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
           if [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --state open --json number --jq '.[].number')" ]; then
-            gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "Closes #$N"
+            BODY="Closes #$N"
+            [ -s /tmp/dropped.txt ] && BODY="$BODY
+
+            **Dropped by the fence** (the worker changed these; they are outside the plan or are tests): $(paste -sd, /tmp/dropped.txt)"
+            gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "$BODY"
           fi
