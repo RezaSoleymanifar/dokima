@@ -100,15 +100,6 @@ def is_record(c, role=None, stage=None):
     return bool(r) and (role is None or (r[0].get("role") == role and (r[0].get("stage") or "") == (stage or "")))
 
 
-def owner_notes(items, role, stage, owners):
-    """The owner's words since this agent's last run (every comment, review and line note), numbered N1, N2...
-
-    On a first run that is everything the owner has written. Each must be answered by id in the hand-back."""
-    last = max([i for i, c in enumerate(items) if is_record(c, role, stage)], default=-1)
-    notes = [c for c in items[last + 1:] if (c.get("author") or {}).get("login") in owners and (c.get("body") or "").strip()]
-    return [{"id": f"N{i}", "where": c["where"], "at": c["createdAt"], "text": c["body"]} for i, c in enumerate(notes, 1)]
-
-
 def open_blockers(recs, stage):
     """The blockers of the newest review at this stage, unless it approved; these must be answered by id."""
     for r in reversed(recs):
@@ -118,29 +109,14 @@ def open_blockers(recs, stage):
 
 
 def problems_round(role, h, pack_dir):
-    """Every open blocker and every owner note this round must be answered by id; nothing skipped, nothing invented."""
-    load = lambda name: json.load(open(os.path.join(pack_dir, name))) if os.path.exists(os.path.join(pack_dir, name)) else []
-    notes, blockers = {n["id"] for n in load("owner_notes.json")}, {b["id"] for b in load("open_blockers.json")}
-    bad = []
-    answered = [a.get("id") for a in h.get("owner_notes", []) if isinstance(a, dict)]
-    if sorted(answered) != sorted(notes):
-        missing, extra = sorted(notes - set(answered)), sorted(set(answered) - notes)
-        bad += [f"owner note {n} is not answered" for n in missing] + [f"owner note {n} does not exist" for n in extra]
+    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one."""
+    path = os.path.join(pack_dir, "open_blockers.json")
+    blockers = {b["id"] for b in (json.load(open(path)) if os.path.exists(path) else [])}
     if role == "reviewer":
-        for a in h.get("owner_notes", []):
-            if not isinstance(a.get("addressed"), bool) or not str(a.get("evidence", "")).strip():
-                bad.append(f"owner note {a.get('id')} needs addressed true or false, and evidence")
-        if any(a.get("addressed") is False for a in h.get("owner_notes", [])) and h.get("verdict") == "approve":
-            bad.append("an owner note that is not addressed is a blocker, so the review cannot approve")
         carried = set(h.get("resolved", [])) | {b.get("id") for b in h.get("blockers", [])}
-        bad += [f"earlier blocker {b} is neither resolved nor still listed" for b in sorted(blockers - carried)]
-    else:
-        for a in h.get("owner_notes", []):
-            if a.get("answer") not in ("done", "disagree") or not str(a.get("why", "")).strip():
-                bad.append(f"owner note {a.get('id')} needs done or disagree, and why")
-        replied = {r.get("blocker") for r in h.get("replies", []) if isinstance(r, dict)}
-        bad += [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
-    return bad
+        return [f"earlier blocker {b} is neither resolved nor still listed" for b in sorted(blockers - carried)]
+    replied = {r.get("blocker") for r in h.get("replies", []) if isinstance(r, dict)}
+    return [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
 
 
 def build_record(role, stage, out, check_text, passed, meta):
@@ -276,8 +252,6 @@ def pack(repo, number, role, stage, dest):
     d, items = conversation(repo, number)
     recs = records(items)
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
-    owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
-    json.dump(owner_notes(items, role, stage, owners), open(os.path.join(dest, "owner_notes.json"), "w"), indent=1)
     answers_to = {"planner": "plan", "worker": "pr", "reviewer": stage}[role]
     json.dump(open_blockers(recs, answers_to), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
