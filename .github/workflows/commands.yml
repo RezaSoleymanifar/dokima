@@ -1,12 +1,15 @@
 name: commands
 run-name: "${{ github.event.comment.body }}"
 # The listener. A code owner's comment whose first line starts with /plan, /work or /review starts that stage, on the
-# issue or on its pull request. Everything after the command, and every other comment, review and line note, reaches
-# the agent through its pack. A comment with no command starts nothing, and bots never start anything. Reviews are
-# not listened to: Approve only ever means merge. On an issue /review grades the plan; on a pull request, the work.
+# issue or on its pull request, and so does a PR review submitted as a comment or a change request. An Approve never
+# starts anything: it only ever means merge. Everything after the command, and every other comment, review and line
+# note, reaches the agent through its pack. No command, nothing starts; bots never start anything. On an issue
+# /review grades the plan; on a pull request, the work.
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 permissions:
   contents: read
   issues: read
@@ -15,7 +18,9 @@ permissions:
 jobs:
   route:
     if: >-
-      github.event.comment.user.type == 'User' && startsWith(github.event.comment.body, '/')
+      (github.event.comment.user.type || github.event.review.user.type) == 'User' &&
+      startsWith(github.event.comment.body || github.event.review.body, '/') &&
+      github.event.review.state != 'approved' 
     runs-on: ubuntu-24.04
     outputs:
       role: ${{ steps.r.outputs.role }}
@@ -27,9 +32,9 @@ jobs:
           persist-credentials: false
       - id: r
         env:
-          BODY: ${{ github.event.comment.body }}
-          ON_PR: ${{ github.event.issue.pull_request != null }}
-          NUMBER: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body || github.event.review.body }}
+          ON_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           SENDER: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -67,6 +67,9 @@ def test_approve_only_means_merge(record_property):
     for name in os.listdir(workflows):
         if name == "board.yml":  # only moves board cards on a review; it never starts a build
             continue
+        if name == "commands.yml":  # a review's command starts a stage, but never an Approve
+            assert "github.event.review.state != 'approved'" in read(f".github/workflows/{name}")
+            continue
         assert "pull_request_review" not in read(f".github/workflows/{name}")
     assert ".dokima/plans" not in read(".github/workflows/worker.yml")
     assert "Approve the plan" not in read("dokima/card.py")
