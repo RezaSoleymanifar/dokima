@@ -178,14 +178,82 @@ def render(rec):
     if role == "planner" and h.get("questions"):
         lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q}" for q in h["questions"]]
-    lines += ["", f"<details><summary>Full record · <a href=\"{rec.get('run', '')}\">run</a></summary>", "", "```json",
-              json.dumps(rec, indent=1), "```", "", "</details>"]
+    prev = h.get("previous_step") if isinstance(h, dict) else None
+    if isinstance(prev, dict) and any(prev.get(k) for k in ("did", "decided", "open")):
+        lines += ["", "<details><summary>What the previous step did</summary>", ""]
+        for k, label in (("did", "Did"), ("decided", "Decided"), ("open", "Still open")):
+            lines += [f"- **{label}:** {x}" for x in prev.get(k) or []]
+        lines += ["", "</details>"]
+    lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
+              "", footnote(rec)]
     return "\n".join(lines) + "\n"
 
 
 def jsonl_files(root):
     """Every session log under root, hidden folders included (Claude keeps its logs under .claude)."""
     return sorted(os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.endswith(".jsonl"))
+
+
+def scrub(text, secrets):
+    """Remove every secret value from text before it is saved anywhere public."""
+    for v in sorted((x for x in secrets if len(x) >= 8), key=len, reverse=True):
+        text = text.replace(v, "[secret removed]")
+    return text
+
+
+def transcript(log_dir, secrets=()):
+    """A readable transcript of the run's session: what the agent said, each tool it used and a cut of each result."""
+    out, n = [], 0
+    for f in jsonl_files(log_dir):
+        for line in open(f):
+            try:
+                m = json.loads(line).get("message") or {}
+            except json.JSONDecodeError:
+                continue
+            content = m.get("content")
+            for b in ([{"type": "text", "text": content}] if isinstance(content, str) else content or []):
+                kind = b.get("type")
+                if kind == "text" and b.get("text", "").strip() and m.get("role") == "assistant":
+                    out.append(f"**Agent:** {b['text'].strip()}")
+                elif kind == "tool_use":
+                    n += 1
+                    i = b.get("input") or {}
+                    what = i.get("command") or i.get("file_path") or i.get("pattern") or json.dumps(i)
+                    out.append(f"`{n}. {b.get('name')}`\n```\n{str(what)[:2000]}\n```")
+                elif kind == "tool_result":
+                    r = b.get("content")
+                    r = r if isinstance(r, str) else " ".join(x.get("text", "") for x in (r or []) if isinstance(x, dict))
+                    out.append("> " + r.strip()[:1500].replace("\n", "\n> "))
+    return scrub("\n\n".join(out) + "\n", secrets)
+
+
+def run_report(path):
+    """Claude's own end-of-run report: time, turns, tokens and API-equivalent cost, exactly as Claude gave them."""
+    try:
+        d = json.load(open(path))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    u = d.get("usage") or {}
+    return {"duration_ms": d.get("duration_ms"), "turns": d.get("num_turns"), "cost_usd": d.get("total_cost_usd"),
+            "tokens_in": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0),
+            "tokens_out": u.get("output_tokens")}
+
+
+def footnote(rec):
+    """One line under every card: model, time, turns, tokens and cost, and the link to the full conversation."""
+    r = rec.get("report") or {}
+    pretty = lambda m: (lambda x: f"{x.group(1).title()} {x.group(2)}.{x.group(3)}" if x else m)(re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m))
+    parts = [", ".join(pretty(m) for m in rec.get("models") or []) or "model unknown"]
+    if r.get("duration_ms"):
+        parts.append(f"{round(r['duration_ms'] / 60000, 1)} min")
+    if r.get("turns"):
+        parts.append(f"{r['turns']} turns")
+    if r.get("tokens_in") or r.get("tokens_out"):
+        parts.append(f"{r.get('tokens_in', 0):,} tokens in, {r.get('tokens_out') or 0:,} out")
+    if r.get("cost_usd") is not None:
+        parts.append(f"${r['cost_usd']:.2f} at API prices")
+    links = " · ".join(x for x in (f"[conversation]({rec['log']})" if rec.get("log") else "", f"[run]({rec['run']})" if rec.get("run") else "") if x)
+    return "<sub>" + " · ".join(parts) + (" · " + links if links else "") + "</sub>"
 
 
 def models_used(log_dir):
@@ -247,6 +315,11 @@ def problems_review(r):
         bad.append("verdict must be approve, block or escalate")
     if not str(r.get("summary", "")).strip():
         bad.append("summary is empty")
+    prev = r.get("previous_step")
+    if not isinstance(prev, dict) or not any(prev.get(k) for k in ("did", "decided", "open")):
+        bad.append("previous_step must sum up what the planner or worker did, decided and left open")
+    elif sum(len(prev.get(k) or []) for k in ("did", "decided", "open")) > 5:
+        bad.append("previous_step holds at most five lines")
     blockers = r.get("blockers", [])
     if not isinstance(blockers, list):
         bad.append("blockers must be a list")
@@ -398,6 +471,7 @@ def main(argv):
         role, stage, out, check_file, passed, log_dir = argv[2:8]
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "commit_before": os.environ.get("BASE"),
                 "started_by": os.environ.get("GITHUB_ACTOR"), "models": models_used(log_dir),
+                "report": run_report(os.path.join(out, "claude.json")), "log": os.environ.get("LOG_URL"),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
         rec = build_record(role, stage, out, text, passed == "true", meta)
@@ -414,6 +488,10 @@ def main(argv):
         for b in bad:
             print(b)
         return 1 if bad else 0
+    if argv[1] == "transcript":
+        secrets = [v for k, v in os.environ.items() if k.startswith("SCRUB_")]
+        sys.stdout.write(transcript(argv[2], secrets))
+        return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"
         head, pr_body = os.environ.get("HEAD", ""), ""

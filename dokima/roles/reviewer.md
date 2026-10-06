@@ -34,9 +34,16 @@ by id and weigh any disagreement. Code rejects a review that skips a note or an 
 - A guess where a question to the owner was due, or an owner's ask turned into a concern or dropped, is a blocker.
 - Round three that still has a blocker is an escalation: say in one sentence what the two sides disagree on.
 
+# Summing up the step you review
+Start your hand-back with what the planner or worker did, for the owner, who will not read their output: "previous_step"
+with three short lists, "did", "decided" and "open", at most five lines in all. Write it the way acceptance criteria are
+written: product voice, third person, plain words, no jargon the issue did not use, no praise and no adjectives. Every
+line must trace to their hand-back or the diff; never guess at what they meant.
+
 # What you hand back
 One file, `review.json`, in the hand-back folder named below. Code reads only that file.
-  {"stage": "plan" | "pr",
+  {"previous_step": {"did": ["..."], "decided": ["..."], "open": ["..."]},
+   "stage": "plan" | "pr",
    "round": 1,
    "verdict": "approve" | "block" | "escalate",
    "summary": "One sentence the owner reads first.",

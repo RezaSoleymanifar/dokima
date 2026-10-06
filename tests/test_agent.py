@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import agent, fence  # noqa: E402
 
-GOOD_REVIEW = {"stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
+GOOD_REVIEW = {"previous_step": {"did": ["Split the issue into four stories."], "decided": [], "open": ["Three questions."]},
+               "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
                "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No good-case test.",
                              "evidence": "18 passed against a stub.", "fix": "Add one."}],
                "notes": [], "outside_plan": [], "resolved": []}
@@ -239,3 +240,41 @@ def test_owner_notes_are_only_what_the_owner_wrote_since_this_agents_last_run(re
     assert [b["id"] for b in agent.open_blockers([plan, block], "plan")] == ["B1"]
     assert agent.open_blockers([plan, block, ok], "plan") == []
     assert agent.open_blockers([plan, block], "pr") == []
+
+
+def test_the_review_sums_up_the_previous_step_in_at_most_five_lines(record_property):
+    """A review without a summary of what the planner or worker did, or with more than five lines of it, is named."""
+    record_property("proves", "agent.16")
+    assert agent.problems_review({**GOOD_REVIEW, "previous_step": {}}) == ["previous_step must sum up what the planner or worker did, decided and left open"]
+    long = {"did": ["a", "b", "c"], "decided": ["d", "e"], "open": ["f"]}
+    assert agent.problems_review({**GOOD_REVIEW, "previous_step": long}) == ["previous_step holds at most five lines"]
+    body = agent.render(rec("reviewer", "plan", GOOD_REVIEW))
+    assert "What the previous step did" in body and "Split the issue into four stories." in body
+
+
+def test_the_conversation_is_saved_readable_and_without_secrets(record_property, tmp_path):
+    """The transcript shows what the agent said, the tools it used and their results, and every secret value is removed."""
+    record_property("proves", "agent.17")
+    log = tmp_path / ".claude" / "p"
+    log.mkdir(parents=True)
+    secret = "sk-ant-oat01-SECRETSECRET"
+    lines = [{"message": {"role": "assistant", "content": [{"type": "text", "text": "Reading the issue."},
+                                                         {"type": "tool_use", "name": "Bash", "input": {"command": f"echo {secret}"}}]}},
+             {"message": {"role": "user", "content": [{"type": "tool_result", "content": f"token {secret}"}]}}]
+    (log / "s.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    t = agent.transcript(str(tmp_path), [secret])
+    assert "**Agent:** Reading the issue." in t and "1. Bash" in t and "> token" in t
+    assert secret not in t and "[secret removed]" in t
+    assert agent.scrub("abc", ["short"]) == "abc"
+
+
+def test_the_footnote_reports_claudes_own_numbers_and_links_the_conversation(record_property, tmp_path):
+    """Time, turns, tokens and cost come from Claude's end-of-run report; a missing report shows none of them, never a guess."""
+    record_property("proves", "agent.18")
+    (tmp_path / "claude.json").write_text(json.dumps({"duration_ms": 240000, "num_turns": 23, "total_cost_usd": 3.2,
+                                                       "usage": {"input_tokens": 1000, "cache_read_input_tokens": 400000, "output_tokens": 18000}}))
+    r = {"models": ["claude-opus-5-5"], "report": agent.run_report(str(tmp_path / "claude.json")), "log": "https://g/log.md", "run": "https://g/run"}
+    f = agent.footnote(r)
+    assert all(x in f for x in ("Opus 5.5", "4.0 min", "23 turns", "401,000 tokens in, 18,000 out", "$3.20 at API prices", "[conversation](https://g/log.md)"))
+    bare = agent.footnote({"models": ["claude-opus-5-5"], "report": agent.run_report(str(tmp_path / "none.json"))})
+    assert "min" not in bare and "$" not in bare and "tokens" not in bare
