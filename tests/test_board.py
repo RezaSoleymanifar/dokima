@@ -102,3 +102,16 @@ def test_lanes_are_needs_you_or_nothing(record_property):
     gh = FakeGitHub(on_board=True)
     board.sync("issue_comment", {"action": "created", "issue": {"number": 5}, "comment": {"user": BOT, "body": "**Planner question**"}}, "dokima-dev/1", "o/r", q=gh)
     assert any(v.get("o") == "w-you" for _, v in gh.calls), "130.1: a question for the owner did not land in Needs you"
+
+
+# 132: a failed run puts its card in Needs you
+
+def test_failed_run_needs_you():
+    """A failed or timed-out planner or worker run marks its issue Needs you; other outcomes change nothing."""
+    def run(name, conclusion, title):
+        return {"action": "completed", "workflow_run": {"name": name, "conclusion": conclusion, "display_title": title, "pull_requests": []}}
+    assert board.decide("workflow_run", run("planner", "failure", "planner for #81")) == [("issue", 81, "Plan", True)], "132.1"
+    assert board.decide("workflow_run", run("worker", "failure", "worker for #81")) == [("issue", 81, "Work", True)], "132.2"
+    assert board.decide("workflow_run", run("worker", "timed_out", "worker for #81")) == [("issue", 81, "Work", True)], "132.2"
+    for c in ("success", "skipped", "cancelled"):
+        assert board.decide("workflow_run", run("worker", c, "worker for #81 (label plan, ignored)")) == [], "132.3"

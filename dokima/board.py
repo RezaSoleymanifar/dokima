@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
+RUN_FOR = re.compile(r"for #(\d+)")
+STAGE_OF_RUN = {"planner": "Plan", "worker": "Work"}
+FAILED = ("failure", "timed_out")
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 
 
@@ -44,8 +47,14 @@ def decide(event, p):
         if p["review"]["state"].lower() == "changes_requested":
             out += [("pr", pr["number"], "Work", False)] + [("issue", n, "Work", False) for n in linked(pr.get("body"))]
     elif event == "workflow_run" and p["action"] == "completed":
-        for pr in p["workflow_run"].get("pull_requests") or []:
-            out.append(("pr", pr["number"], "Review", True))
+        run = p["workflow_run"]
+        if run.get("name") in STAGE_OF_RUN:
+            m = RUN_FOR.search(run.get("display_title") or "")
+            if m and run.get("conclusion") in FAILED:
+                out.append(("issue", int(m[1]), STAGE_OF_RUN[run["name"]], True))
+        else:
+            for pr in run.get("pull_requests") or []:
+                out.append(("pr", pr["number"], "Review", True))
     return out
 
 
