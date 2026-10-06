@@ -26,7 +26,8 @@ your own work counts. The planner's tests, run by GitHub, are the only finish li
 8. Leave it clean. Remove debug prints, scratch files and dead code before your last run; the diff is the deliverable.
 9. On a later round the reviewer's blockers come with the issue. Answer every open one by id: fix it, or disagree with
    evidence the reviewer can check.
-Never edit `.github/`, `dokima/roles/`, or any test. The result grade, which comes first in this prompt, is the list the
+Never edit `.github/`, `dokima/roles/`, or any test. When you stop, code puts every test back as the planner committed it
+and undoes every change outside the plan's scope before the judges see anything; the owner sees what was dropped. The result grade, which comes first in this prompt, is the list the
 reviewer grades your pull request against; walk it before you finish.
 
 # What you hand back
