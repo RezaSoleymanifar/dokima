@@ -50,20 +50,21 @@ def bring_in(repo, run_ids, dest, logs=False):
 
 
 def problems_questions(qs):
-    """Everything wrong with a hand-back's questions for the owner; each needs a question, two or more options and a pick.
+    """Everything wrong with the planner's questions for the owner: each is one question ending in '?'.
 
-    Only the planner asks, before any work starts, so the owner can answer each with one word."""
+    Options and a recommendation are optional help, and a recommendation must be one of the options when both are given.
+    The owner answers in prose, in their own words."""
     if not isinstance(qs, list):
         return ["questions must be a list"]
     bad = []
     for i, q in enumerate(qs, 1):
         q = q if isinstance(q, dict) else {}
-        text, opts, rec = str(q.get("question", "")).strip(), q.get("options"), str(q.get("recommendation", "")).strip()
-        if not text.endswith("?"):
+        if not str(q.get("question", "")).strip().endswith("?"):
             bad.append(f"question {i} must be one question ending in '?'")
-        if not isinstance(opts, list) or len([o for o in opts if str(o).strip()]) < 2:
-            bad.append(f"question {i} needs at least two options")
-        elif rec not in [str(o).strip() for o in opts]:
+        opts, rec = q.get("options"), str(q.get("recommendation", "")).strip()
+        if opts is not None and not isinstance(opts, list):
+            bad.append(f"question {i}'s options must be a list")
+        elif opts and rec and rec not in [str(o).strip() for o in opts]:
             bad.append(f"question {i}'s recommendation must be one of its options")
     return bad
 
