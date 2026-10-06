@@ -74,3 +74,15 @@ def test_a_rejection_posts_that_nothing_was_pushed(record_property):
     assert "needs.push-workflow-changes.result != 'success'" in stop and "always()" in stop
     assert "dokima.gate stopped" in stop and "git push" not in stop
     assert gate.stopped("https://r").startswith("**Workflow change not pushed:**")
+
+
+def test_a_build_starts_from_todays_main(record_property):
+    """An issue branch made before main changed is brought up to date before the build.
+
+    Without this, a branch the planner created earlier runs old code, so newer
+    steps (like this approval gate) are missing and the build fails.
+    """
+    record_property("proves", "123.1")
+    work = job("work")
+    start = work[work.index("- name: Start from the issue's branch"):]
+    assert "merge -q --no-edit origin/main" in start.split("- name:")[1]
