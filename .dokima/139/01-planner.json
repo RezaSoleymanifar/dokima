@@ -1,0 +1,170 @@
+{
+ "role": "planner",
+ "stage": null,
+ "run_id": "37517618687",
+ "commit_before": "5e8f24752317911dc9d31659d1414f0bca152a92",
+ "started_by": "RezaSoleymanifar",
+ "models": [
+  "claude-opus-5-5"
+ ],
+ "run": "https://github.com/dokima-dev/dokima/actions/runs/37517618687",
+ "handback": {
+  "kind": "feature",
+  "feature": "Code alone decides from each agent's JSON hand-back (plan.json, work.json, review.json) whether it can be posted, and a rejection says exactly why on the issue.",
+  "split_rule": "R2 and R1: the ask needs about 17 criteria, and it holds two independent goals (the planner's plan.json, and the worker's and reviewer's files). Each story lands on its own and main works after each.",
+  "promises": [
+   "P1 plan.json is one of the allowed kinds (story, feature, question) with every required field -> story 1 (kinds) and story 3 (feature and question fields)",
+   "P2 every acceptance criterion's source points at this issue or one of its comments -> story 1",
+   "P3 every non-functional requirement has a reason -> already built (dokima/planner.py, from_kind); kept by its current tests",
+   "P4 every criterion is proven by a test the plan names; every named test exists and names a criterion of this plan -> story 1",
+   "P5 every new test has a docstring whose first line is one plain sentence -> story 2",
+   "P6 every new test fails on today's code -> story 2",
+   "P7 every changed, renamed or deleted older test has a reason; a rename is a change, not a new test -> story 2",
+   "P8 only files under tests/ change -> already built (dokima/planner.py, problems); kept by its current tests",
+   "P9 a feature has 2 to 5 stories (already built) whose depends_on point at its own stories with no loops -> story 3",
+   "P10 a question ends in '?' (already built) and has a recommended option -> story 3",
+   "P11 a rejection says exactly why on the issue -> story 1 and 2 (planner, already posted by planner.yml), story 4 (worker and reviewer)",
+   "P12 work.json and review.json have every required field in their prompts' shape, or the run is rejected and the issue says why -> story 4",
+   "P13 the reviewer blocks only on a promise with no proof or a proof that proves nothing, and every block names its criterion -> story 4",
+   "P14 the checker is tested on the real JSON files from the manual pass through #142 -> story 4"
+  ],
+  "stories": [
+   {
+    "title": "Plan checker: kinds, sources and named tests",
+    "user_story": "Owners only see plans whose sources point at their issue and whose named tests are real and filed under the plan's own criteria.",
+    "context": "dokima/planner.py read_output still accepts question.md and a plan.json with no kind (the old objective/criteria shape); from_kind only checks a source is non-empty; declared_labels ignores named tests that do not exist, and counts only added or changed tests as proof, so a criterion named against an older unchanged test is rejected as 'has no test'. A number where text belongs crashes the check (c['text'][:60] in from_kind raises TypeError). Older tests in tests/test_planner.py that hand back question.md or the old shape will need changing, with reasons. The repo comes from GITHUB_REPOSITORY.",
+    "acceptance_criteria": [
+     {
+      "text": "A hand-back that is not a plan.json naming one of the kinds user_story, feature or question (a question.md, or a plan.json with no kind) is rejected, and the reason says plan.json must name one of the three kinds.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A criterion whose source is anything other than this issue's link or a link to one of its comments (#issuecomment-...) is rejected, and the reason names the source; this issue's link and its comment links pass.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A test the plan names that is not in the repo, or that is filed under a key that is not one of this plan's criteria (another issue's number, or past the last criterion), is rejected, and the reason names the test or the key.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A criterion proven only by an older test that is already in the repo counts as proven, not as 'has no test'.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     }
+    ],
+    "non_functional": [
+     {
+      "text": "A plan.json with a value of the wrong type (a number where text belongs, a string where a list belongs) is rejected with a reason naming the field, never a crash.",
+      "why": "a crash posts nothing and leaves the owner guessing",
+      "principle": "Fail closed"
+     }
+    ],
+    "depends_on": []
+   },
+   {
+    "title": "Plan checker: new tests are checked as new, renames as changes",
+    "user_story": "Every new test in a plan has a one-sentence summary and fails today, and renaming an older test is treated as a change with a reason.",
+    "context": "dokima/planner.py test_changes sees a rename as one deleted plus one added test (the false rejection on #138). Nothing reads docstrings or runs the new tests today. A rename is decided by code, not guessed from labels: a test whose source is unchanged apart from its name is a rename. The planner only writes tests, so the working tree is today's code. Builds on story 1's handling of named tests.",
+    "acceptance_criteria": [
+     {
+      "text": "A new test with no docstring, or whose docstring's first line is not one plain sentence on one line ending in a full stop, is rejected, and the reason names the test.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "Every new test is run on today's code; one that passes or is skipped is rejected, and the reason names the test and says it passes today. A test that fails, including one that errors because the feature it needs does not exist yet, passes the check.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A renamed older test (same source, new name) counts as a change: it needs a reason in test_changes under its old name, and it is not held to the docstring or must-fail rules for new tests; a rename with no reason is rejected, naming the old test.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     }
+    ],
+    "non_functional": [
+     {
+      "text": "A new test file the checker cannot parse is rejected with a reason naming the file, never a crash.",
+      "why": "a crash posts nothing on the issue",
+      "principle": "Fail closed"
+     },
+     {
+      "text": "A new test still running after 60 s is stopped and rejected, naming the test.",
+      "why": "one hanging test must not hang the planner's run until it times out with no reason",
+      "principle": "Fail closed"
+     }
+    ],
+    "depends_on": [
+     0
+    ]
+   },
+   {
+    "title": "Plan checker: features and questions are checked",
+    "user_story": "A proposed split or a question reaches the owner only when it is complete: every story is well formed with sound dependencies, and every question has options and a recommendation.",
+    "context": "dokima/planner.py from_kind checks only that a feature has 2 to 5 stories, and that a question ends in '?'; options and recommendation are optional today. A feature whose story depends on itself, with an empty title, is accepted today.",
+    "acceptance_criteria": [
+     {
+      "text": "A feature story missing its title, user_story, acceptance_criteria or a depends_on list is rejected, and the reason names the story and the field.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A story that depends on itself, on a story the feature does not have, or on others in a loop is rejected, and the reason names the story; a valid chain of dependencies passes.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A question with no options or no recommendation is rejected, and the reason says which is missing; a question with both passes.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     }
+    ],
+    "non_functional": [],
+    "depends_on": []
+   },
+   {
+    "title": "The worker's and reviewer's hand-backs are checked, and a rejection says why on the issue",
+    "user_story": "The worker's and the reviewer's hand-backs reach the owner only in the shape their prompts define, every block is about one of the plan's criteria, and a rejected run says why on the issue.",
+    "context": "dokima/agent.py problems_review and problems_work check a few fields, crash on a string where an object belongs (blockers: ['B1'] raises AttributeError) or a number where a list belongs (notes: 5 raises TypeError), never check work.json gives a line for every plan criterion, and only check that a blocker's criterion is non-empty. `agent check` does not get the plan or the issue number today, so .github/workflows/agent.yml must pass them; agent.yml also only writes a record on rejection and posts nothing on the issue (planner.yml does, through `planner rejected`). The prompts' shapes are in dokima/roles/reviewer.md and dokima/roles/worker.md (work.json says empty lists may be left out). The real files from #142 are not in the repo (no branch holds them); they live in GitHub run artifacts.",
+    "acceptance_criteria": [
+     {
+      "text": "A review.json or work.json missing a required field of its prompt's shape, or holding a field of the wrong type or an item of the wrong shape (a note without text, a reply without why), is rejected, and the reason names the field; it never crashes.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A work.json that gives no line for a criterion of the approved plan, or a line for a criterion the plan does not have, is rejected, and the reason names the criterion.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "A reviewer's blocker whose criterion is not one of the plan's criteria, or whose test is neither empty (a promise with no proof) nor one of the plan's tests for that criterion (a proof that proves nothing), is rejected, and the reason names the blocker.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "When a worker's or reviewer's hand-back is rejected, the issue gets one comment listing every reason, with a link to the run.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     },
+     {
+      "text": "(manual) The real review.json and work.json files from the manual pass through #142 pass the checker. Manual because those files are not in the repo; the owner runs `python3 -m dokima.agent check` on each and sees exit code 0, unless they commit the files, in which case this becomes a test.",
+      "source": "https://github.com/dokima-dev/dokima/issues/139"
+     }
+    ],
+    "non_functional": [],
+    "depends_on": []
+   }
+  ],
+  "questions": [
+   "The real JSON files from the manual pass through #142 are not in the repo, so no test can read them: would you commit them under tests/fixtures/142/ (recommended: then story 4 tests them on every run), or check them by hand? I planned for a hand check, marked (manual) in story 4.",
+   "Should a new test that cannot even load today because the module it needs does not exist yet count as 'fails on today's code'? I planned for yes (story 2): it fails because the feature is missing; only a test that passes or is skipped is rejected.",
+   "Every block must name a criterion, but the reviewer prompt also blocks when the plan dropped one of your asks, which has no criterion number yet: should such a blocker be allowed to name no criterion, or must every blocker name one of the plan's criteria? I planned for the strict reading (story 4): every blocker names one of the plan's criteria."
+  ],
+  "concerns": [
+   {
+    "text": "Half the original list is already built and tested since this issue was written: kinds and required fields, a reason on every non-functional requirement, tests-folder-only, 2 to 5 stories, a question ending in '?'. The split covers only what is still missing.",
+    "evidence": "dokima/planner.py from_kind and problems (#140); tests/test_plan_shape.py, tests/test_planner.py"
+   },
+   {
+    "text": "The checkers are already wired into the pipeline, so 'before wiring it into the pipeline' no longer applies; story 4 also changes agent.yml so a rejection posts on the issue, and that workflow change waits for your approval.",
+    "evidence": ".github/workflows/agent.yml lines 93-96 run `dokima.planner check` and `dokima.agent check`"
+   }
+  ]
+ },
+ "check": {
+  "passed": true,
+  "problems": [
+   "feature"
+  ]
+ }
+}
