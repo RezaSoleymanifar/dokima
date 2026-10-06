@@ -183,10 +183,15 @@ def render(rec):
     return "\n".join(lines) + "\n"
 
 
+def jsonl_files(root):
+    """Every session log under root, hidden folders included (Claude keeps its logs under .claude)."""
+    return sorted(os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.endswith(".jsonl"))
+
+
 def models_used(log_dir):
     """Every model named in the run's session logs, so the record proves which model did the work."""
     seen = set()
-    for f in glob.glob(os.path.join(log_dir, "**", "*.jsonl"), recursive=True):
+    for f in jsonl_files(log_dir):
         for line in open(f):
             try:
                 m = (json.loads(line).get("message") or {}).get("model")
@@ -320,7 +325,7 @@ def problems_pack(role, stage, dest):
         path = os.path.join(dest, name)
         if not os.path.exists(path):
             bad.append(f"{name} is missing")
-        elif os.path.isdir(path) and not glob.glob(os.path.join(path, "**", "*.jsonl"), recursive=True):
+        elif os.path.isdir(path) and not jsonl_files(path):
             bad.append(f"{name} holds no session log")
         elif os.path.isfile(path) and name != "diff.patch" and not open(path).read().strip():
             bad.append(f"{name} is empty")

@@ -116,7 +116,7 @@ def test_a_missing_hand_back_is_recorded_as_missing(record_property, tmp_path):
 def test_the_models_used_come_from_the_session_log(record_property, tmp_path):
     """The record names every model that appears in the run's session log, so a wrong model is visible and can fail the run."""
     record_property("proves", "agent.9")
-    log = tmp_path / "logs" / "proj"
+    log = tmp_path / "logs" / ".claude" / "proj"
     log.mkdir(parents=True)
     (log / "s.jsonl").write_text("\n".join(json.dumps(x) for x in [
         {"message": {"model": "claude-opus-5-5"}}, {"type": "user"}, {"message": {"model": "claude-sonnet-5-5"}}]) + "\nnot json\n")
@@ -153,7 +153,8 @@ def test_a_pack_missing_anything_its_role_needs_is_refused(record_property, tmp_
     assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run is missing"]
     (d / "worker-run" / "p").mkdir(parents=True)
     assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run holds no session log"]
-    (d / "worker-run" / "p" / "s.jsonl").write_text("{}\n")
+    (d / "worker-run" / "home" / ".claude" / "p").mkdir(parents=True)
+    (d / "worker-run" / "home" / ".claude" / "p" / "s.jsonl").write_text("{}\n")
     assert agent.problems_pack("reviewer", "pr", str(d)) == []
     (d / "in" / "01-planner.json").write_text("{not json")
     assert agent.problems_pack("planner", "", str(d)) == ["record 01-planner.json is not valid JSON"]
