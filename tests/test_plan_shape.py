@@ -15,7 +15,7 @@ from dokima import planner  # noqa: E402
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 PROMPT = " ".join(open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read().split())
 SRC = "https://github.com/o/r/issues/9"
-STORY = {"kind": "story", "user_story": "Slow calls return a job id.",
+STORY = {"kind": "user_story", "user_story": "Slow calls return a job id.",
          "acceptance_criteria": [{"text": "A slow call returns a job id within 20 s.", "source": SRC}],
          "non_functional": [{"text": "Job ids never repeat.", "why": "two jobs would share results", "principle": "fail closed"}],
          "scope": ["dokima/jobs.py"], "out_of_scope": ["No retries."],

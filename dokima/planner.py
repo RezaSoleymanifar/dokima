@@ -63,7 +63,7 @@ def strings(v):
 
 
 def from_kind(p):
-    """Read a plan.json written in the agreed shape (story, feature or question) into what the rest of the code uses.
+    """Read a plan.json written in the agreed shape (user_story, feature or question) into what the rest of the code uses.
 
     A story becomes a plan: its acceptance criteria come first, then its non-functional requirements, numbered N.1,
     N.2 ... in that order. A feature or a question is shown to the owner as handed back, as a comment.
@@ -83,8 +83,8 @@ def from_kind(p):
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
         return "feature", json.dumps(p, indent=2)
-    if kind != "story":
-        raise Garbled(f"plan.json kind must be story, feature or question, not {kind!r}")
+    if kind != "user_story":
+        raise Garbled(f"plan.json kind must be user_story, feature or question, not {kind!r}")
     if not isinstance(p.get("user_story"), str) or not p["user_story"].strip():
         raise Garbled("a story needs a non-empty user_story")
     ac, nfr = p.get("acceptance_criteria"), p.get("non_functional", [])

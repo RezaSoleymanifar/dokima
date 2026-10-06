@@ -117,9 +117,9 @@ recommendation first, so the owner can answer with one word. A question you coul
 # What you hand back
 Everything you decide goes into one file, `plan.json`, in the hand-back folder named below. Code reads only that file:
 nothing is taken from your prose or guessed from your test code. Anything malformed is rejected and nothing is posted.
-Exactly one kind:
-- A story:
-  {"kind": "story",
+Exactly one kind: user_story, feature or question.
+- A user story:
+  {"kind": "user_story",
    "user_story": "...",
    "acceptance_criteria": [{"text": "...", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
    "non_functional": [{"text": "...", "why": "...", "principle": "..."}, ...],
@@ -134,4 +134,4 @@ Exactly one kind:
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 - A question: {"kind": "question", "question": "... ?", "options": ["...", ...], "recommendation": "..."}
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
-Only the story kind is built on today; a feature or a question is shown to the owner as handed back.
+Only the user_story kind is built on today; a feature or a question is shown to the owner as handed back.
