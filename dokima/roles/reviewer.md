@@ -43,15 +43,17 @@ line must trace to their hand-back or the diff; never guess at what they meant.
 # What you hand back
 One file, `review.json`, in the hand-back folder named below. Code reads only that file.
   {"previous_step": {"did": ["..."], "decided": ["..."], "open": ["..."]},
-   "stage": "plan" | "pr",
-   "round": 1,
    "verdict": "approve" | "block" | "escalate",
    "summary": "One sentence the owner reads first.",
    "blockers": [{"id": "B1", "criterion": "N.k", "test": "path::name or null", "problem": "...",
                  "evidence": "...", "fix": "..."}],
    "notes": [{"text": "...", "evidence": "..."}],
    "outside_plan": [{"file": "path", "change": "..."}],
-   "resolved": ["B1", ...]}
-"approve" has no blockers; "block" has at least one; notes hold at most three; outside_plan is for the pull request only.
+   "resolved": ["B1", ...],
+   "issues_found": [{"title": "...", "why": "...", "evidence": "..."}]}
+"approve" has no blockers; "block" has at least one; notes are optional, at most three; outside_plan is for the pull
+request only. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
+a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
+round, so you never write them.
 Blocker ids carry over between rounds so a reply can answer one by id. You never ask the owner: you judge from the
 records, and a disagreement that survives three rounds reaches the owner as an escalation.

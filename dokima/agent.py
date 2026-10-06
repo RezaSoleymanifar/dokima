@@ -190,6 +190,9 @@ def render(rec):
     elif role == "reviewer":
         lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
         lines += [f"- **{b.get('id')}** ({b.get('criterion')}): {b.get('problem')}" for b in h.get("blockers", [])]
+        if h.get("issues_found"):
+            lines += ["", "**Issues found outside this one** (proposals until you file them):"]
+            lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
     elif role == "split":
         num = {f["story"]: f["issue"] for f in h.get("stories", [])}
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" (blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
@@ -329,10 +332,6 @@ def problems_questions(qs):
 def problems_review(r):
     """Everything wrong with a review.json, as plain sentences; empty when it is well formed."""
     bad = []
-    if r.get("stage") not in ("plan", "pr"):
-        bad.append('stage must be "plan" or "pr"')
-    if not isinstance(r.get("round"), int) or r.get("round", 0) < 1:
-        bad.append("round must be a whole number from 1")
     if r.get("verdict") not in VERDICTS:
         bad.append("verdict must be approve, block or escalate")
     if not str(r.get("summary", "")).strip():
@@ -359,8 +358,9 @@ def problems_review(r):
         bad.append("a block needs at least one blocker")
     if len(r.get("notes", [])) > 3:
         bad.append("at most three notes")
-    if r.get("stage") == "plan" and r.get("outside_plan"):
-        bad.append("outside_plan is for a pull request only")
+    for i, f in enumerate(r.get("issues_found") or [], 1):
+        if not isinstance(f, dict) or not all(str(f.get(k, "")).strip() for k in ("title", "why", "evidence")):
+            bad.append(f"issue found {i} needs a title, why and evidence")
     if "questions" in r:
         bad.append("the reviewer never asks the owner; escalate on round three instead")
     return bad
