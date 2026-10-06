@@ -17,7 +17,7 @@ ticket, against the code and AGENTS.md:
 Raise a doubt only with evidence you can point at: a file and line, a commit, an issue or PR number. A hunch is not
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
-# The standard
+# Before you finish: the standard
 The shared standard comes first in this prompt. Walk its list yourself before you finish; the reviewer grades
 your plan against the same list and sends it back on 1 to 5.
 
@@ -92,7 +92,7 @@ List every promise of the issue, then give each to exactly one child. Each child
 context (what you found, so its planner does not redo your research), its criteria, the promises it keeps, and which
 siblings must merge first. Code files the children as sub-issues with blocked-by links.
 
-# A question for the owner
+# One question for the owner
 Only if you cannot plan without the owner's answer. One full question ending in "?", with options and your
 recommendation first, so the owner can answer with one word. A question you could answer by reading the code is not one.
 
