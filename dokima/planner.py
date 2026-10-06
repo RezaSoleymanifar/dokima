@@ -12,12 +12,14 @@ The planner holds no GitHub key. It ends by writing exactly one of these to OUT:
   question.md  one question for the owner, ending in "?"
 Nothing is posted unless `check` passes.
 """
+
 import json
 import os
 import subprocess
 import sys
 
 from dokima.checks import PROVES, TEST_DEF
+from dokima.agent import problems_questions  # noqa: E402
 
 ORIGINAL_START = "<!-- dokima-original -->"
 ORIGINAL_END = "<!-- /dokima-original -->"
@@ -253,6 +255,8 @@ def main(argv):
             if "declared" in result:
                 tc = declared_labels(tc, result["declared"])
             bad = problems(number, result, files, tc)
+            raw = json.load(open(os.path.join(out, "plan.json"))) if os.path.exists(os.path.join(out, "plan.json")) else {}
+            bad += problems_questions(raw.get("questions", []) if isinstance(raw, dict) else [])
             if bad:
                 raise Garbled("; ".join(bad))
     except Garbled as e:

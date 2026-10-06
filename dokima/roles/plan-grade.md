@@ -20,7 +20,8 @@ Blockers: a plan that fails any of 1 to 5 goes back to the planner.
 1. Right criteria, exactly. Every behavior the owner asked for is an acceptance criterion, traced to the owner's own words
    (the issue or a specific comment). Nothing dropped, nothing added, nothing reinterpreted, and never a narrower
    thing that is easier to pass. Where the words allow two
-   readings, the plan asks the owner; it never picks one silently.
+   readings, or an ask cannot be tested, the plan asks the owner in its questions; it never picks one silently and
+   never turns an ask into a concern.
 2. Every criterion is observable and precise: a value, a message, a file, an exit code, a state the owner can see. The
    scope lists every file the work needs.
 3. Every criterion has a test, or is marked (manual) with a reason a reviewer accepts. If a criterion promises A, B and C,
