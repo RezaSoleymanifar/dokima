@@ -55,3 +55,14 @@ def test_the_fence_reads_scope_from_plan_json(record_property, tmp_path, monkeyp
     monkeypatch.setattr(fence, "fence", lambda base, scope: seen.setdefault("scope", scope) and [])
     fence.main(["fence", "BASE", str(plan)])
     assert seen["scope"] == ["app.py"]
+
+
+def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
+    """Plain questions pass; anything that is not a plain question is named; review and work may not ask."""
+    record_property("proves", "agent.5")
+    q = "Should a failed run move its card to Needs you? I planned for yes."
+    assert agent.problems_questions([q, "Which board view?"]) == []
+    assert agent.problems_questions(["Split it."]) == ["question 1 must be a plain question with a '?'"]
+    assert agent.problems_questions([{"question": "Split it?"}]) == ["question 1 must be a plain question with a '?'"]
+    assert agent.problems_review({**GOOD_REVIEW, "questions": [q]}) == ["the reviewer never asks the owner; escalate on round three instead"]
+    assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]

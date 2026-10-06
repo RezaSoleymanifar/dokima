@@ -49,6 +49,14 @@ def bring_in(repo, run_ids, dest, logs=False):
     shutil.rmtree(os.path.join(dest, ".dl"), ignore_errors=True)
 
 
+def problems_questions(qs):
+    """Everything wrong with the planner's questions for the owner: a list of plain questions, each asking something ('?')."""
+    if not isinstance(qs, list):
+        return ["questions must be a list of plain questions"]
+    return [f"question {i} must be a plain question with a '?'" for i, q in enumerate(qs, 1)
+            if not isinstance(q, str) or "?" not in q]
+
+
 def problems_review(r):
     """Everything wrong with a review.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -79,6 +87,8 @@ def problems_review(r):
         bad.append("at most three notes")
     if r.get("stage") == "plan" and r.get("outside_plan"):
         bad.append("outside_plan is for a pull request only")
+    if "questions" in r:
+        bad.append("the reviewer never asks the owner; escalate on round three instead")
     return bad
 
 
@@ -97,6 +107,8 @@ def problems_work(w):
     for s in w.get("suspect_tests", []):
         if not s.get("test") or not str(s.get("evidence", "")).strip():
             bad.append("every suspect test needs the test and the evidence")
+    if "questions" in w:
+        bad.append("the worker never asks the owner; the plan is the contract")
     return bad
 
 

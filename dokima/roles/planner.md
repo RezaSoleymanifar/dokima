@@ -94,7 +94,8 @@ siblings must merge first. Code files the children as sub-issues with blocked-by
 
 # One question for the owner
 Only if you cannot plan without the owner's answer. One full question ending in "?", with options and your
-recommendation first, so the owner can answer with one word. A question you could answer by reading the code is not one.
+recommendation first, as a help. The owner answers in their own words, as much or as little as they like; read the
+answer as written. A question you could answer by reading the code is not one.
 
 # What you hand back
 Everything you decide goes into one file, `plan.json`, in the hand-back folder named below. Code reads only that file:
@@ -116,6 +117,11 @@ Exactly one kind: user_story, feature or question.
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 - A question: {"kind": "question", "question": "... ?", "options": ["...", ...], "recommendation": "..."}
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
+A plan may also carry "questions": ["...?", ...], plain questions for the owner, as many as you need. Ask only where the owner's
+words allow two readings or an ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best
+reading, and say in the question which reading you planned for: the owner may answer or not, and the plan stands either
+way until they do. Such an ask becomes a
+question here, never a concern and never dropped. The planner is the only agent that asks the owner anything.
 When you are revising after a review, add "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}],
 one per open blocker. "disagree" needs evidence the reviewer can check; otherwise fix it.
 Only the user_story kind is built on today; a feature or a question is shown to the owner as handed back.

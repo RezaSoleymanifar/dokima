@@ -38,4 +38,5 @@ One file, `work.json`, in the hand-back folder:
    "outside_scope": [{"file": "path", "why": "..."}],
    "suspect_tests": [{"test": "path::name", "evidence": "..."}],
    "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}]}
-Every criterion gets a line. Empty lists may be left out.
+Every criterion gets a line. Empty lists may be left out. You never stop to ask: the plan is the contract and you work
+until every test is green. If the plan itself cannot be built, report the tests that prove it in suspect_tests.
