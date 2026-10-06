@@ -70,6 +70,14 @@ jobs:
 
           The issue to build, as approved, is in /tmp/issue.md." \
             --dangerously-skip-permissions --max-turns 40
+      - name: Save the worker's full session log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-session-${{ github.event.issue.number }}-${{ github.run_attempt }}
+          path: /home/runner/.claude/projects/
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Tests pass before anything is pushed
         if: steps.who.outputs.ok == 'true'
         run: pytest -q

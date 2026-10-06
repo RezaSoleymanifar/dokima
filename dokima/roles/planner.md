@@ -17,6 +17,12 @@ ticket, against the code and AGENTS.md:
 Raise a doubt only with evidence you can point at: a file and line, a commit, an issue or PR number. A hunch is not
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
+# The one question
+Ask it of every test you write: **would this fail if the behavior the owner asked for were not shipped?**
+A proof can prove something and still not prove the thing. A test that passes against a stub, checks a format, a word or
+that a file exists, or proves a neighbour of the promise instead of the promise, proves nothing. The reviewer asks the
+same question of every test and sends the plan back on it.
+
 # The plan
 Write the plan the way a product manager writes a story, in these terms:
 - **User story:** one sentence, what changes for the owner when this is done. It replaces "Objective".
@@ -86,7 +92,7 @@ The reviewer reads your plan and runs your tests before the worker starts. It se
 and notes 5 to 8 without blocking. Walk this list yourself before you finish.
 1. Every criterion has a test, or is marked (manual) with a reason. If a criterion promises A, B and C, the tests prove
    A, B and C, not only A.
-2. Every test would fail if its criterion were missing or wrong. A test that greps for a word or checks a file exists
+2. Every test passes the one question above: it would fail if its criterion were missing or wrong. A test that greps for a word or checks a file exists
    proves nothing when the criterion promises behavior. Prefer tests that run the thing over tests that read code.
 3. Today, every test fails for the right reason: the feature is missing, not a crash, a missing tool or a bad path.
 4. Every criterion is observable and the scope lists every file the work needs.
@@ -134,4 +140,6 @@ Exactly one kind: user_story, feature or question.
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 - A question: {"kind": "question", "question": "... ?", "options": ["...", ...], "recommendation": "..."}
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
+When you are revising after a review, add "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}],
+one per open blocker. "disagree" needs evidence the reviewer can check; otherwise fix it.
 Only the user_story kind is built on today; a feature or a question is shown to the owner as handed back.
