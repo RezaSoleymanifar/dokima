@@ -16,15 +16,19 @@ A proof can prove something and still not prove the thing. A test that passes ag
 that a file exists, or proves a neighbour of the promise instead of the promise, proves nothing.
 
 ## The list
-Blockers: a pull request that fails any of 1 to 6 goes back to the worker (or, for 6, to the planner).
+Blockers: a pull request that fails any of 1 to 7 goes back to the worker (or, for 7, to the planner).
 1. Every criterion's check is green on GitHub, on the pull request's final commit. GitHub's verdict counts, nobody's word.
 2. The planner's tests are untouched: not edited, renamed, skipped, marked to fail, or weakened by changing what they
    import or fake. All tests pass, not only the new ones.
 3. The code delivers the behavior itself, not the tests' shape: no special cases for test inputs, no hard-coded expected
-   outputs, no code that behaves differently under test. Read the code against each criterion as the owner wrote it.
-4. Exactly the criteria ship: every change traces to a criterion. Anything that does not is listed as outside the plan;
+   outputs, no swallowing the error a test expects, no code that behaves differently under test. Read the code against
+   each criterion as the owner wrote it.
+4. Nothing was removed or loosened to make it green: every test that passed on main still passes, and no check, guard or
+   error path was deleted on the way. Look at the session log too: a worker that read the checkers to learn how to pass
+   them is a blocker even if the diff looks clean.
+5. Exactly the criteria ship: every change traces to a criterion. Anything that does not is listed as outside the plan;
    only the owner's own Approve accepts it.
-5. Every failure path the criteria imply says why, on the issue or in the output; nothing fails silently.
-6. Now that code exists, a test is shown to be too weak: the code passes it while a criterion is still wrong or partial.
+6. Every failure path the criteria imply says why, on the issue or in the output; nothing fails silently.
+7. Now that code exists, a test is shown to be too weak: the code passes it while a criterion is still wrong or partial.
    That is a blocker for the plan: it goes back to the planner for a stronger test before the work can merge.
 Notes, never blockers: readability, naming, docstrings, simpler ways to the same result. At most three.
