@@ -32,7 +32,7 @@ def decide(event, p):
     elif event == "issue_comment" and p["action"] == "created":
         if p["comment"]["user"]["type"] == "Bot" and p["comment"]["body"].startswith(YOUR_TURN):
             out.append(("issue", p["issue"]["number"], "Plan", "You"))
-    elif event == "pull_request":
+    elif event in ("pull_request", "pull_request_target"):
         pr, action = p["pull_request"], p["action"]
         both = [("pr", pr["number"])] + [("issue", n) for n in linked(pr.get("body"))]
         if action in ("opened", "reopened", "synchronize"):

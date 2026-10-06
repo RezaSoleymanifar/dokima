@@ -17,8 +17,7 @@ permissions:
   issues: read
 jobs:
   work:
-    outputs:
-      workflows: ${{ steps.gate.outputs.workflows }}
+    environment: keys
     if: github.event.action == 'labeled' && github.event.label.name == 'work'
     runs-on: ubuntu-24.04
     steps:
@@ -74,8 +73,9 @@ jobs:
       - name: Tests pass before anything is pushed
         if: steps.who.outputs.ok == 'true'
         run: pytest -q
-      # The app's token is minted only now, after the agent has finished, and it
-      # cannot touch .github/ (the app has no workflows permission).
+      # The app's token is minted only now, after the agent has finished. Keys live in
+      # the "keys" environment, which only main's reviewed workflows can open, so a
+      # workflow edited inside a PR can never reach them before it is merged (#126).
       - id: app
         if: steps.who.outputs.ok == 'true'
         uses: actions/create-github-app-token@v2
@@ -94,17 +94,8 @@ jobs:
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Build #$N"
-      # A build that changes a workflow file is never pushed here: the bot cannot,
-      # by design. It is handed to the approved job below instead.
-      - name: Does the build change workflow files?
-        id: gate
-        if: steps.who.outputs.ok == 'true'
-        run: |
-          python3 -m dokima.gate touched "$BUILD_BASE" > /tmp/workflows.txt
-          if [ -s /tmp/workflows.txt ]; then echo "workflows=true" >> "$GITHUB_OUTPUT"; else echo "workflows=false" >> "$GITHUB_OUTPUT"; fi
-          cat /tmp/workflows.txt
       - name: Push and open the pull request
-        if: steps.who.outputs.ok == 'true' && steps.gate.outputs.workflows == 'false'
+        if: steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           N: ${{ github.event.issue.number }}
@@ -114,73 +105,3 @@ jobs:
           if [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --state open --json number --jq '.[].number')" ]; then
             gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "Closes #$N"
           fi
-      - name: Hand the build to the approval step
-        if: steps.who.outputs.ok == 'true' && steps.gate.outputs.workflows == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          N: ${{ github.event.issue.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          git bundle create /tmp/build.bundle "$BUILD_BASE..HEAD"
-          python3 -m dokima.gate waiting "$N" "$RUN_URL" < /tmp/workflows.txt
-      - name: Keep the build for the approval step
-        if: steps.who.outputs.ok == 'true' && steps.gate.outputs.workflows == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: build
-          path: /tmp/build.bundle
-          retention-days: 7
-
-  # Runs only after the owner approves on GitHub (environment workflow-changes, owner
-  # as required reviewer). The key that can push workflow files lives only here.
-  push-workflow-changes:
-    needs: work
-    if: needs.work.outputs.workflows == 'true'
-    environment: workflow-changes
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: build
-          path: /tmp
-      - id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DOKIMA_APP_ID }}
-          private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - name: Push the approved build and open the pull request
-        env:
-          PUSH_TOKEN: ${{ secrets.DOKIMA_WORKFLOW_TOKEN }}
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          N: ${{ github.event.issue.number }}
-          TITLE: ${{ github.event.issue.title }}
-        run: |
-          git fetch -q /tmp/build.bundle "HEAD:refs/build"
-          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/build:refs/heads/work/issue-$N"
-          if [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --state open --json number --jq '.[].number')" ]; then
-            gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "Closes #$N"
-          fi
-
-  workflow-change-stopped:
-    needs: [work, push-workflow-changes]
-    if: always() && needs.work.outputs.workflows == 'true' && needs.push-workflow-changes.result != 'success'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DOKIMA_APP_ID }}
-          private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - name: Say nothing was pushed
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          N: ${{ github.event.issue.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python3 -m dokima.gate stopped "$N" "$RUN_URL"

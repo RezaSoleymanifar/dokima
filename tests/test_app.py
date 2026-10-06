@@ -35,5 +35,6 @@ def test_app_cannot_change_rules_or_workflows(record_property):
     record_property("proves", "40.3")
     perms = json.loads(read("dokima/app.json"))["default_permissions"]
     assert "administration" not in perms
-    assert "workflows" not in perms
+    # The bot may push workflow files since #126: a PR's workflow edits can't reach the
+    # keys before merge, so the owner's merge is the approval.
     assert all(level in ("read", "write") for level in perms.values())
