@@ -50,23 +50,11 @@ def bring_in(repo, run_ids, dest, logs=False):
 
 
 def problems_questions(qs):
-    """Everything wrong with the planner's questions for the owner: each is one question ending in '?'.
-
-    Options and a recommendation are optional help, and a recommendation must be one of the options when both are given.
-    The owner answers in prose, in their own words."""
+    """Everything wrong with the planner's questions for the owner: a list of plain questions, each asking something ('?')."""
     if not isinstance(qs, list):
-        return ["questions must be a list"]
-    bad = []
-    for i, q in enumerate(qs, 1):
-        q = q if isinstance(q, dict) else {}
-        if not str(q.get("question", "")).strip().endswith("?"):
-            bad.append(f"question {i} must be one question ending in '?'")
-        opts, rec = q.get("options"), str(q.get("recommendation", "")).strip()
-        if opts is not None and not isinstance(opts, list):
-            bad.append(f"question {i}'s options must be a list")
-        elif opts and rec and rec not in [str(o).strip() for o in opts]:
-            bad.append(f"question {i}'s recommendation must be one of its options")
-    return bad
+        return ["questions must be a list of plain questions"]
+    return [f"question {i} must be a plain question with a '?'" for i, q in enumerate(qs, 1)
+            if not isinstance(q, str) or "?" not in q]
 
 
 def problems_review(r):

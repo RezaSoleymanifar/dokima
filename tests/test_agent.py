@@ -58,12 +58,11 @@ def test_the_fence_reads_scope_from_plan_json(record_property, tmp_path, monkeyp
 
 
 def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
-    """A plain question passes, with or without options; a missing '?' or an unoffered pick is named; review and work may not ask."""
+    """Plain questions pass; anything that is not a plain question is named; review and work may not ask."""
     record_property("proves", "agent.5")
-    q = {"question": "Split it?", "options": ["Yes", "No"], "recommendation": "Yes"}
-    assert agent.problems_questions([q]) == []
-    assert agent.problems_questions([{**q, "question": "Split it."}]) == ["question 1 must be one question ending in '?'"]
-    assert agent.problems_questions([{"question": "What should a failed run show you?"}]) == []
-    assert agent.problems_questions([{**q, "recommendation": "Maybe"}]) == ["question 1's recommendation must be one of its options"]
+    q = "Should a failed run move its card to Needs you? I planned for yes."
+    assert agent.problems_questions([q, "Which board view?"]) == []
+    assert agent.problems_questions(["Split it."]) == ["question 1 must be a plain question with a '?'"]
+    assert agent.problems_questions([{"question": "Split it?"}]) == ["question 1 must be a plain question with a '?'"]
     assert agent.problems_review({**GOOD_REVIEW, "questions": [q]}) == ["the reviewer never asks the owner; escalate on round three instead"]
     assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]

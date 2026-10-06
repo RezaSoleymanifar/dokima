@@ -117,9 +117,10 @@ Exactly one kind: user_story, feature or question.
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 - A question: {"kind": "question", "question": "... ?", "options": ["...", ...], "recommendation": "..."}
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
-A plan may also ask the owner while it plans the clear parts: "questions": [{"question": "... ?", "context": "what you found that makes it unclear", "options": ["...", "..."], "recommendation": "..."}]
-(options and recommendation are optional help; the owner answers in prose). Ask only where the owner's
-words allow two readings or an ask cannot be tested; settle every technical choice yourself. Such an ask becomes a
+A plan may also carry "questions": ["...?", ...], plain questions for the owner, as many as you need. Ask only where the owner's
+words allow two readings or an ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best
+reading, and say in the question which reading you planned for: the owner may answer or not, and the plan stands either
+way until they do. Such an ask becomes a
 question here, never a concern and never dropped. The planner is the only agent that asks the owner anything.
 When you are revising after a review, add "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}],
 one per open blocker. "disagree" needs evidence the reviewer can check; otherwise fix it.
