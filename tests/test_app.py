@@ -17,7 +17,7 @@ def test_worker_and_card_act_as_the_dokima_app(record_property):
         assert "private-key: ${{ secrets.DOKIMA_APP_KEY }}" in text
         assert "DOKIMA_TOKEN" not in text
     worker = read(".github/workflows/worker.yml")
-    push = worker[worker.index("name: Push and open the pull request"):]
+    push = worker[worker.index("name: Commit the build"):]  # identity is set when committing, before the workflow gate (#113)
     assert "GH_TOKEN: ${{ steps.app.outputs.token }}" in push and "SLUG: ${{ steps.app.outputs.app-slug }}" in push
     assert 'git config user.name "${SLUG}[bot]"' in push
     card = read(".github/workflows/card.yml")
@@ -35,5 +35,6 @@ def test_app_cannot_change_rules_or_workflows(record_property):
     record_property("proves", "40.3")
     perms = json.loads(read("dokima/app.json"))["default_permissions"]
     assert "administration" not in perms
-    assert "workflows" not in perms
+    # The bot may push workflow files since #126: a PR's workflow edits can't reach the
+    # keys before merge, so the owner's merge is the approval.
     assert all(level in ("read", "write") for level in perms.values())

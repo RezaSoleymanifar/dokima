@@ -20,8 +20,9 @@ permissions:
   pull-requests: read
 jobs:
   card:
+    environment: keys
     # The bot's own edits (the card itself) don't trigger another card.
-    if: github.event_name != 'issues' || github.event.sender.type != 'Bot'
+    if: github.event_name != 'issues' || github.event.action == 'opened' || github.event.sender.type != 'Bot'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

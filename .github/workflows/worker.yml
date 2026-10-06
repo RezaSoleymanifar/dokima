@@ -17,6 +17,7 @@ permissions:
   issues: read
 jobs:
   work:
+    environment: keys
     if: github.event.action == 'labeled' && github.event.label.name == 'work'
     runs-on: ubuntu-24.04
     steps:
@@ -51,9 +52,12 @@ jobs:
         run: |
           if git ls-remote --exit-code --heads origin "work/issue-$N" >/dev/null; then
             git fetch -q origin "work/issue-$N" && git checkout -q -B "work/issue-$N" FETCH_HEAD
+            # Build on today's main, not on whatever main was when the branch began.
+            git -c user.name=dokima -c user.email=dokima@users.noreply.github.com merge -q --no-edit origin/main
           else
             git checkout -q -b "work/issue-$N"
           fi
+          echo "BUILD_BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Install pytest and Claude Code
         if: steps.who.outputs.ok == 'true'
         run: pip install pytest && npm install -g @anthropic-ai/claude-code
@@ -69,27 +73,34 @@ jobs:
       - name: Tests pass before anything is pushed
         if: steps.who.outputs.ok == 'true'
         run: pytest -q
-      # The app's token is minted only now, after the agent has finished, and it
-      # cannot touch .github/ (the app has no workflows permission).
+      # The app's token is minted only now, after the agent has finished. Keys live in
+      # the "keys" environment, which only main's reviewed workflows can open, so a
+      # workflow edited inside a PR can never reach them before it is merged (#126).
       - id: app
         if: steps.who.outputs.ok == 'true'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
-      - name: Push and open the pull request
+      - name: Commit the build
         if: steps.who.outputs.ok == 'true'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           N: ${{ github.event.issue.number }}
-          TITLE: ${{ github.event.issue.title }}
         run: |
           BOT_ID=$(gh api "users/${SLUG}[bot]" --jq .id)
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Build #$N"
+      - name: Push and open the pull request
+        if: steps.who.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
           if [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --state open --json number --jq '.[].number')" ]; then
             gh pr create -R "$GITHUB_REPOSITORY" --head "work/issue-$N" --base main --title "$TITLE" --body "Closes #$N"
