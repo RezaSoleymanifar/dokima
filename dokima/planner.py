@@ -43,6 +43,8 @@ def read_output(out):
         p = json.load(open(os.path.join(out, "plan.json")))
     except ValueError as e:
         raise Garbled(f"plan.json is not valid JSON: {e}")
+    if isinstance(p, dict) and "kind" in p:
+        return from_kind(p)
     if not isinstance(p, dict) or not isinstance(p.get("objective"), str) or not p["objective"].strip():
         raise Garbled("plan.json needs a non-empty objective")
     for key, required in (("criteria", True), ("scope", True), ("non_goals", False)):
@@ -54,6 +56,72 @@ def read_output(out):
     if not isinstance(tc, dict) or not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in tc.items()):
         raise Garbled("plan.json test_changes must map each changed older test to a non-empty reason")
     return "plan", p
+
+
+def strings(v):
+    return isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
+
+
+def from_kind(p):
+    """Read a plan.json written in the agreed shape (user_story, feature or question) into what the rest of the code uses.
+
+    A story becomes a plan: its acceptance criteria come first, then its non-functional requirements, numbered N.1,
+    N.2 ... in that order. A feature or a question is shown to the owner as handed back, as a comment.
+    """
+    kind = p["kind"]
+    if kind == "question":
+        q = p.get("question")
+        if not isinstance(q, str) or not q.strip().endswith("?"):
+            raise Garbled("a question needs one question ending in '?'")
+        opts = p.get("options") or []
+        text = q.strip() + "".join(f"\n- {o}" for o in opts if isinstance(o, str))
+        if isinstance(p.get("recommendation"), str) and p["recommendation"].strip():
+            text += f"\n\nRecommended: {p['recommendation'].strip()}"
+        return "question", text
+    if kind == "feature":
+        stories = p.get("stories")
+        if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
+            raise Garbled("a feature needs 2 to 5 stories")
+        return "feature", json.dumps(p, indent=2)
+    if kind != "user_story":
+        raise Garbled(f"plan.json kind must be user_story, feature or question, not {kind!r}")
+    if not isinstance(p.get("user_story"), str) or not p["user_story"].strip():
+        raise Garbled("a story needs a non-empty user_story")
+    ac, nfr = p.get("acceptance_criteria"), p.get("non_functional", [])
+    if not isinstance(ac, list) or not ac:
+        raise Garbled("a story needs a non-empty list of acceptance_criteria")
+    for c in ac:
+        if not isinstance(c, dict) or not str(c.get("text", "")).strip():
+            raise Garbled("every acceptance criterion needs its text")
+        if not str(c.get("source", "")).strip():
+            raise Garbled(f"acceptance criterion '{c['text'][:60]}' has no source link")
+    if not isinstance(nfr, list) or not all(isinstance(c, dict) and str(c.get("text", "")).strip() and str(c.get("why", "")).strip() for c in nfr):
+        raise Garbled("every non-functional requirement needs its text and why")
+    if not strings(p.get("scope")) or not p["scope"]:
+        raise Garbled("a story needs scope as a non-empty list of files")
+    if not strings(p.get("out_of_scope", [])):
+        raise Garbled("out_of_scope must be a list of sentences")
+    tests = p.get("tests")
+    if not isinstance(tests, dict) or not all(isinstance(k, str) and strings(v) for k, v in tests.items()):
+        raise Garbled("a story needs tests as a map from each criterion (N.k) to its tests")
+    tc = p.get("test_changes", {})
+    if not isinstance(tc, dict) or not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in tc.items()):
+        raise Garbled("plan.json test_changes must map each changed older test to a non-empty reason")
+    return "plan", {"objective": p["user_story"].strip(),
+                    "criteria": [c["text"].strip() for c in ac] + [f"{c['text'].strip()} ({c['why'].strip()})" for c in nfr],
+                    "non_goals": p.get("out_of_scope", []), "scope": p["scope"], "test_changes": tc,
+                    "declared": tests, "raw": p}
+
+
+def declared_labels(tc, declared):
+    """Use the criteria the plan declares for each test, never labels guessed from the test's text."""
+    by_test = {}
+    for key, names in declared.items():
+        for t in names:
+            by_test.setdefault(t, []).append(key)
+    added = {t: by_test.get(t, []) for t in tc["added"]}
+    changed = {t: (old, by_test.get(t, old)) for t, (old, _) in tc["changed"].items()}
+    return {"added": added, "changed": changed, "deleted": tc["deleted"]}
 
 
 def test_functions(text):
@@ -130,7 +198,7 @@ def render(number, body, plan, tags, older=()):
         lines.append("    Verified by: " + (", ".join(f"`{t}`" for t in tests) or "no test"))
     lines.append("")
     if plan["non_goals"]:
-        lines.append("**Non-goals:** " + "; ".join(x.strip() for x in plan["non_goals"]))
+        lines.append("**Out of scope:** " + "; ".join(x.strip() for x in plan["non_goals"]))
         lines.append("")
     if older:
         lines.append("**Changes to older tests:**")
@@ -182,6 +250,8 @@ def main(argv):
             base = os.environ.get("PLANNER_BASE", "HEAD")
             files = changed_files(base)
             tc = test_changes([p for p in files if p.startswith("tests/") and p.endswith(".py")], read_at(base), read_now)
+            if "declared" in result:
+                tc = declared_labels(tc, result["declared"])
             bad = problems(number, result, files, tc)
             if bad:
                 raise Garbled("; ".join(bad))
@@ -193,6 +263,8 @@ def main(argv):
     if action == "post":
         if kind == "question":
             gh("issue", "comment", number, "-R", repo, "--body", f"**Planner question**\n\n{result}")
+        elif kind == "feature":
+            gh("issue", "comment", number, "-R", repo, "--body", f"**Planner proposes a split**\n\n```json\n{result}\n```")
         else:
             older = sorted(t for t in tc["changed"] if not set(tc["changed"][t][0]) <= {f"{number}.{k}" for k in range(1, len(result["criteria"]) + 1)}) + sorted(tc["deleted"])
             body = gh("issue", "view", number, "-R", repo, "--json", "body", "-q", ".body")

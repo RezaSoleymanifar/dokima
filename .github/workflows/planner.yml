@@ -71,6 +71,14 @@ jobs:
 
           The issue to plan is in /tmp/issue.md; its number N is $N. Hand back into /tmp/dokima-out." \
             --dangerously-skip-permissions --max-turns 40
+      - name: Show what the planner handed back
+        if: always()
+        run: |
+          echo "## What the planner handed back" >> "$GITHUB_STEP_SUMMARY"
+          for f in /tmp/dokima-out/plan.json /tmp/dokima-out/question.md; do
+            [ -f "$f" ] && { echo "**$(basename "$f")**"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+          true
       - name: Check what the planner handed back
         if: steps.who.outputs.ok == 'true'
         run: python3 -m dokima.planner check "${{ github.event.issue.number }}" /tmp/dokima-out

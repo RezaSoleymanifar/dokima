@@ -35,7 +35,7 @@ def test_plan_is_written_into_the_issue_as_goal_criteria_and_scope(record_proper
     crits = parsed["goals"][0]["criteria"]
     assert [c["text"] for c in crits] == PLAN["criteria"], "80.1: criteria not read back in order"
     assert crits[0]["verified_by"] == "`tests/test_jobs.py::test_id`", "80.1: criterion 1 not linked to its test"
-    assert "**Non-goals:** No retries" in parsed["notes"] and "- `dokima/jobs.py`" in parsed["notes"], "80.1: non-goals or scope missing"
+    assert "**Out of scope:** No retries" in parsed["notes"] and "- `dokima/jobs.py`" in parsed["notes"], "80.1: out of scope or scope missing"
 
 
 def test_owner_text_is_folded_and_never_read_as_plan(record_property):
