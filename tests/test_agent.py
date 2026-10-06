@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import agent, fence  # noqa: E402
 
-GOOD_REVIEW = {"stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
+GOOD_REVIEW = {"previous_step": {"did": ["Split the issue into four stories."], "decided": [], "open": ["Three questions."]},
+               "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
                "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No good-case test.",
                              "evidence": "18 passed against a stub.", "fix": "Add one."}],
                "notes": [], "outside_plan": [], "resolved": []}
@@ -68,39 +69,55 @@ def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
     assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]
 
 
-def test_records_are_numbered_kept_and_only_passed_plans_count(record_property, tmp_path, monkeypatch):
-    """Each run adds the next numbered record; a rejected plan is kept as history but the newest passed plan is the plan."""
+def comment(rec, who="dokima-runtime", t="2026-10-06T10:00:00Z"):
+    """A comment as GitHub returns it, carrying a record rendered by code."""
+    return {"author": {"login": who}, "body": agent.render(rec), "createdAt": t, "where": "issue #7"}
+
+
+def rec(role, stage="", handback=None, passed=True, problems=""):
+    """A record built the way the workflow builds one, from a temp hand-back folder."""
+    import tempfile
+    out = tempfile.mkdtemp()
+    json.dump(handback or {}, open(os.path.join(out, agent.HANDBACK[role]), "w"))
+    return agent.build_record(role, stage, out, problems, passed, {"run_id": "1", "run": "https://x/run/1"})
+
+
+def test_a_record_survives_its_comment_and_only_the_bot_counts(record_property):
+    """A record rendered into a comment reads back exactly; the same text posted by anyone else, or broken JSON, is not a record."""
     record_property("proves", "agent.6")
-    monkeypatch.chdir(tmp_path)
-    out = tmp_path / "out"
-    out.mkdir()
-    (out / "plan.json").write_text(json.dumps({"kind": "user_story", "user_story": "first"}))
-    p1 = agent.record(7, "planner", "", str(out), "", True, {"run_id": "1"})
-    (out / "plan.json").write_text(json.dumps({"kind": "user_story", "user_story": "second, rejected"}))
-    p2 = agent.record(7, "planner", "", str(out), "criterion 7.2 has no test\n", False, {"run_id": "2"})
-    (out / "review.json").write_text(json.dumps(GOOD_REVIEW))
-    p3 = agent.record(7, "reviewer", "plan", str(out), "", True, {"run_id": "3"})
-    assert [os.path.basename(p) for p in (p1, p2, p3)] == ["01-planner.json", "02-planner.json", "03-reviewer-plan.json"]
-    assert [r["run_id"] for _, r in agent.records(7)] == ["1", "2", "3"]
-    assert agent.latest(7, "planner")["handback"]["user_story"] == "first", "a rejected plan was treated as the plan"
-    assert agent.latest(7, "planner", passed=False)["check"]["problems"] == ["criterion 7.2 has no test"]
-    assert agent.latest(7, "worker") is None
+    r = rec("planner", handback={"kind": "user_story", "user_story": "first", "questions": ["Split it?"]})
+    assert agent.records([comment(r)]) == [r]
+    assert agent.records([comment(r, who="someone")]) == [], "a pasted record from a person was trusted"
+    broken = comment(r)
+    broken["body"] = broken["body"].replace('"role"', '"role', 1)
+    assert agent.records([broken]) == []
+    body = agent.render(r)
+    assert body.startswith(agent.MARK) and "first" in body and "Split it?" in body and "<details>" in body
 
 
-def test_a_missing_hand_back_is_recorded_as_missing(record_property, tmp_path, monkeypatch):
-    """A run that handed back nothing still leaves a record saying so, never an empty or invented hand-back."""
+def test_only_passed_plans_count_and_rejections_are_kept(record_property):
+    """A rejected plan stays in the trail with its problems but is never the plan; a passed record lists no problems."""
     record_property("proves", "agent.7")
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "out").mkdir()
-    path = agent.record(7, "worker", "", str(tmp_path / "out"), "work.json is missing\n", False, {})
-    r = json.load(open(path))
+    ok = rec("planner", handback={"kind": "user_story", "user_story": "first"}, problems="feature\n")
+    bad = rec("planner", handback={"kind": "user_story", "user_story": "second"}, passed=False, problems="criterion 7.2 has no test\n")
+    recs = agent.records([comment(ok), comment(bad)])
+    assert ok["check"]["problems"] == [], "a passed record listed the checker's normal output as a problem"
+    assert agent.latest(recs, "planner")["handback"]["user_story"] == "first"
+    assert agent.latest(recs, "planner", passed=False)["check"]["problems"] == ["criterion 7.2 has no test"]
+    assert "hand-back rejected by code" in agent.render(bad)
+
+
+def test_a_missing_hand_back_is_recorded_as_missing(record_property, tmp_path):
+    """A run that handed back nothing still leaves a record saying so, never an empty or invented hand-back."""
+    record_property("proves", "agent.8")
+    r = agent.build_record("worker", "", str(tmp_path), "work.json is missing\n", False, {})
     assert "work.json" in r["handback"]["missing"] and r["check"] == {"passed": False, "problems": ["work.json is missing"]}
 
 
 def test_the_models_used_come_from_the_session_log(record_property, tmp_path):
     """The record names every model that appears in the run's session log, so a wrong model is visible and can fail the run."""
-    record_property("proves", "agent.8")
-    log = tmp_path / "logs" / "proj"
+    record_property("proves", "agent.9")
+    log = tmp_path / "logs" / ".claude" / "proj"
     log.mkdir(parents=True)
     (log / "s.jsonl").write_text("\n".join(json.dumps(x) for x in [
         {"message": {"model": "claude-opus-5-5"}}, {"type": "user"}, {"message": {"model": "claude-sonnet-5-5"}}]) + "\nnot json\n")
@@ -108,28 +125,21 @@ def test_the_models_used_come_from_the_session_log(record_property, tmp_path):
     assert agent.models_used(str(tmp_path / "none")) == []
 
 
-def test_the_worker_starts_only_on_a_plan_the_reviewer_approved(record_property, tmp_path, monkeypatch):
+def test_the_worker_starts_only_on_a_plan_the_reviewer_approved(record_property):
     """No review, a blocking review, or an approval of an older plan keeps the worker out; an approval of the newest plan lets it in."""
-    record_property("proves", "agent.9")
-    monkeypatch.chdir(tmp_path)
-    out = tmp_path / "out"
-    out.mkdir()
-    (out / "plan.json").write_text(json.dumps({"kind": "user_story"}))
-    agent.record(8, "planner", "", str(out), "", True, {})
-    assert not agent.approved(8), "a plan with no review let the worker in"
-    (out / "review.json").write_text(json.dumps(GOOD_REVIEW))
-    agent.record(8, "reviewer", "plan", str(out), "", True, {})
-    assert not agent.approved(8), "a blocking review let the worker in"
-    (out / "review.json").write_text(json.dumps({**GOOD_REVIEW, "verdict": "approve", "blockers": []}))
-    agent.record(8, "reviewer", "plan", str(out), "", True, {})
-    assert agent.approved(8), "an approved newest plan kept the worker out"
-    agent.record(8, "planner", "", str(out), "", True, {})
-    assert not agent.approved(8), "an approval of an older plan let the worker in on a newer one"
+    record_property("proves", "agent.10")
+    plan = rec("planner", handback={"kind": "user_story"})
+    block = rec("reviewer", "plan", GOOD_REVIEW)
+    ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
+    assert not agent.approved([plan])
+    assert not agent.approved([plan, block])
+    assert agent.approved([plan, block, ok])
+    assert not agent.approved([plan, ok, plan]), "an approval of an older plan let the worker in on a newer one"
 
 
 def test_a_pack_missing_anything_its_role_needs_is_refused(record_property, tmp_path):
     """A complete pack passes for each role; a missing plan, an empty issue, no comments section, a broken record or a PR pack without the worker's log is named."""
-    record_property("proves", "agent.10")
+    record_property("proves", "agent.11")
     d = tmp_path / "pack"
     (d / "in").mkdir(parents=True)
     (d / "issue.md").write_text("# Issue #9: t\n\nbody\n\n## Comments\n")
@@ -144,7 +154,8 @@ def test_a_pack_missing_anything_its_role_needs_is_refused(record_property, tmp_
     assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run is missing"]
     (d / "worker-run" / "p").mkdir(parents=True)
     assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run holds no session log"]
-    (d / "worker-run" / "p" / "s.jsonl").write_text("{}\n")
+    (d / "worker-run" / "home" / ".claude" / "p").mkdir(parents=True)
+    (d / "worker-run" / "home" / ".claude" / "p" / "s.jsonl").write_text("{}\n")
     assert agent.problems_pack("reviewer", "pr", str(d)) == []
     (d / "in" / "01-planner.json").write_text("{not json")
     assert agent.problems_pack("planner", "", str(d)) == ["record 01-planner.json is not valid JSON"]
@@ -153,3 +164,117 @@ def test_a_pack_missing_anything_its_role_needs_is_refused(record_property, tmp_
     (d / "in" / "01-planner.json").unlink()
     (d / "issue.md").write_text("   \n")
     assert agent.problems_pack("planner", "", str(d)) == ["issue.md is empty", "issue.md has no comments section"]
+
+
+def test_the_pack_reads_the_issue_and_its_pr_as_one_conversation(record_property, tmp_path, monkeypatch):
+    """Comments from the issue, its PR, PR reviews and line notes on the code arrive in time order, each labeled with where it was written; records come from both."""
+    record_property("proves", "agent.12")
+    plan = rec("planner", handback={"kind": "user_story", "user_story": "s"})
+    def fake_gh(*args):
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"number": 7, "title": "T", "body": "B", "comments": [
+                {"author": {"login": "owner"}, "body": "/plan first", "createdAt": "2026-01-01T00:00:01Z"},
+                {"author": {"login": "dokima-runtime"}, "body": agent.render(plan), "createdAt": "2026-01-01T00:00:03Z"}]})
+        if args[:2] == ("pr", "list"):
+            return json.dumps([{"number": 9}] if "try/issue-7" in args else [])
+        if args[:2] == ("pr", "view"):
+            return json.dumps({"comments": [{"author": {"login": "owner"}, "body": "/work change it", "createdAt": "2026-01-01T00:00:04Z"}],
+                               "reviews": [{"author": {"login": "owner"}, "body": "line note", "submittedAt": "2026-01-01T00:00:02Z", "state": "COMMENTED"}]})
+        if args[0] == "api" and args[1].endswith("/pulls/9/comments"):
+            return json.dumps([{"user": {"login": "owner"}, "body": "rename this", "created_at": "2026-01-01T00:00:05Z", "path": "x.py", "line": 3}])
+        raise AssertionError(args)
+    monkeypatch.setattr(agent, "gh", fake_gh)
+    assert agent.pack("o/r", 7, "reviewer", "plan", str(tmp_path / "p"))
+    text = (tmp_path / "p" / "issue.md").read_text()
+    order = [text.index(x) for x in ("/plan first", "line note", "dokima-record", "/work change it", "rename this")]
+    assert order == sorted(order), "the conversation is not in time order"
+    assert "on PR #9 review (commented)" in text and "on issue #7" in text and "on PR #9 line note on x.py:3" in text
+    assert json.load(open(tmp_path / "p" / "plan.json")) == {"kind": "user_story", "user_story": "s"}
+    assert (tmp_path / "p" / "in" / "01-planner.json").exists()
+
+
+def test_a_command_starts_its_stage_and_anything_else_starts_nothing(record_property):
+    """/plan, /work and /review on the first line route to their stage with the right issue; prose, a later-line command or an unlinked PR start nothing."""
+    record_property("proves", "agent.13")
+    assert agent.route("/plan tighten story 2\nmore words", False, 139) == {"role": "planner", "stage": "", "issue": "139"}
+    assert agent.route("/review", False, 139) == {"role": "reviewer", "stage": "plan", "issue": "139"}
+    assert agent.route("/review look at x.py", True, 150, "try/issue-139") == {"role": "reviewer", "stage": "pr", "issue": "139"}
+    assert agent.route("/WORK fix the line notes", True, 150, "feature-x", "Closes #42") == {"role": "worker", "stage": "", "issue": "42"}
+    assert agent.route("looks good to me", False, 139) is None
+    assert agent.route("thoughts first\n/plan later", False, 139) is None, "a command not on the first line started a stage"
+    assert agent.route("/planner", False, 139) is None
+    assert agent.route("/work", True, 150, "feature-x", "no link here") is None, "a PR with no issue started a stage"
+    assert agent.route("", False, 139) is None
+
+
+def test_each_round_answers_every_owner_note_and_open_blocker(record_property, tmp_path):
+    """Skipping a note or a blocker, or answering one that does not exist, is named; a full answer passes, for doers and the reviewer."""
+    record_property("proves", "agent.14")
+    (tmp_path / "owner_notes.json").write_text(json.dumps([{"id": "N1"}, {"id": "N2"}]))
+    (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}]))
+    full = {"owner_notes": [{"id": "N1", "answer": "done", "why": "x"}, {"id": "N2", "answer": "disagree", "why": "y"}],
+            "replies": [{"blocker": "B1", "answer": "fixed", "why": "z"}]}
+    assert agent.problems_round("worker", full, str(tmp_path)) == []
+    assert agent.problems_round("planner", {**full, "owner_notes": full["owner_notes"][:1]}, str(tmp_path)) == ["owner note N2 is not answered"]
+    assert agent.problems_round("worker", {**full, "replies": []}, str(tmp_path)) == ["blocker B1 is not answered"]
+    extra = {**full, "owner_notes": full["owner_notes"] + [{"id": "N9", "answer": "done", "why": "q"}]}
+    assert agent.problems_round("worker", extra, str(tmp_path)) == ["owner note N9 does not exist"]
+    review = {"verdict": "block", "blockers": [{"id": "B1"}], "resolved": [],
+              "owner_notes": [{"id": "N1", "addressed": True, "evidence": "e"}, {"id": "N2", "addressed": False, "evidence": "f"}]}
+    assert agent.problems_round("reviewer", review, str(tmp_path)) == []
+    assert agent.problems_round("reviewer", {**review, "verdict": "approve", "blockers": [], "resolved": ["B1"]}, str(tmp_path)) == \
+        ["an owner note that is not addressed is a blocker, so the review cannot approve"]
+    assert agent.problems_round("reviewer", {**review, "blockers": []}, str(tmp_path)) == ["earlier blocker B1 is neither resolved nor still listed"]
+
+
+def test_owner_notes_are_only_what_the_owner_wrote_since_this_agents_last_run(record_property):
+    """Notes before the agent's last record, and words from non-owners, are left out; a first run sees all the owner's words."""
+    record_property("proves", "agent.15")
+    plan = rec("planner", handback={"kind": "user_story"})
+    c = lambda who, body, t: {"author": {"login": who}, "body": body, "createdAt": t, "where": "issue #7"}
+    items = [c("owner", "old ask", "1"), comment(plan, t="2"), c("stranger", "do this instead", "3"), c("owner", "/plan new ask", "4")]
+    assert [n["text"] for n in agent.owner_notes(items, "planner", "", ["owner"])] == ["/plan new ask"]
+    assert [n["id"] for n in agent.owner_notes(items, "reviewer", "plan", ["owner"])] == ["N1", "N2"]
+    block = rec("reviewer", "plan", GOOD_REVIEW)
+    ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
+    assert [b["id"] for b in agent.open_blockers([plan, block], "plan")] == ["B1"]
+    assert agent.open_blockers([plan, block, ok], "plan") == []
+    assert agent.open_blockers([plan, block], "pr") == []
+
+
+def test_the_review_sums_up_the_previous_step_in_at_most_five_lines(record_property):
+    """A review without a summary of what the planner or worker did, or with more than five lines of it, is named."""
+    record_property("proves", "agent.16")
+    assert agent.problems_review({**GOOD_REVIEW, "previous_step": {}}) == ["previous_step must sum up what the planner or worker did, decided and left open"]
+    long = {"did": ["a", "b", "c"], "decided": ["d", "e"], "open": ["f"]}
+    assert agent.problems_review({**GOOD_REVIEW, "previous_step": long}) == ["previous_step holds at most five lines"]
+    body = agent.render(rec("reviewer", "plan", GOOD_REVIEW))
+    assert "What the previous step did" in body and "Split the issue into four stories." in body
+
+
+def test_the_conversation_is_saved_readable_and_without_secrets(record_property, tmp_path):
+    """The transcript shows what the agent said, the tools it used and their results, and every secret value is removed."""
+    record_property("proves", "agent.17")
+    log = tmp_path / ".claude" / "p"
+    log.mkdir(parents=True)
+    secret = "sk-ant-oat01-SECRETSECRET"
+    lines = [{"message": {"role": "assistant", "content": [{"type": "text", "text": "Reading the issue."},
+                                                         {"type": "tool_use", "name": "Bash", "input": {"command": f"echo {secret}"}}]}},
+             {"message": {"role": "user", "content": [{"type": "tool_result", "content": f"token {secret}"}]}}]
+    (log / "s.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    t = agent.transcript(str(tmp_path), [secret])
+    assert "**Agent:** Reading the issue." in t and "1. Bash" in t and "> token" in t
+    assert secret not in t and "[secret removed]" in t
+    assert agent.scrub("abc", ["short"]) == "abc"
+
+
+def test_the_footnote_reports_claudes_own_numbers_and_links_the_conversation(record_property, tmp_path):
+    """Time, turns, tokens and cost come from Claude's end-of-run report; a missing report shows none of them, never a guess."""
+    record_property("proves", "agent.18")
+    (tmp_path / "claude.json").write_text(json.dumps({"duration_ms": 240000, "num_turns": 23, "total_cost_usd": 3.2,
+                                                       "usage": {"input_tokens": 1000, "cache_read_input_tokens": 400000, "output_tokens": 18000}}))
+    r = {"models": ["claude-opus-5-5"], "report": agent.run_report(str(tmp_path / "claude.json")), "log": "https://g/log.md", "run": "https://g/run"}
+    f = agent.footnote(r)
+    assert all(x in f for x in ("Opus 5.5", "4.0 min", "23 turns", "401,000 tokens in, 18,000 out", "$3.20 at API prices", "[conversation](https://g/log.md)"))
+    bare = agent.footnote({"models": ["claude-opus-5-5"], "report": agent.run_report(str(tmp_path / "none.json"))})
+    assert "min" not in bare and "$" not in bare and "tokens" not in bare

@@ -30,6 +30,14 @@ Never edit `.github/`, `dokima/roles/`, or any test. When you stop, code puts ev
 and undoes every change outside the plan's scope before the judges see anything; the owner sees what was dropped. The result grade, which comes first in this prompt, is the list the
 reviewer grades your pull request against; walk it before you finish.
 
+# Every round
+You may be on round one or round ten. Your pack says what is new for you: owner_notes.json holds everything the owner
+wrote since your last run (comments, reviews, notes on lines of code), numbered N1, N2...; open_blockers.json holds the
+blockers of the newest review of your pull request, by id. The issue and its pull request hold the whole history, oldest first:
+read it, but act on what is new. Newer owner words win over older ones; when two truly conflict, follow the newer and say
+so in your answer. Answer every owner note and every open blocker by id, done or disagree, with why. Code rejects a
+hand-back that skips one. Never redo or undo what an earlier round settled unless a new note asks you to.
+
 # What you hand back
 One file, `work.json`, in the hand-back folder:
   {"summary": "Two plain sentences: the cause and the change.",
@@ -37,6 +45,7 @@ One file, `work.json`, in the hand-back folder:
    "evidence": "The test command you ran last and its result line.",
    "outside_scope": [{"file": "path", "why": "..."}],
    "suspect_tests": [{"test": "path::name", "evidence": "..."}],
+   "owner_notes": [{"id": "N1", "answer": "done" | "disagree", "why": "..."}],
    "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}]}
 Every criterion gets a line. Empty lists may be left out. You never stop to ask: the plan is the contract and you work
 until every test is green. If the plan itself cannot be built, report the tests that prove it in suspect_tests.
