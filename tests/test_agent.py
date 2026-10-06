@@ -125,3 +125,31 @@ def test_the_worker_starts_only_on_a_plan_the_reviewer_approved(record_property,
     assert agent.approved(8), "an approved newest plan kept the worker out"
     agent.record(8, "planner", "", str(out), "", True, {})
     assert not agent.approved(8), "an approval of an older plan let the worker in on a newer one"
+
+
+def test_a_pack_missing_anything_its_role_needs_is_refused(record_property, tmp_path):
+    """A complete pack passes for each role; a missing plan, an empty issue, no comments section, a broken record or a PR pack without the worker's log is named."""
+    record_property("proves", "agent.10")
+    d = tmp_path / "pack"
+    (d / "in").mkdir(parents=True)
+    (d / "issue.md").write_text("# Issue #9: t\n\nbody\n\n## Comments\n")
+    assert agent.problems_pack("planner", "", str(d)) == []
+    assert agent.problems_pack("worker", "", str(d)) == ["plan.json is missing"]
+    (d / "plan.json").write_text(json.dumps({"kind": "user_story"}))
+    assert agent.problems_pack("reviewer", "plan", str(d)) == []
+    assert agent.problems_pack("worker", "", str(d)) == []
+    (d / "diff.patch").write_text("+x\n")
+    (d / "tests.txt").write_text("1 passed\n")
+    (d / "tests.xml").write_text("<testsuite/>\n")
+    assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run is missing"]
+    (d / "worker-run" / "p").mkdir(parents=True)
+    assert agent.problems_pack("reviewer", "pr", str(d)) == ["worker-run holds no session log"]
+    (d / "worker-run" / "p" / "s.jsonl").write_text("{}\n")
+    assert agent.problems_pack("reviewer", "pr", str(d)) == []
+    (d / "in" / "01-planner.json").write_text("{not json")
+    assert agent.problems_pack("planner", "", str(d)) == ["record 01-planner.json is not valid JSON"]
+    (d / "in" / "01-planner.json").write_text(json.dumps({"role": "planner"}))
+    assert agent.problems_pack("planner", "", str(d)) == ["record 01-planner.json lacks role, handback or check"]
+    (d / "in" / "01-planner.json").unlink()
+    (d / "issue.md").write_text("   \n")
+    assert agent.problems_pack("planner", "", str(d)) == ["issue.md is empty", "issue.md has no comments section"]

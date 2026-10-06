@@ -201,13 +201,63 @@ def check(kind, path):
     return 1 if bad else 0
 
 
+NEEDS = {
+    "planner": ["issue.md"],
+    "reviewer-plan": ["issue.md", "plan.json"],
+    "worker": ["issue.md", "plan.json"],
+    "reviewer-pr": ["issue.md", "plan.json", "diff.patch", "tests.txt", "tests.xml", "worker-run"],
+}
+
+
+def problems_pack(role, stage, dest):
+    """Everything missing or broken in an agent's starting pack, checked by code before the agent starts."""
+    key = f"{role}-{stage}" if role == "reviewer" else role
+    if key not in NEEDS:
+        return [f"unknown role {key}"]
+    bad = []
+    for name in NEEDS[key]:
+        path = os.path.join(dest, name)
+        if not os.path.exists(path):
+            bad.append(f"{name} is missing")
+        elif os.path.isdir(path) and not glob.glob(os.path.join(path, "**", "*.jsonl"), recursive=True):
+            bad.append(f"{name} holds no session log")
+        elif os.path.isfile(path) and name != "diff.patch" and not open(path).read().strip():
+            bad.append(f"{name} is empty")
+    issue = os.path.join(dest, "issue.md")
+    if os.path.exists(issue) and "## Comments" not in open(issue).read():
+        bad.append("issue.md has no comments section")
+    for name in ("plan.json",):
+        path = os.path.join(dest, name)
+        if os.path.isfile(path):
+            try:
+                if not isinstance(json.load(open(path)), dict):
+                    bad.append(f"{name} is not a JSON object")
+            except json.JSONDecodeError:
+                bad.append(f"{name} is not valid JSON")
+    for path in sorted(glob.glob(os.path.join(dest, "in", "*.json"))):
+        try:
+            r = json.load(open(path))
+            if not {"role", "handback", "check"} <= set(r):
+                bad.append(f"record {os.path.basename(path)} lacks role, handback or check")
+        except json.JSONDecodeError:
+            bad.append(f"record {os.path.basename(path)} is not valid JSON")
+    if key == "reviewer-pr" and os.path.isfile(os.path.join(dest, "diff.patch")) and not open(os.path.join(dest, "diff.patch")).read().strip():
+        bad.append("diff.patch is empty: there is no work to review")
+    return bad
+
+
 def main(argv):
-    """agent pack N ROLE STAGE DIR | agent check review|work FILE | agent record N ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR"""
+    """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE | agent record N ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
     if argv[1] == "check":
         return check(argv[2], argv[3])
+    if argv[1] == "check-pack":
+        bad = problems_pack(argv[2], argv[3], argv[4])
+        for b in bad:
+            print(b)
+        return 1 if bad else 0
     if argv[1] == "record":
         number, role, stage, out, check_file, passed, log_dir = argv[2:9]
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "commit_before": os.environ.get("BASE"),
