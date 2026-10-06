@@ -207,39 +207,38 @@ def test_a_command_starts_its_stage_and_anything_else_starts_nothing(record_prop
     assert agent.route("", False, 139) is None
 
 
-def test_each_round_answers_every_owner_note_and_open_blocker(record_property, tmp_path):
-    """Skipping a note or a blocker, or answering one that does not exist, is named; a full answer passes, for doers and the reviewer."""
+def test_each_round_answers_every_open_blocker(record_property, tmp_path):
+    """Planner and worker must answer every open blocker by id; the reviewer must resolve or keep each earlier one."""
     record_property("proves", "agent.14")
-    (tmp_path / "owner_notes.json").write_text(json.dumps([{"id": "N1"}, {"id": "N2"}]))
-    (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}]))
-    full = {"owner_notes": [{"id": "N1", "answer": "done", "why": "x"}, {"id": "N2", "answer": "disagree", "why": "y"}],
-            "replies": [{"blocker": "B1", "answer": "fixed", "why": "z"}]}
-    assert agent.problems_round("worker", full, str(tmp_path)) == []
-    assert agent.problems_round("planner", {**full, "owner_notes": full["owner_notes"][:1]}, str(tmp_path)) == ["owner note N2 is not answered"]
-    assert agent.problems_round("worker", {**full, "replies": []}, str(tmp_path)) == ["blocker B1 is not answered"]
-    extra = {**full, "owner_notes": full["owner_notes"] + [{"id": "N9", "answer": "done", "why": "q"}]}
-    assert agent.problems_round("worker", extra, str(tmp_path)) == ["owner note N9 does not exist"]
-    review = {"verdict": "block", "blockers": [{"id": "B1"}], "resolved": [],
-              "owner_notes": [{"id": "N1", "addressed": True, "evidence": "e"}, {"id": "N2", "addressed": False, "evidence": "f"}]}
-    assert agent.problems_round("reviewer", review, str(tmp_path)) == []
-    assert agent.problems_round("reviewer", {**review, "verdict": "approve", "blockers": [], "resolved": ["B1"]}, str(tmp_path)) == \
-        ["an owner note that is not addressed is a blocker, so the review cannot approve"]
-    assert agent.problems_round("reviewer", {**review, "blockers": []}, str(tmp_path)) == ["earlier blocker B1 is neither resolved nor still listed"]
+    (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}, {"id": "B2"}]))
+    assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}, {"blocker": "B2"}]}, str(tmp_path)) == []
+    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}]}, str(tmp_path)) == ["blocker B2 is not answered"]
+    assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": [{"id": "B2"}]}, str(tmp_path)) == []
+    assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": []}, str(tmp_path)) == ["earlier blocker B2 is neither resolved nor still listed"]
+    assert agent.problems_round("worker", {}, str(tmp_path / "none")) == []
 
 
-def test_owner_notes_are_only_what_the_owner_wrote_since_this_agents_last_run(record_property):
-    """Notes before the agent's last record, and words from non-owners, are left out; a first run sees all the owner's words."""
+def test_open_blockers_come_from_the_newest_review_at_that_stage(record_property):
+    """A blocking review leaves its blockers open; a later approval clears them; another stage's review never counts."""
     record_property("proves", "agent.15")
     plan = rec("planner", handback={"kind": "user_story"})
-    c = lambda who, body, t: {"author": {"login": who}, "body": body, "createdAt": t, "where": "issue #7"}
-    items = [c("owner", "old ask", "1"), comment(plan, t="2"), c("stranger", "do this instead", "3"), c("owner", "/plan new ask", "4")]
-    assert [n["text"] for n in agent.owner_notes(items, "planner", "", ["owner"])] == ["/plan new ask"]
-    assert [n["id"] for n in agent.owner_notes(items, "reviewer", "plan", ["owner"])] == ["N1", "N2"]
     block = rec("reviewer", "plan", GOOD_REVIEW)
     ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
     assert [b["id"] for b in agent.open_blockers([plan, block], "plan")] == ["B1"]
     assert agent.open_blockers([plan, block, ok], "plan") == []
     assert agent.open_blockers([plan, block], "pr") == []
+
+
+def test_dokimas_own_code_always_runs_from_main(record_property):
+    """The runtime is copied from main before any branch is checked out, every Dokima step runs from that copy, and only tests use the branch's code."""
+    record_property("proves", "agent.19")
+    wf = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent.yml")).read()
+    assert wf.index("cp -r dokima /tmp/runtime/dokima") < wf.index("name: Starting branch")
+    assert "PYTHONPATH: /tmp/runtime" in wf and 'PYTHONSAFEPATH: "1"' in wf
+    assert "cat /tmp/runtime/dokima/roles/" in wf and "cat dokima/roles/" not in wf
+    for line in wf.splitlines():
+        if "python3 -m pytest" in line:
+            assert "PYTHONPATH= PYTHONSAFEPATH=" in line, f"tests would run Dokima from main instead of the branch: {line.strip()}"
 
 
 def test_the_review_sums_up_the_previous_step_in_at_most_five_lines(record_property):

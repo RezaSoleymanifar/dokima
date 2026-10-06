@@ -42,6 +42,9 @@ jobs:
       ROLE: ${{ inputs.role }}
       STAGE: ${{ inputs.role == 'reviewer' && inputs.stage || '' }}
       PACK: /tmp/pack
+      # Dokima's own code and prompts always come from main, never from the branch being judged.
+      PYTHONPATH: /tmp/runtime
+      PYTHONSAFEPATH: "1"
       OUT: /tmp/dokima-out
       MODEL: claude-opus-5-5
     steps:
@@ -52,6 +55,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Copy the runtime from main before touching any branch
+        run: mkdir -p /tmp/runtime && cp -r dokima /tmp/runtime/dokima
       - name: Only a code owner starts an agent
         env:
           SENDER: ${{ github.actor }}
@@ -90,7 +95,7 @@ jobs:
       - name: All tests, run by code before the reviewer reads the pull request
         if: env.STAGE == 'pr'
         run: |
-          python3 -m pytest -q -rA --junitxml="$PACK/tests.xml" > "$PACK/tests.txt" 2>&1 || true
+          PYTHONPATH= PYTHONSAFEPATH= python3 -m pytest -q -rA --junitxml="$PACK/tests.xml" > "$PACK/tests.txt" 2>&1 || true
           tail -5 "$PACK/tests.txt"
       - name: Code checks the pack has everything this role needs
         run: |
@@ -110,14 +115,13 @@ jobs:
           esac
           CHECK="$CHECK && python3 -m dokima.agent check-round $ROLE $OUT/$FILE $PACK"
           echo "CHECK=$CHECK" >> "$GITHUB_ENV"
-          claude -p "$(cat dokima/roles/$GRADE.md dokima/roles/$ROLE.md)
+          claude -p "$(cat /tmp/runtime/dokima/roles/$GRADE.md /tmp/runtime/dokima/roles/$ROLE.md)
 
           # Your pack
           - $PACK/issue.md: issue #$N as it stands, with every comment (the owner's words and answers are here).
           - $PACK/in/: every earlier record of this issue, oldest first (NN-role.json). Each holds that run's hand-back,
             the code check's verdict and the run it came from. Answer open blockers by id from the newest review.
           - $PACK/plan.json: the newest plan that passed its check (absent until the planner has one).
-          - $PACK/owner_notes.json: what the owner wrote since your last run, numbered N1, N2... Answer every one by id.
           - $PACK/open_blockers.json: the open blockers from the newest review at your stage. Answer every one by id.$( [ "$STAGE" = pr ] && echo "
           - $PACK/diff.patch: the work against main. $PACK/tests.txt and tests.xml: all tests, run by code on this machine.
           - $PACK/worker-run/: the worker's session log." )
