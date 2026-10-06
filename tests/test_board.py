@@ -102,3 +102,22 @@ def test_lanes_are_needs_you_or_nothing(record_property):
     gh = FakeGitHub(on_board=True)
     board.sync("issue_comment", {"action": "created", "issue": {"number": 5}, "comment": {"user": BOT, "body": "**Planner question**"}}, "dokima-dev/1", "o/r", q=gh)
     assert any(v.get("o") == "w-you" for _, v in gh.calls), "130.1: a question for the owner did not land in Needs you"
+
+
+# 135: the refresh button puts every card back where it belongs
+
+def issue(state="OPEN", labels=(), prs=()):
+    return {"__typename": "Issue", "number": 1, "state": state,
+            "labels": {"nodes": [{"name": n} for n in labels]},
+            "closedByPullRequestsReferences": {"nodes": [{"state": s} for s in prs]}}
+
+
+def test_place_from_real_state():
+    """Each item's column comes from its real state; closed items drop the flag."""
+    assert board.place(issue("CLOSED", ["work"])) == ("Done", True), "135.1"
+    assert board.place({"__typename": "PullRequest", "state": "MERGED"}) == ("Done", True), "135.2"
+    assert board.place({"__typename": "PullRequest", "state": "OPEN"}) == ("Review", False), "135.1"
+    assert board.place(issue(labels=["work"], prs=["OPEN"])) == ("Review", False), "135.1"
+    assert board.place(issue(labels=["work"], prs=["CLOSED"])) == ("Work", False), "135.1"
+    assert board.place(issue(labels=["plan"])) == ("Plan", False), "135.1"
+    assert board.place(issue()) == ("Backlog", False), "135.1"

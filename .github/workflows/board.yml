@@ -3,6 +3,8 @@ name: board
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
 # names a board ("org/number").
 on:
+  # The "Run workflow" button: puts every card back where its real state says.
+  workflow_dispatch:
   issues:
     types: [labeled, closed]
   issue_comment:

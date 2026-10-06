@@ -52,6 +52,8 @@ def decide(event, p):
 def gql(query, **variables):
     args = ["gh", "api", "graphql", "-f", f"query={query}"]
     for k, v in variables.items():
+        if v is None:
+            continue
         args += ["-F" if isinstance(v, int) else "-f", f"{k}={v}"]
     return json.loads(subprocess.run(args, check=True, capture_output=True, text=True).stdout)["data"]
 
@@ -86,6 +88,53 @@ class Board:
             self.q('mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}', p=self.id, i=iid, f=fid, o=options[option])
 
 
+ITEMS = """query($p:ID!,$after:String){node(id:$p){... on ProjectV2{items(first:100,after:$after){
+  pageInfo{hasNextPage endCursor}
+  nodes{id content{__typename
+    ... on Issue{number state labels(first:20){nodes{name}} closedByPullRequestsReferences(first:5){nodes{state}}}
+    ... on PullRequest{number state}}}}}}}"""
+
+
+def place(content):
+    """(status, clear_flag): the column an issue or PR belongs in, from its real state.
+
+    Closed or merged is Done and drops the Needs you flag; an open PR, or an issue
+    with an open PR, is Review; then the work label is Work, the plan label is Plan,
+    and anything else is Backlog.
+    """
+    if content["state"] in ("CLOSED", "MERGED"):
+        return "Done", True
+    if content["__typename"] == "PullRequest":
+        return "Review", False
+    if any(pr["state"] == "OPEN" for pr in content["closedByPullRequestsReferences"]["nodes"]):
+        return "Review", False
+    labels = {label["name"] for label in content["labels"]["nodes"]}
+    if "work" in labels:
+        return "Work", False
+    if "plan" in labels:
+        return "Plan", False
+    return "Backlog", False
+
+
+def refresh(board):
+    """Put every issue and PR on the board back in the column its real state says."""
+    moved, after = [], None
+    while True:
+        page = board.q(ITEMS, p=board.id, after=after)["node"]["items"]
+        for it in page["nodes"]:
+            content = it["content"]
+            if not content or content["__typename"] not in ("Issue", "PullRequest"):
+                continue
+            status, clear = place(content)
+            board.set(it["id"], "Status", status)
+            if clear:
+                board.set(it["id"], "Action", None)
+            moved.append((content["number"], status))
+        if not page["pageInfo"]["hasNextPage"]:
+            return moved
+        after = page["pageInfo"]["endCursor"]
+
+
 def sync(event, payload, spec, repo, q=gql):
     changes = decide(event, payload)
     if not spec or not changes:
@@ -102,6 +151,10 @@ def main():
     spec = os.environ.get("DOKIMA_BOARD", "").strip()
     if not spec:
         print("No DOKIMA_BOARD set; nothing to sync.")
+        return 0
+    if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+        for number, status in refresh(Board(spec, os.environ["GITHUB_REPOSITORY"])):
+            print("board: refreshed", number, status)
         return 0
     payload = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
     for change in sync(os.environ["GITHUB_EVENT_NAME"], payload, spec, os.environ["GITHUB_REPOSITORY"]):
