@@ -66,3 +66,62 @@ def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
     assert agent.problems_questions([{"question": "Split it?"}]) == ["question 1 must be a plain question with a '?'"]
     assert agent.problems_review({**GOOD_REVIEW, "questions": [q]}) == ["the reviewer never asks the owner; escalate on round three instead"]
     assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]
+
+
+def test_records_are_numbered_kept_and_only_passed_plans_count(record_property, tmp_path, monkeypatch):
+    """Each run adds the next numbered record; a rejected plan is kept as history but the newest passed plan is the plan."""
+    record_property("proves", "agent.6")
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "plan.json").write_text(json.dumps({"kind": "user_story", "user_story": "first"}))
+    p1 = agent.record(7, "planner", "", str(out), "", True, {"run_id": "1"})
+    (out / "plan.json").write_text(json.dumps({"kind": "user_story", "user_story": "second, rejected"}))
+    p2 = agent.record(7, "planner", "", str(out), "criterion 7.2 has no test\n", False, {"run_id": "2"})
+    (out / "review.json").write_text(json.dumps(GOOD_REVIEW))
+    p3 = agent.record(7, "reviewer", "plan", str(out), "", True, {"run_id": "3"})
+    assert [os.path.basename(p) for p in (p1, p2, p3)] == ["01-planner.json", "02-planner.json", "03-reviewer-plan.json"]
+    assert [r["run_id"] for _, r in agent.records(7)] == ["1", "2", "3"]
+    assert agent.latest(7, "planner")["handback"]["user_story"] == "first", "a rejected plan was treated as the plan"
+    assert agent.latest(7, "planner", passed=False)["check"]["problems"] == ["criterion 7.2 has no test"]
+    assert agent.latest(7, "worker") is None
+
+
+def test_a_missing_hand_back_is_recorded_as_missing(record_property, tmp_path, monkeypatch):
+    """A run that handed back nothing still leaves a record saying so, never an empty or invented hand-back."""
+    record_property("proves", "agent.7")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    path = agent.record(7, "worker", "", str(tmp_path / "out"), "work.json is missing\n", False, {})
+    r = json.load(open(path))
+    assert "work.json" in r["handback"]["missing"] and r["check"] == {"passed": False, "problems": ["work.json is missing"]}
+
+
+def test_the_models_used_come_from_the_session_log(record_property, tmp_path):
+    """The record names every model that appears in the run's session log, so a wrong model is visible and can fail the run."""
+    record_property("proves", "agent.8")
+    log = tmp_path / "logs" / "proj"
+    log.mkdir(parents=True)
+    (log / "s.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        {"message": {"model": "claude-opus-5-5"}}, {"type": "user"}, {"message": {"model": "claude-sonnet-5-5"}}]) + "\nnot json\n")
+    assert agent.models_used(str(tmp_path / "logs")) == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    assert agent.models_used(str(tmp_path / "none")) == []
+
+
+def test_the_worker_starts_only_on_a_plan_the_reviewer_approved(record_property, tmp_path, monkeypatch):
+    """No review, a blocking review, or an approval of an older plan keeps the worker out; an approval of the newest plan lets it in."""
+    record_property("proves", "agent.9")
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "plan.json").write_text(json.dumps({"kind": "user_story"}))
+    agent.record(8, "planner", "", str(out), "", True, {})
+    assert not agent.approved(8), "a plan with no review let the worker in"
+    (out / "review.json").write_text(json.dumps(GOOD_REVIEW))
+    agent.record(8, "reviewer", "plan", str(out), "", True, {})
+    assert not agent.approved(8), "a blocking review let the worker in"
+    (out / "review.json").write_text(json.dumps({**GOOD_REVIEW, "verdict": "approve", "blockers": []}))
+    agent.record(8, "reviewer", "plan", str(out), "", True, {})
+    assert agent.approved(8), "an approved newest plan kept the worker out"
+    agent.record(8, "planner", "", str(out), "", True, {})
+    assert not agent.approved(8), "an approval of an older plan let the worker in on a newer one"
