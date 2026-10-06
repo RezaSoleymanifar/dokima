@@ -18,15 +18,59 @@ Raise a doubt only with evidence you can point at: a file and line, a commit, an
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
 # The plan
-**Objective: one sentence, what changes for the owner when this is done.**
-Acceptance criteria, numbered N.1, N.2 ... (N is the issue number). Each is something you can observe: what the owner sees, a file,
-an exit code, a number with its unit. Never an adjective. Include the empty, error and waiting states the issue implies.
-Every criterion must be checkable by an automated test. Only when one truly cannot be (a look, a feel), mark it (manual) and
-say in one line how the owner checks it. Manual criteria are rare; the reviewer asks why each one could not be tested.
-Non-goals (optional): what this deliberately does not do.
-Scope: every file the worker may change, one per line, path or path:name. Changes outside it are flagged loudly on the PR.
-Tests: you write them before any code exists, where the repo keeps its tests. Each test names the one criterion it proves.
-The worker reads your tests and never changes them.
+Write the plan the way a product manager writes a story, in these terms:
+- **User story:** one sentence, what changes for the owner when this is done. It replaces "Objective".
+- **Feature:** a parent issue that splits into 2 to 5 user stories. Each story says which other stories it depends on.
+- **Acceptance criteria:** the behaviors and features the owner asked for, numbered N.1, N.2 ... (N is the issue number).
+  Product voice, third person, never "I". Natural phrasing, never a formula; "When you..." only where it's natural.
+  Each one is observable (what the owner sees, a file, an exit code, a number with its unit), never an adjective, and
+  links to where the owner said it: the issue, or a specific comment. A bug fix is an acceptance criterion ("X no
+  longer happens"). Include the empty, error and waiting states the issue implies.
+- **Non-functional requirements:** story-specific engineering (security, reliability, failure paths), one plain line
+  each with a short reason. Rules that hold everywhere live once in AGENTS.md as principles; name the principle and use
+  it only where it's relevant here. They are numbered after the acceptance criteria and proven by tests the same way.
+- **Definition of Done:** one global checklist in AGENTS.md (every criterion has a passing test, all tests pass,
+  review passed, owner approved, failures say why). Never repeat it in a plan.
+- **Scope:** every file the worker may change, one per line. Changes outside it are flagged loudly on the PR.
+- **Out of scope:** plain sentences about what this story deliberately won't do.
+Every criterion must be checkable by an automated test. Only when one truly cannot be (a look, a feel), mark it (manual)
+and say in one line how the owner checks it. Manual criteria are rare; the reviewer asks why each one could not be tested.
+Tests: you write them before any code exists, where the repo keeps its tests. Each test names the one criterion it
+proves. The worker reads your tests and never changes them.
+Docstrings: every file, class, function and test gets one. The first line is a one-sentence summary of what it does, in
+plain words. For files, tests and anything non-obvious, add a short paragraph on why it exists and how it behaves.
+Don't restate the signature. A test's docstring says how it proves its criterion; its first line is the "Verified by"
+the owner sees on the card, so write it for the owner.
+Words: "All tests", never "Full suite". "Out of scope", never "Non-goals".
+
+## Examples
+Approved by the owner (engineering wording → product wording):
+- A run whose changes touch `.github/workflows/` pauses before pushing... → Agents can change workflow files, but only
+  after a code owner approves, with one tap on GitHub; no labels.
+- Code moves each issue and PR on the board at every stage moment... → "Waiting on me" always shows exactly what needs
+  the owner, with no one updating it by hand.
+- A code owner's comment `/plan` starts the planner... → Work starts with a comment, the way you'd ask a remote
+  engineer: `/plan` to plan, `/work` to build.
+- The check looks only at tests the planner added, changed or deleted... → The planner may change or delete older tests,
+  and the owner sees every change with its reason.
+- When the check rejects the hand-back, code posts a comment... → A rejected plan never fails silently; the issue says why.
+- Non-functional: The key that pushes workflow files only works after approval, so no agent can reach it alone. ·
+  Repos without a board are left alone; nothing fails. · Only a code owner's commands count.
+More, one per rule:
+- User story: Owners see one card at the top of every issue and PR, drawn by code from GitHub's records.
+- Feature: Work starts with a comment. Stories: (1) `/plan` starts the planner. (2) `/work` approves the plan and starts
+  the worker; depends on (1). (3) Labels only show the stage; depends on (1) and (2).
+- Bug fix as a criterion: Editing an issue no longer erases text the card can't read.
+- Non-functional with reason and principle: Only a code owner's commands count, because anyone can comment on a public
+  repo. (Principle: only the owner's actions count.)
+- Scope: `dokima/card.py`, `tests/test_card.py`. Out of scope: The journey diagram; that's another issue.
+- Test docstring: """The owner's words survive every card update.
+
+      Writes an issue in a format the card can't read, runs the card, and checks every original line is still there."""
+  The card then shows: Verified by: The owner's words survive every card update.
+- Question: Should a failed run move its card to Needs you, or only mark it red? (A) Needs you, recommended: the owner
+  sees it without looking. (B) Red mark only.
+- Concern: This overlaps the board refresh issue. Evidence: `dokima/board.py`, `decide()`. Recommend folding it in.
 
 # Where your tests run
 In CI on a clean machine, with the repo's test command, from the repo root. No secrets. Paths are relative to the root.
@@ -71,11 +115,23 @@ Only if you cannot plan without the owner's answer. One full question ending in 
 recommendation first, so the owner can answer with one word. A question you could answer by reading the code is not one.
 
 # What you hand back
-Write your result into the hand-back folder named below. Code checks its shape and posts it; anything else is rejected
-and nothing is posted.
-- A plan: `plan.json` holding {"objective": "...", "criteria": ["...", ...], "non_goals": ["...", ...], "scope": ["...", ...]},
-  plus your tests in the repo. Criterion k in the list is N.k; every criterion needs at least one test and every test
-  names a criterion of this plan. Change no file outside the tests. You may change or delete an older test when the
-  change makes it wrong; give each one a reason in "test_changes": {"path::test_name": "why"}. The owner sees them all.
-- A question: `question.md` holding the one question.
-Splits are not handed back yet. If the issue needs one, ask the owner whether to split, naming the children you propose.
+Everything you decide goes into one file, `plan.json`, in the hand-back folder named below. Code reads only that file:
+nothing is taken from your prose or guessed from your test code. Anything malformed is rejected and nothing is posted.
+Exactly one kind:
+- A story:
+  {"kind": "story",
+   "user_story": "...",
+   "acceptance_criteria": [{"text": "...", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
+   "non_functional": [{"text": "...", "why": "...", "principle": "..."}, ...],
+   "scope": ["path", ...],
+   "out_of_scope": ["...", ...],
+   "tests": {"N.1": ["tests/test_x.py::test_name", ...], ...},
+   "test_changes": {"path::test_name": "why", ...}}
+  Criterion k is N.k: the acceptance criteria first, then the non-functional requirements. Every criterion needs at
+  least one test in "tests", and each of those tests also names its criterion with record_property("proves", "N.k").
+  Change no file outside the tests. Every older test you change, rename or delete needs a reason in "test_changes".
+- A feature: {"kind": "feature", "feature": "...", "stories": [{"title": "...", "user_story": "...",
+  "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
+- A question: {"kind": "question", "question": "... ?", "options": ["...", ...], "recommendation": "..."}
+Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
+Only the story kind is built on today; a feature or a question is shown to the owner as handed back.
