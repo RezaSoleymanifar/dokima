@@ -110,7 +110,7 @@ jobs:
           You are on branch try/issue-$N. Your stage is: ${STAGE:-$ROLE}.
           Hand back into $OUT. Before you finish, run this check on your hand-back and fix everything it reports:
             $CHECK" \
-            --dangerously-skip-permissions --max-turns 60
+            --model claude-opus-5-5 --dangerously-skip-permissions --max-turns 60
       - name: Code checks the hand-back
         run: $CHECK
       - name: Fence - only in-scope changes, the planner's tests as committed
