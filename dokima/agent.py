@@ -52,7 +52,7 @@ def bring_in(repo, run_ids, dest, logs=False):
 def problems_questions(qs):
     """Everything wrong with a hand-back's questions for the owner; each needs a question, two or more options and a pick.
 
-    Questions go to the owner only, never to another agent, so the owner can answer each with one word."""
+    Only the planner asks, before any work starts, so the owner can answer each with one word."""
     if not isinstance(qs, list):
         return ["questions must be a list"]
     bad = []
@@ -98,7 +98,9 @@ def problems_review(r):
         bad.append("at most three notes")
     if r.get("stage") == "plan" and r.get("outside_plan"):
         bad.append("outside_plan is for a pull request only")
-    return bad + problems_questions(r.get("questions", []))
+    if "questions" in r:
+        bad.append("the reviewer never asks the owner; escalate on round three instead")
+    return bad
 
 
 def problems_work(w):
@@ -116,7 +118,9 @@ def problems_work(w):
     for s in w.get("suspect_tests", []):
         if not s.get("test") or not str(s.get("evidence", "")).strip():
             bad.append("every suspect test needs the test and the evidence")
-    return bad + problems_questions(w.get("questions", []))
+    if "questions" in w:
+        bad.append("the worker never asks the owner; the plan is the contract")
+    return bad
 
 
 def check(kind, path):

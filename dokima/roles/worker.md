@@ -37,7 +37,6 @@ One file, `work.json`, in the hand-back folder:
    "evidence": "The test command you ran last and its result line.",
    "outside_scope": [{"file": "path", "why": "..."}],
    "suspect_tests": [{"test": "path::name", "evidence": "..."}],
-   "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}],
-   "questions": [{"question": "... ?", "options": ["...", "..."], "recommendation": "one of the options"}]}
-Every criterion gets a line. Empty lists may be left out. When the plan leaves something only the owner can decide, ask
-in questions and build the recommended option meanwhile. Questions go to the owner only, never to another agent; agents talk to each other through blockers and replies.
+   "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}]}
+Every criterion gets a line. Empty lists may be left out. You never stop to ask: the plan is the contract and you work
+until every test is green. If the plan itself cannot be built, report the tests that prove it in suspect_tests.

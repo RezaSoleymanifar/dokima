@@ -36,8 +36,7 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
                  "evidence": "...", "fix": "..."}],
    "notes": [{"text": "...", "evidence": "..."}],
    "outside_plan": [{"file": "path", "change": "..."}],
-   "resolved": ["B1", ...],
-   "questions": [{"question": "... ?", "options": ["...", "..."], "recommendation": "one of the options"}]}
+   "resolved": ["B1", ...]}
 "approve" has no blockers; "block" has at least one; notes hold at most three; outside_plan is for the pull request only.
-Blocker ids carry over between rounds so a reply can answer one by id. Ask the owner only what you cannot judge from
-the records. Questions go to the owner only, never to another agent; agents talk to each other through blockers and replies.
+Blocker ids carry over between rounds so a reply can answer one by id. You never ask the owner: you judge from the
+records, and a disagreement that survives three rounds reaches the owner as an escalation.
