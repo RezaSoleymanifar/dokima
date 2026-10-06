@@ -1,25 +1,31 @@
-# The standard (shared by planner and reviewer)
+# Plan grade (shared by the planner and the reviewer of a plan)
 The planner walks this list before it hands back a plan. The reviewer grades the plan against the same list, in the same
-order. Right criteria first, then right tests.
+order: right criteria first, then right tests.
 
-## The one question: every test must break if the behavior does not exist
-Ask it of every test: **would this fail if the behavior the owner asked for were not shipped?**
+## The bar
+Dokima ships exactly what the owner asked for, or nothing. The process is built so that wrong, partial or guessed work
+is near impossible to merge: every gate must be passed on proof, never on trust. Tokens, time and extra rounds are cheap;
+a wrong merge is not. Nothing is guessed: when the owner's intent is unclear, ask; when a proof is unclear, block.
+
+## The one question: every test must break on any deviation
+Ask it of every test: **would this fail if the behavior the owner asked for were not shipped exactly?**
+Exactly means every way the work can deviate is caught by some test: the behavior missing, partial, wrong, too broad
+(it also fires where it should not) or too narrow (it misses a case the owner named). A check that says no to everything
+is wrong: every "rejects the bad case" test needs a "passes the good case" beside it.
 A proof can prove something and still not prove the thing. A test that passes against a stub, checks a format, a word or
 that a file exists, or proves a neighbour of the promise instead of the promise, proves nothing.
-Two sides, both required. A test breaks when the behavior is missing, and it breaks when the behavior is wrong. A check
-that says no to everything is wrong: every "rejects the bad case" test needs a "passes the good case" next to it, or a
-checker that rejects everything would turn it green.
 
 ## The list
 Blockers: a plan that fails any of 1 to 5 goes back to the planner.
-1. Right criteria. Every behavior the owner asked for is an acceptance criterion, traced to the owner's own words (the
-   issue or a specific comment). Nothing the owner asked for is dropped; nothing they did not ask for is added. If the
-   owner promised A, B and C, the criteria say A, B and C.
-2. Every criterion is observable, and the scope lists every file the work needs.
+1. Right criteria, exactly. Every behavior the owner asked for is an acceptance criterion, traced to the owner's own words
+   (the issue or a specific comment). Nothing dropped, nothing added, nothing reinterpreted. Where the words allow two
+   readings, the plan asks the owner; it never picks one silently.
+2. Every criterion is observable and precise: a value, a message, a file, an exit code, a state the owner can see. The
+   scope lists every file the work needs.
 3. Every criterion has a test, or is marked (manual) with a reason a reviewer accepts. If a criterion promises A, B and C,
    the tests prove A, B and C, not only A.
-4. Every test passes the one question: it breaks if the behavior is missing, and it breaks if the behavior is wrong.
-   Prefer tests that run the thing over tests that read code.
+4. Every test passes the one question: any deviation from its criterion, in either direction, turns it red. Prefer tests
+   that run the thing over tests that read code.
 5. Today, every new test fails for the right reason: the feature is missing, not a crash, a missing tool or a bad path.
 Notes, never blockers:
 6. Every failure the criterion implies is tested: bad input, empty result, two at once. Two cases when it says "every".

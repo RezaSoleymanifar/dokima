@@ -17,9 +17,9 @@ ticket, against the code and AGENTS.md:
 Raise a doubt only with evidence you can point at: a file and line, a commit, an issue or PR number. A hunch is not
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
-# Before you finish: the standard
-The shared standard comes first in this prompt. Walk its list yourself before you finish; the reviewer grades
-your plan against the same list and sends it back on 1 to 5.
+# Before you finish: the plan grade
+The plan grade comes first in this prompt. Walk its list yourself before you finish; the reviewer grades your plan
+against the same list and sends it back on 1 to 5.
 
 # The plan
 Write the plan the way a product manager writes a story, in these terms:

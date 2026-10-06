@@ -67,7 +67,7 @@ jobs:
           N: ${{ github.event.issue.number }}
         run: |
           mkdir -p /tmp/dokima-out
-          claude -p "$(cat dokima/roles/standard.md dokima/roles/planner.md)
+          claude -p "$(cat dokima/roles/plan-grade.md dokima/roles/planner.md)
 
           The issue to plan is in /tmp/issue.md; its number N is $N. Hand back into /tmp/dokima-out." \
             --dangerously-skip-permissions --max-turns 40
