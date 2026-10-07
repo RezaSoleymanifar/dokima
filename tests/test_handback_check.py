@@ -25,7 +25,8 @@ SPLIT = {"kind": "feature", "feature": "f", "stories": [
 
 REVIEW = {"previous_step": {"did": ["Wrote three criteria."], "decided": [], "open": []},
           "verdict": "block", "summary": "One proof is missing.",
-          "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No test.", "evidence": "plan.json", "fix": "Add one."}],
+          "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No test.", "evidence": "plan.json", "fix": "Add one.",
+                        "fixer": "worker"}],
           "notes": [{"text": "A note.", "evidence": "x.py:1"}], "outside_plan": [{"file": "a.py", "change": "c"}],
           "resolved": ["B0"], "issues_found": [{"title": "t", "why": "w", "evidence": "e"}]}
 WORK = {"summary": "Cause and change.", "criteria": {"9.1": "x.py, a()", "9.2": "x.py, b()", "9.3": "x.py, c()"},
@@ -152,7 +153,7 @@ def test_work_gives_a_line_for_exactly_the_plans_criteria(record_property, tmp_p
 
 def blocker(id_, criterion, test=None):
     """One well-formed blocker naming a criterion and a test."""
-    return {"id": id_, "criterion": criterion, "test": test, "problem": "p", "evidence": "e", "fix": "f"}
+    return {"id": id_, "criterion": criterion, "test": test, "problem": "p", "evidence": "e", "fix": "f", "fixer": "worker"}
 
 
 def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_property, tmp_path):
