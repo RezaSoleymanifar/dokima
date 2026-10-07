@@ -4,9 +4,13 @@ Every test here runs the real command the "done-whens" workflow runs, `python3 -
 root, with GitHub faked: a stub `gh` on PATH answers from a JSON file in a temp folder, and the pull request event is a
 temp file. The issue's records are real record comments, drawn by dokima.agent.render, so the check reads exactly what
 the bot posts. Nothing here touches the network.
+
+The last test reads the done-whens workflow itself (issue #168, the owner's later comment): the merge check must run
+main's copy of its workflow and of Dokima's code, so a pull request can never change the check that judges it.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -225,3 +229,70 @@ def test_records_pasted_by_anyone_but_the_bot_do_not_count(record_property, tmp_
     code, rows, out = run_matrix(tmp_path, [planned(PLAN), reviewed(APPROVE)])
     assert rows is not None and len(rows) == 3, f"168.4: the bot's own records did not count: {rows}\n{out}"
 
+
+
+def workflow_jobs(text):
+    """Each job of a workflow as (name, job-level text before its steps, [step texts]), read without a YAML library."""
+    body = text.split("\njobs:\n", 1)[1]
+    parts = re.split(r"(?m)^  ([A-Za-z0-9_-]+):\n", body)
+    for name, job in zip(parts[1::2], parts[2::2]):
+        head, _, steps = job.partition("\n    steps:\n")
+        yield name, head, [s for s in re.split(r"(?m)^      - ", steps) if s.strip()]
+
+
+def setting(text, key):
+    """The value of the first `key:` line in a piece of workflow text, or None."""
+    m = re.search(rf"(?m)^\s+{re.escape(key)}:\s*(.+?)\s*$", text)
+    return m.group(1).strip("'\"") if m else None
+
+
+def folder(path):
+    """A checkout or working-directory path made comparable: '', '.', './' and None all mean the repo root."""
+    return (path or ".").strip().rstrip("/").removeprefix("./") or "."
+
+
+def test_the_merge_check_runs_mains_code_and_judges_the_pull_requests_code(record_property):
+    """The merge check runs main's own copy of its workflow and of Dokima's code; only the tests come from the pull request.
+
+    Walks the done-whens workflow step by step. GitHub runs main's copy of a workflow only on `pull_request_target`, so
+    that must be its trigger, and never `pull_request`. Every checkout that names the pull request's head marks its
+    folder as the pull request's; every other checkout is main's. Every `python3 -m dokima` step must run in one of
+    main's folders, with no PYTHONPATH of its own, and the step that runs pytest must run in the pull request's folder,
+    so the tests still judge the pull request's code and not main's. Since the workflow now runs main's copy while it
+    runs the pull request's code, it must name no key and ask for no write permission."""
+    record_property("proves", "168.5")
+    text = open(os.path.join(ROOT, ".github/workflows/done-whens.yml")).read()
+    on = re.split(r"(?m)^[a-z]", text.split("\non:\n", 1)[1], 1)[0]
+    assert re.search(r"(?m)^  pull_request_target:", on), \
+        "168.5: the merge check is not triggered by pull_request_target, so GitHub runs the pull request's copy of it"
+    assert not re.search(r"(?m)^  pull_request:", on), \
+        "168.5: the merge check still runs on pull_request, where the pull request's own copy of it judges it"
+    assert "secrets." not in text and not re.search(r"(?m)^\s+[a-z-]+:\s*write\b", text), \
+        "168.5: the merge check runs the pull request's code but names a key or asks for write permission"
+    dokima_steps = pytest_steps = 0
+    for name, head, steps in workflow_jobs(text):
+        default = folder(setting(head, "working-directory"))
+        main_dirs, pr_dirs = set(), set()
+        for step in steps:
+            if "actions/checkout" in step:
+                where, ref = folder(setting(step, "path")), setting(step, "ref") or ""
+                if "pull_request.head" in ref or "github.head_ref" in ref:
+                    pr_dirs.add(where)
+                    main_dirs.discard(where)
+                else:
+                    main_dirs.add(where)
+                    pr_dirs.discard(where)
+                continue
+            run = step.split("run:", 1)[1] if "run:" in step else ""
+            where = folder(setting(step, "working-directory") or default)
+            if "python3 -m dokima" in run:
+                dokima_steps += 1
+                assert where in main_dirs, \
+                    f"168.5: job '{name}' runs Dokima's code from the pull request's checkout, not main's: {run.strip()}"
+                assert "PYTHONPATH" not in step, f"168.5: job '{name}' points a Dokima step elsewhere with PYTHONPATH"
+            if re.search(r"(?m)^\s*(python3 -m )?pytest\s", run):
+                pytest_steps += 1
+                assert where in pr_dirs, \
+                    f"168.5: job '{name}' runs the tests on main's code, not on the pull request's: {run.strip()}"
+    assert dokima_steps >= 2, f"168.5: the merge check no longer runs its list and annotate steps ({dokima_steps} found)"
+    assert pytest_steps >= 1, "168.5: the merge check no longer runs any criterion's tests"
