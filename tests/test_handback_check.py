@@ -66,8 +66,10 @@ def test_well_formed_hand_backs_pass_and_every_malformed_field_is_named(record_p
 
     A full, well-formed review and work pass first (exit 0, nothing printed), and with every optional list left out too.
     Then each required field is removed, and each field is given a value of the wrong type or an item of the wrong
-    shape (a note without text, a reply without why, a blocker that is a bare string): each is rejected, the reason
-    names the field, and there is no traceback."""
+    shape: a bare string where an object belongs, and an object missing any one of its fields (a note without text or
+    evidence, an outside_plan or outside_scope item without its change or why, a suspect test without its test or
+    evidence, a reply without why, a blocker whose test is a number). Each is rejected, the reason names the field,
+    and there is no traceback."""
     record_property("proves", "157.1")
     for kind, good in (("review", REVIEW), ("work", WORK)):
         code, out, err = check(tmp_path, kind, good)
@@ -85,32 +87,39 @@ def test_well_formed_hand_backs_pass_and_every_malformed_field_is_named(record_p
 
     review_cases = [("previous_step", "did it"), ("previous_step", {"did": "one line", "decided": [], "open": []}),
                     ("verdict", 5), ("summary", 5), ("blockers", ["B1"]), ("blockers", "B1"),
-                    ("notes", 5), ("notes", ["a note"]), ("notes", [{"evidence": "x.py:1"}]),
-                    ("outside_plan", 5), ("outside_plan", ["a.py"]), ("resolved", 5), ("resolved", [5]),
-                    ("issues_found", 5), ("issues_found", ["t"])]
+                    ("blockers", [{**REVIEW["blockers"][0], "test": 5}]),
+                    ("blockers", [{k: v for k, v in REVIEW["blockers"][0].items() if k != "problem"}]),
+                    ("notes", 5), ("notes", ["a note"]), ("notes", [{"evidence": "x.py:1"}]), ("notes", [{"text": "n"}]),
+                    ("outside_plan", 5), ("outside_plan", ["a.py"]), ("outside_plan", [{"file": "a.py"}]),
+                    ("outside_plan", [{"change": "c"}]), ("resolved", 5), ("resolved", [5]),
+                    ("issues_found", 5), ("issues_found", ["t"]), ("issues_found", [{"title": "t", "why": "w"}])]
     for field, value in review_cases:
         assert_rejected_naming(tmp_path, "review", {**REVIEW, field: value}, field, "157.1")
     work_cases = [("summary", 5), ("criteria", ["9.1", "9.2", "9.3"]), ("criteria", {"9.1": 5, "9.2": "b", "9.3": "c"}),
-                  ("evidence", 5), ("outside_scope", 5), ("outside_scope", ["b.py"]),
-                  ("suspect_tests", "x"), ("suspect_tests", [{"test": "tests/test_x.py::test_a"}]),
+                  ("evidence", 5), ("outside_scope", 5), ("outside_scope", ["b.py"]), ("outside_scope", [{"file": "b.py"}]),
+                  ("outside_scope", [{"why": "w"}]), ("suspect_tests", "x"),
+                  ("suspect_tests", [{"test": "tests/test_x.py::test_a"}]), ("suspect_tests", [{"evidence": "e"}]),
                   ("replies", 5), ("replies", ["B1"]), ("replies", [{"blocker": "B1", "answer": "fixed"}])]
     for field, value in work_cases:
         assert_rejected_naming(tmp_path, "work", {**WORK, field: value}, field, "157.1")
 
 
 def test_the_round_check_never_crashes_on_a_malformed_review(record_property, tmp_path):
-    """The round check a run also does never crashes on a review whose blockers or resolved list has the wrong shape.
+    """The round check a run also does never crashes on a review or work.json whose lists have the wrong shape.
 
     Runs `agent check-round reviewer FILE PACK` with one open blocker on a review whose blockers are bare strings, and
-    on one whose resolved is a number: each exits 1 with a reason, never a traceback."""
+    on one whose resolved is a number; then `agent check-round worker FILE PACK` on a work.json whose replies is a
+    number, and on one whose replies are bare strings. Each exits 1 with a reason, never a traceback."""
     record_property("proves", "157.1")
     pack = tmp_path / "pack"
     pack.mkdir()
     (pack / "open_blockers.json").write_text(json.dumps([REVIEW["blockers"][0]]))
-    for bad in ({**REVIEW, "blockers": ["B1"]}, {**REVIEW, "resolved": 5}):
-        f = tmp_path / "review.json"
+    cases = [("reviewer", "review", {**REVIEW, "blockers": ["B1"]}), ("reviewer", "review", {**REVIEW, "resolved": 5}),
+             ("worker", "work", {**WORK, "replies": 5}), ("worker", "work", {**WORK, "replies": ["B1"]})]
+    for role, kind, bad in cases:
+        f = tmp_path / f"{kind}.json"
         f.write_text(json.dumps(bad))
-        code, out, err = run(tmp_path, "check-round", "reviewer", str(f), str(pack))
+        code, out, err = run(tmp_path, "check-round", role, str(f), str(pack))
         assert "Traceback" not in err, f"157.1: the round check crashed on {json.dumps(bad)[:160]}:\n{err[-600:]}"
         assert code == 1 and out.strip(), f"157.1: the round check gave no reason for {json.dumps(bad)[:160]}"
 
@@ -120,7 +129,8 @@ def test_work_gives_a_line_for_exactly_the_plans_criteria(record_property, tmp_p
 
     The plan has 9.1 to 9.3 (two acceptance criteria, then one non-functional). One line each passes. Leaving out 9.2,
     leaving out the non-functional 9.3, leaving out two at once, and adding 9.4 or 8.1 are each rejected, and every
-    criterion at fault is named in its own reason while the criteria that are fine are not."""
+    criterion at fault is named in its own reason while the criteria that are fine are not. Checked as issue 8, the
+    plan's criteria are 8.1 to 8.3, so the same lines for 9.1 to 9.3 are rejected naming both 8.1 and 9.1."""
     record_property("proves", "157.2")
     code, out, err = check(tmp_path, "work", WORK)
     assert (code, out.strip()) == (0, ""), f"157.2: a line for every criterion was rejected: {out}{err[-400:]}"
@@ -134,6 +144,10 @@ def test_work_gives_a_line_for_exactly_the_plans_criteria(record_property, tmp_p
             assert ok not in out, f"157.2: {ok} has its line but a reason names it:\n{out}"
     for extra in ("9.4", "8.1"):
         assert_rejected_naming(tmp_path, "work", {**WORK, "criteria": {**lines, extra: "x.py, d()"}}, extra, "157.2")
+    code, out, err = check(tmp_path, "work", WORK, number="8")
+    assert "Traceback" not in err, f"157.2: the work check crashed when checked as issue 8:\n{err[-600:]}"
+    assert code == 1 and "9.1" in out and "8.1" in out, \
+        f"157.2: checked as issue 8, a work.json with lines for 9.1 to 9.3 was not rejected naming 8.1 and 9.1:\n{out}"
 
 
 def blocker(id_, criterion, test=None):
@@ -145,8 +159,8 @@ def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_p
     """A blocker naming no criterion, a criterion the plan lacks, or a test that is not the plan's for it, is rejected naming the blocker.
 
     Against a story plan (9.1 to 9.3): a blocker on 9.1 with no test, an empty test or 9.1's own test passes; one on
-    9.3 (non-functional) passes. A blocker with no criterion, on 9.4, on S1.1, or with 9.2's test or an unknown test
-    for 9.1 is rejected, the reason names that blocker, and a good blocker beside it is not named. Against a split of
+    9.3 (non-functional) passes. A blocker with no criterion, on 9.4, on S1.1, with 9.2's test or an unknown test
+    for 9.1, or on 9.3 with 9.1's test is rejected, the reason names that blocker, and a good blocker beside it is not named. Against a split of
     two stories (S1.1, S1.2, S2.1): those pass with no test; S2.2, S3.1, 9.1, or S1.1 with any test are rejected."""
     record_property("proves", "157.3")
     good = [blocker("B1", "9.1"), blocker("B1", "9.1", ""), blocker("B1", "9.1", "tests/test_x.py::test_a"),
@@ -155,7 +169,8 @@ def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_p
         code, out, err = check(tmp_path, "review", {**REVIEW, "blockers": [b]})
         assert (code, out.strip()) == (0, ""), f"157.3: a blocker on the plan's own criterion and test was rejected: {b}\n{out}{err[-400:]}"
     bad = [blocker("B1", ""), blocker("B1", "9.4"), blocker("B1", "S1.1"),
-           blocker("B1", "9.1", "tests/test_x.py::test_b"), blocker("B1", "9.1", "tests/test_x.py::test_zzz")]
+           blocker("B1", "9.1", "tests/test_x.py::test_b"), blocker("B1", "9.1", "tests/test_x.py::test_zzz"),
+           blocker("B1", "9.3", "tests/test_x.py::test_a")]
     for b in bad:
         out = assert_rejected_naming(tmp_path, "review", {**REVIEW, "blockers": [b, blocker("B2", "9.2")]}, "B1", "157.3")
         assert "B2" not in out, f"157.3: blocker B2 is on 9.2 with no test, yet a reason names it:\n{out}"
@@ -190,8 +205,8 @@ def test_a_rejected_hand_back_posts_one_comment_with_every_reason_and_the_run(re
     """A rejected worker or reviewer hand-back leaves one comment listing every reason, with a link to the run.
 
     Runs the workflow's own check and record steps on a work.json missing 9.2 with a reply that has no why, and on a
-    review.json with a blocker on 9.4 and notes that are a number. The comment written is one record, says the hand-back
-    was rejected, lists each reason the check printed (including the plan-aware ones), and links the run. The workflow
+    review.json with a blocker on 9.4 and notes that are a number. The comment written is one record with no traceback,
+    says the hand-back was rejected, lists each reason the check printed (including the plan-aware ones), and links the run. The workflow
     posts that comment on every run, pass or fail, from exactly one step."""
     record_property("proves", "157.4")
     work = {**WORK, "criteria": {"9.1": "a", "9.3": "c"}, "replies": [{"blocker": "B1", "answer": "fixed"}]}
@@ -201,6 +216,7 @@ def test_a_rejected_hand_back_posts_one_comment_with_every_reason_and_the_run(re
         for m in must:
             assert any(m in r for r in reasons), f"157.4: the {kind} check gave no reason naming {m}:\n" + "\n".join(reasons)
         assert body.count("<!-- dokima-record -->") == 1, f"157.4: the {role} comment does not hold exactly one record"
+        assert "Traceback" not in body, f"157.4: the {role} comment shows a crash instead of the reasons:\n{body[:600]}"
         assert "hand-back rejected by code" in body, f"157.4: the {role} comment does not say the hand-back was rejected"
         for r in reasons:
             assert f"- {r}" in body, f"157.4: the {role} comment does not list the reason {r!r}"
@@ -216,7 +232,8 @@ def test_a_check_without_a_readable_plan_rejects_the_hand_back(record_property, 
     """A check given a plan that is missing, not JSON or not an object rejects even a good hand-back, and says so.
 
     Runs `agent check work|review FILE PLAN N` with a well-formed hand-back but a plan.json that does not exist, holds
-    broken JSON, or holds a list: each exits 1 with a reason naming plan.json, never a pass and never a traceback."""
+    broken JSON, or holds a list: each exits 1 with a reason naming plan.json, never a pass and never a traceback.
+    Given no plan and no issue number at all, the old way of calling it, the check also exits 1 with a reason."""
     record_property("proves", "157.5")
     for kind, good in (("work", WORK), ("review", REVIEW)):
         f = tmp_path / f"{kind}.json"
@@ -231,6 +248,9 @@ def test_a_check_without_a_readable_plan_rejects_the_hand_back(record_property, 
             assert "Traceback" not in err, f"157.5: the {kind} check crashed on plan.json {content!r}:\n{err[-600:]}"
             assert code == 1, f"157.5: the {kind} check passed with plan.json {'missing' if content is None else repr(content)}"
             assert "plan.json" in out, f"157.5: the reason does not name plan.json:\n{out}"
+        code, out, err = run(tmp_path, "check", kind, str(f))
+        assert "Traceback" not in err, f"157.5: the {kind} check crashed when given no plan at all:\n{err[-600:]}"
+        assert code == 1 and out.strip(), f"157.5: the {kind} check passed (exit {code}) when given no plan at all"
 
 
 def test_every_worker_and_reviewer_run_checks_against_the_plan_and_issue(record_property):
