@@ -87,6 +87,8 @@ jobs:
           echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           # A plan's tests are everything the issue's branch added since it split off main, over every planning round.
           echo "PLANNER_BASE=$(git merge-base HEAD origin/main)" >> "$GITHUB_ENV"
+          # What this run starts from: the planner may change only tests from here on.
+          echo "PLANNER_RUN_BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           LOG="logs/$N/${{ github.run_id }}-$ROLE${STAGE:+-$STAGE}.md"
           echo "LOG=$LOG" >> "$GITHUB_ENV"
           echo "LOG_URL=${{ github.server_url }}/${{ github.repository }}/blob/logs/$LOG" >> "$GITHUB_ENV"
