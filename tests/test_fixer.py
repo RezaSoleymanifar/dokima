@@ -150,24 +150,42 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     assert got == ["B2"], f"166.3: the worker was handed blockers {got}, not exactly the code blocker B2"
 
 
-def test_an_approved_test_fix_goes_straight_back_to_the_worker(record_property):
-    """When the plan review approves a re-plan a code review asked for, the worker starts at once; other plan approvals still wait for /work.
+def with_criteria(criteria, non_functional=()):
+    """STORY with these criterion texts and stronger tests, as a re-plan that a code review asked for would hand back."""
+    return {**STORY, "acceptance_criteria": [{"text": t, "source": "https://x/9"} for t in criteria],
+            "non_functional": [{"text": t, "why": "w", "principle": "p"} for t in non_functional],
+            "tests": {f"9.{k}": [f"tests/test_x.py::test_stronger_{k}"] for k in range(1, len(criteria) + len(non_functional) + 1)}}
 
-    The river after a plan approval: with a code review's test blocker since the owner last spoke, it starts the
-    worker. With no code review behind it, with a code review whose blockers were all for the worker, or with the
-    owner's own /plan after the code review, it stops and asks the owner for /work."""
+
+def test_an_approved_test_fix_goes_straight_back_to_the_worker(record_property):
+    """An approved re-plan that only strengthens tests goes straight to the worker; one that changes any criterion waits for /work.
+
+    The river after a plan approval, when the owner approved a plan with /work, the worker built it and a code review
+    sent a weak test to the planner: a re-plan with the same criteria and stronger tests starts the worker. A re-plan
+    that rewrites a criterion, adds one, drops one or adds a non-functional requirement stops and asks the owner for
+    /work. So do a first plan, a re-plan after a code review whose blockers were all for the worker, and a re-plan after
+    the owner spoke since the code review."""
     record_property("proves", "166.4")
     work = rec("worker", handback={"summary": "s"})
     test_block = rec("reviewer", "pr", review(blocker("B1", "planner")))
     code_block = rec("reviewer", "pr", review(blocker("B1", "worker")))
-    replan = rec("planner", handback=STORY)
-    chain = [OWNER_WORK, comment(PLAN), comment(PLAN_OK), comment(work), comment(test_block), comment(replan)]
-    step = agent.next_step(chain, PLAN_OK, ["owner"])
-    assert step == ("start", "worker", ""), f"166.4: an approved test fix asked for by a code review gave {step}, not the worker"
-    first = [OWNER_WORK, comment(PLAN)]
-    after_code = [OWNER_WORK, comment(PLAN), comment(PLAN_OK), comment(work), comment(code_block), comment(replan)]
-    owner_spoke = chain[:5] + [OWNER_PLAN, comment(replan)]
-    for name, items in (("a first plan", first), ("a code-only block", after_code), ("the owner's own /plan", owner_spoke)):
+    same = rec("planner", handback=with_criteria(["a", "b", "c"]))
+    built = [comment(PLAN), comment(PLAN_OK), OWNER_WORK, comment(work)]
+    step = agent.next_step(built + [comment(test_block), comment(same)], PLAN_OK, ["owner"])
+    assert step == ("start", "worker", ""), \
+        f"166.4: an approved test fix with unchanged criteria, asked for by a code review, gave {step}, not the worker"
+    changed = {"a criterion rewritten": with_criteria(["a", "b, but more", "c"]),
+               "a criterion added": with_criteria(["a", "b", "c", "d"]),
+               "a criterion dropped": with_criteria(["a", "b"]),
+               "a non-functional requirement added": with_criteria(["a", "b", "c"], ["n"])}
+    for name, plan in changed.items():
+        step = agent.next_step(built + [comment(test_block), comment(rec("planner", handback=plan))], PLAN_OK, ["owner"])
+        assert step[0] == "stop" and "/work" in step[1], \
+            f"166.4: a re-plan with {name} went on without the owner's /work: {step}"
+    others = {"a first plan": [comment(PLAN)],
+              "a code-only block": built + [comment(code_block), comment(same)],
+              "the owner's own /plan": built + [comment(test_block), OWNER_PLAN, comment(same)]}
+    for name, items in others.items():
         step = agent.next_step(items, PLAN_OK, ["owner"])
         assert step[0] == "stop" and "/work" in step[1], f"166.4: after {name} a plan approval gave {step}, not a stop asking for /work"
 
