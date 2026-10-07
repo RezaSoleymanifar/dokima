@@ -251,6 +251,14 @@ def folder(path):
     return (path or ".").strip().rstrip("/").removeprefix("./") or "."
 
 
+def permissions_read_only(inline, block):
+    """Whether a `permissions:` setting grants only read or none: `read-all`, `{}`, or a list of read/none entries."""
+    if inline:
+        return inline in ("read-all", "{}")
+    entries = [line.split(":", 1) for line in block.splitlines() if line.strip() and not line.strip().startswith("#")]
+    return bool(entries) and all(len(e) == 2 and e[1].split("#")[0].strip() in ("read", "none") for e in entries)
+
+
 def test_the_merge_check_runs_mains_code_and_judges_the_pull_requests_code(record_property):
     """The merge check runs main's own copy of its workflow and of Dokima's code; only the tests come from the pull request.
 
@@ -259,7 +267,9 @@ def test_the_merge_check_runs_mains_code_and_judges_the_pull_requests_code(recor
     folder as the pull request's; every other checkout is main's. Every `python3 -m dokima` step must run in one of
     main's folders, with no PYTHONPATH of its own, and the step that runs pytest must run in the pull request's folder,
     so the tests still judge the pull request's code and not main's. Since the workflow now runs main's copy while it
-    runs the pull request's code, it must name no key and ask for no write permission."""
+    runs the pull request's code, it must name no key and ask for no write permission: it needs a top-level
+    `permissions:` list of only read or none (without one, pull_request_target hands out the repo's default token, which
+    can write), and any job's own `permissions:` may only say read or none."""
     record_property("proves", "168.5")
     text = open(os.path.join(ROOT, ".github/workflows/done-whens.yml")).read()
     on = re.split(r"(?m)^[a-z]", text.split("\non:\n", 1)[1], 1)[0]
@@ -269,6 +279,13 @@ def test_the_merge_check_runs_mains_code_and_judges_the_pull_requests_code(recor
         "168.5: the merge check still runs on pull_request, where the pull request's own copy of it judges it"
     assert "secrets." not in text and not re.search(r"(?m)^\s+[a-z-]+:\s*write\b", text), \
         "168.5: the merge check runs the pull request's code but names a key or asks for write permission"
+    top = re.search(r"(?m)^permissions:[ \t]*(\S*)[ \t]*\n((?:[ \t]+.*\n)*)", text)
+    assert top and permissions_read_only(top.group(1), top.group(2)), \
+        "168.5: the merge check does not limit its token to read, so the pull request's tests could get write access"
+    for name, head, _ in workflow_jobs(text):
+        job = re.search(r"(?m)^    permissions:[ \t]*(\S*)[ \t]*\n((?:      .*\n)*)", head + "\n")
+        assert not job or permissions_read_only(job.group(1), job.group(2)), \
+            f"168.5: job '{name}' does not limit its token to read, so the pull request's tests could get write access"
     dokima_steps = pytest_steps = 0
     for name, head, steps in workflow_jobs(text):
         default = folder(setting(head, "working-directory"))
