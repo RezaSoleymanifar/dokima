@@ -78,6 +78,8 @@ jobs:
             echo "::error title=Nothing to $ROLE::try/issue-$N does not exist; run the planner first."; exit 1
           fi
           echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          # A plan's tests are everything the issue's branch added since it split off main, over every planning round.
+          echo "PLANNER_BASE=$(git merge-base HEAD origin/main)" >> "$GITHUB_ENV"
           LOG="logs/$N/${{ github.run_id }}-$ROLE${STAGE:+-$STAGE}.md"
           echo "LOG=$LOG" >> "$GITHUB_ENV"
           echo "LOG_URL=${{ github.server_url }}/${{ github.repository }}/blob/logs/$LOG" >> "$GITHUB_ENV"
@@ -104,7 +106,6 @@ jobs:
       - name: The agent (Claude Code)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          PLANNER_BASE: ${{ env.BASE }}
         run: |
           mkdir -p "$OUT"
           case "$ROLE$STAGE" in
