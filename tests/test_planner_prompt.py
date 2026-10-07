@@ -1,7 +1,7 @@
 import os
 
 PROMPT = os.path.join(os.path.dirname(__file__), "..", "dokima", "roles", "planner.md")
-SECTIONS = ["Where you are", "Judge the ask", "The plan", "Where your tests run", "Before you finish", "Split", "One question"]
+SECTIONS = ["Where you are", "Judge the ask", "The plan", "Where your tests run", "Before you finish", "Split"]
 
 
 def test_planner_prompt_has_every_section(record_property):

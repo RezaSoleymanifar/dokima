@@ -11,6 +11,9 @@ from dokima import plan, planner  # noqa: E402
 WORKFLOW = os.path.join(os.path.dirname(__file__), "..", ".github/workflows/planner.yml")
 PLAN = {"objective": "Slow calls return a job id", "criteria": ["A slow call returns a job id within 20 s", "The job id is unique"],
         "non_goals": ["No retries"], "scope": ["dokima/jobs.py"]}
+STORY = {"kind": "user_story", "user_story": "Slow calls return a job id",
+         "acceptance_criteria": [{"text": "A slow call returns a job id within 20 s", "source": "https://github.com/o/r/issues/9"}],
+         "scope": ["dokima/jobs.py"], "tests": {"9.1": ["tests/test_jobs.py::test_id"]}}
 TAGS = {"tests/test_jobs.py::test_id": ["9.1"], "tests/test_jobs.py::test_unique": ["9.2"]}
 
 
@@ -118,27 +121,19 @@ def test_changed_files_counts_committed_and_new_files_since_the_start(record_pro
     assert planner.changed_files(base) == ["tests/t1.py", "tests/t2.py"], "80.2: committed or new test files missed"
 
 
-# 80.3: the planner ends with exactly one of a plan or a question; anything else posts nothing
-
-def test_a_question_is_read_as_a_question(record_property, tmp_path):
-    record_property("proves", "80.3")
-    assert planner.read_output(write(tmp_path, "question.md", "Split into two issues, yes or no?\n")) == ("question", "Split into two issues, yes or no?")
-
+# 80.3: the planner ends with a plan; anything else posts nothing (#154: a lone question is no longer a hand-back)
 
 def test_a_plan_is_read_as_a_plan(record_property, tmp_path):
     record_property("proves", "80.3")
-    kind, p = planner.read_output(write(tmp_path, "plan.json", {k: v for k, v in PLAN.items() if k != "non_goals"}))
-    assert kind == "plan" and p["non_goals"] == [], "80.3: optional non-goals not defaulted"
+    kind, p = planner.read_output(write(tmp_path, "plan.json", STORY))
+    assert kind == "plan" and p["non_goals"] == [], "80.3: optional out of scope not defaulted"
 
 
 @pytest.mark.parametrize("files, why", [
-    ({}, "neither"),
-    ({"plan.json": PLAN, "question.md": "Why?"}, "both"),
-    ({"question.md": "I am not sure."}, "ending in '?'"),
     ({"plan.json": "{not json"}, "not valid JSON"),
-    ({"plan.json": dict(PLAN, criteria=[])}, "criteria"),
-    ({"plan.json": dict(PLAN, scope="dokima/jobs.py")}, "scope"),
-    ({"plan.json": dict(PLAN, objective=" ")}, "objective"),
+    ({"plan.json": dict(STORY, acceptance_criteria=[])}, "acceptance_criteria"),
+    ({"plan.json": dict(STORY, scope="dokima/jobs.py")}, "scope"),
+    ({"plan.json": dict(STORY, user_story=" ")}, "user_story"),
 ])
 def test_garbled_output_is_rejected_with_its_reason(record_property, tmp_path, files, why):
     record_property("proves", "80.3")
@@ -155,16 +150,6 @@ def test_rejected_output_fails_the_run_and_posts_nothing(record_property, tmp_pa
     assert planner.main(["x", "post", "9", write(tmp_path, "question.md", "no question here")]) == 1
     assert calls == [], "80.3: something was posted for rejected output"
     assert "::error title=Planner output rejected::" in capsys.readouterr().out
-
-
-def test_a_question_is_posted_as_a_comment_and_the_body_is_untouched(record_property, tmp_path, monkeypatch):
-    record_property("proves", "80.3")
-    calls = []
-    monkeypatch.setattr(planner, "gh", lambda *a, **k: calls.append(a) or "")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
-    assert planner.main(["x", "post", "9", write(tmp_path, "question.md", "Which way?")]) == 0
-    assert [c[:2] for c in calls] == [("issue", "comment")], f"80.3: expected one comment, got {calls}"
-    assert calls[0][-1].endswith("Which way?")
 
 
 def test_no_one_line_command_is_cut_short_by_a_yaml_comment(record_property):
@@ -238,7 +223,7 @@ def test_the_plan_lists_every_older_test_change_with_its_reason(record_property)
 def test_bad_test_changes_shape_is_rejected(record_property, tmp_path):
     record_property("proves", "100.2")
     with pytest.raises(planner.Garbled, match="test_changes"):
-        planner.read_output(write(tmp_path, "plan.json", dict(PLAN, test_changes={"tests/t.py::test_b": ""})))
+        planner.read_output(write(tmp_path, "plan.json", dict(STORY, test_changes={"tests/t.py::test_b": ""})))
 
 
 # 100.3: a rejected run says why on the issue
@@ -248,12 +233,12 @@ def test_rejection_reason_is_saved_and_posted_with_a_run_link(record_property, t
     calls = []
     monkeypatch.setattr(planner, "gh", lambda *a, **k: calls.append(a) or "")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r"); monkeypatch.setenv("GITHUB_RUN_ID", "42")
-    out = write(tmp_path, "question.md", "no question here")
+    out = write(tmp_path, "plan.json", "{not json")
     assert planner.main(["x", "check", "9", out]) == 1
     assert calls == [], "100.3: something was posted by the check itself"
     assert planner.main(["x", "rejected", "9", out]) == 0
     assert [c[:2] for c in calls] == [("issue", "comment")]
-    assert "**Plan rejected:** question.md must hold one question" in calls[0][-1], f"100.3: {calls[0][-1]}"
+    assert "**Plan rejected:** plan.json is not valid JSON" in calls[0][-1], f"100.3: {calls[0][-1]}"
     assert "https://github.com/o/r/actions/runs/42" in calls[0][-1], "100.3: no link to the run"
 
 
