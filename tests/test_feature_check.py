@@ -1,7 +1,7 @@
 """The planner's check on a proposed split: every story is well formed and its dependencies form no loop.
 
 Covers #156. A feature (a split into stories) reaches the owner only when every story has its title, user story,
-acceptance criteria and a depends_on list, and every dependency points at another story of the same split with
+acceptance criteria and a depends_on list, every criterion of a story has its text and source link, and every dependency points at another story of the same split with
 no loop. Stories are named by their number counting from 1 ("story 2"), the way the split's card numbers them;
 depends_on holds story indices counting from 0, the way /work files them as sub-issues.
 """
@@ -78,6 +78,29 @@ def test_a_story_missing_a_field_is_rejected_naming_story_and_field(record_prope
     assert field in reason, f"156.1: the reason does not name the field {field}: {reason!r}"
 
 
+@pytest.mark.parametrize("field,breaks", [
+    ("text", lambda c: c.pop("text")),
+    ("text", lambda c: c.update(text=" ")),
+    ("source", lambda c: c.pop("source")),
+    ("source", lambda c: c.update(source="")),
+])
+def test_a_story_criterion_missing_its_text_or_source_is_rejected(record_property, tmp_path, field, breaks):
+    """A story whose acceptance criterion has no text or no source link is rejected, naming the story and what is missing.
+
+    Gives the second of three stories two criteria and breaks the second one (missing or blank text, missing or
+    blank source), then checks the rejection names "story 2" and the missing field, and not the other stories.
+    The owner asked for this on #156: story criteria need sources too.
+    """
+    record_property("proves", "156.1")
+    f = feature(story("First", []), story("Second", [0]), story("Third", [1]))
+    f["stories"][1]["acceptance_criteria"].append({"text": "Second also works.", "source": SRC})
+    breaks(f["stories"][1]["acceptance_criteria"][1])
+    reason = rejected(tmp_path, f, "156.1")
+    assert names(reason, 2), f"156.1: the reason does not name story 2: {reason!r}"
+    assert not names(reason, 1) and not names(reason, 3), f"156.1: the reason names the wrong story: {reason!r}"
+    assert field in reason, f"156.1: the reason does not say the criterion lacks its {field}: {reason!r}"
+
+
 def test_a_well_formed_feature_passes(record_property, tmp_path):
     """A feature whose every story has its title, user story, criteria and an empty or filled depends_on list is accepted.
 
@@ -141,6 +164,27 @@ def test_a_bad_dependency_is_rejected_naming_the_story(record_property, tmp_path
     assert named <= bad, f"156.2: the reason names stories {sorted(named - bad)} that did nothing wrong: {reason!r}"
 
 
+def test_the_check_command_rejects_a_loop_and_says_why(record_property, tmp_path):
+    """Running the planner check on a split whose stories wait on each other fails and writes why, naming a story in the loop.
+
+    Runs `python3 -m dokima.planner check` from the repo root on stories 2 and 3 depending on each other, then on
+    the same split with the loop broken into a chain, which passes.
+    """
+    record_property("proves", "156.2")
+    (tmp_path / "plan.json").write_text(json.dumps(feature(story("First", []), story("Second", [2]), story("Third", [1]))))
+    run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
+                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 1, f"156.2: the check passed a loop (exit {run.returncode}): {run.stdout}{run.stderr}"
+    why = (tmp_path / "rejected.txt").read_text() if (tmp_path / "rejected.txt").exists() else ""
+    assert (names(why, 2) or names(why, 3)) and not names(why, 1), \
+        f"156.2: rejected.txt does not name story 2 or 3 (and only them) in the loop: {why!r}"
+    (tmp_path / "rejected.txt").unlink()
+    (tmp_path / "plan.json").write_text(json.dumps(feature(story("First", []), story("Second", [0]), story("Third", [1]))))
+    run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
+                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, f"156.2: the check rejected a valid chain: {run.stdout}{run.stderr}"
+
+
 @pytest.mark.parametrize("deps", [
     [[], [0], [1], [2], [3]],             # a chain: each story waits on the one before
     [[], [0], [0], [1, 2]],               # a diamond: two paths to the same story
@@ -178,3 +222,23 @@ def test_a_story_that_is_not_an_object_is_rejected_not_crashed(record_property, 
     except Exception as e:  # noqa: BLE001
         pytest.fail(f"156.3: a story that is not an object crashed the check with {type(e).__name__}: {e}")
     pytest.fail(f"156.3: a story that is not an object ({item!r}) was accepted")
+
+
+@pytest.mark.parametrize("item", ["just a sentence", 3, None, ["text", "source"]])
+def test_a_story_criterion_that_is_not_an_object_is_rejected_not_crashed(record_property, tmp_path, item):
+    """A story criterion that is not an object at all is rejected naming the story, never a crash with no reason.
+
+    Puts a sentence, a number, null and a list where the second story's criterion belongs and checks the check
+    rejects it with a reason naming story 2 instead of raising some other error.
+    """
+    record_property("proves", "156.3")
+    f = feature(story("First", []), story("Second", [0]))
+    f["stories"][1]["acceptance_criteria"] = [item]
+    try:
+        hand_back(tmp_path, f)
+    except planner.Garbled as e:
+        assert names(str(e), 2) and not names(str(e), 1), f"156.3: the reason does not name story 2 alone: {e}"
+        return
+    except Exception as e:  # noqa: BLE001
+        pytest.fail(f"156.3: a criterion that is not an object crashed the check with {type(e).__name__}: {e}")
+    pytest.fail(f"156.3: a story criterion that is not an object ({item!r}) was accepted")
