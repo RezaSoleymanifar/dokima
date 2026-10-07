@@ -326,3 +326,11 @@ def test_a_worker_handed_a_split_refuses(record_property, tmp_path):
     (d / "plan.json").write_text(json.dumps(SPLIT))
     assert agent.problems_pack("worker", "", str(d)) == ["plan.json is a split: /work files its stories as sub-issues, no worker builds it"]
     assert agent.problems_pack("reviewer", "plan", str(d)) == []
+
+
+def test_a_replan_checks_tests_against_where_the_branch_left_main(record_property):
+    """On every planning round the plan check compares against the branch's split from main, so earlier rounds' tests still count."""
+    record_property("proves", "agent.22")
+    wf = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent.yml")).read()
+    assert 'PLANNER_BASE=$(git merge-base HEAD origin/main)' in wf
+    assert "PLANNER_BASE: ${{ env.BASE }}" not in wf, "a step still compares against the branch head"
