@@ -101,8 +101,23 @@ def test_one_check_per_criterion_of_the_approved_plan_running_exactly_its_tests(
 
     The issue holds a plan and an approving plan review, both posted by the bot. The check list must name 168.1, 168.2
     and 168.3 (acceptance criteria, then the non-functional one) with their words, and run exactly the tests the plan
-    lists for each, in order: no more, no fewer."""
+    lists for each, in order: no more, no fewer. Then the same plan is checked on the records a real issue holds at
+    merge time: the owner's `/work`, the worker's record, and code reviews (a block, then an approval) after the plan
+    approval. None of those replaces or overturns the approved plan, so the same three checks come out."""
     record_property("proves", "168.1")
+    real = [planned(PLAN), reviewed(APPROVE),
+            {"author": {"login": "owner"}, "body": "/work", "createdAt": ""},
+            record("worker", {"summary": "Built it.", "replies": []}),
+            record("reviewer", {**BLOCK, "stage": "pr"}, stage="pr"),
+            record("worker", {"summary": "Fixed B1.", "replies": [{"blocker": "B1", "answer": "fixed", "why": "w"}]}),
+            record("reviewer", {**APPROVE, "stage": "pr"}, stage="pr")]
+    code, rows, out = run_matrix(tmp_path, real)
+    assert rows is not None and [r["id"] for r in rows] == ["168.1", "168.2", "168.3"] \
+        and rows[0]["tests"] == "tests/test_a.py::test_one", \
+        f"168.1: the worker's and code reviews' records after the plan approval lost the approved plan: {rows}\n{out}"
+    code, rows, out = run_matrix(tmp_path, real[:5])
+    assert rows is not None and [r["id"] for r in rows] == ["168.1", "168.2", "168.3"], \
+        f"168.1: a blocking code review was taken as overturning the approved plan: {rows}\n{out}"
     code, rows, out = run_matrix(tmp_path, [planned(PLAN), reviewed(APPROVE)])
     assert code == 0, f"168.1: the matrix command failed on an issue with an approved plan:\n{out}"
     assert rows is not None, f"168.1: the matrix command printed no 'matrix=' line:\n{out}"
