@@ -87,6 +87,13 @@ def story(change):
     return s
 
 
+def feature(change):
+    """A copy of the good feature with one change applied."""
+    f = copy.deepcopy(FEATURE)
+    change(f)
+    return f
+
+
 # 154.1: only a plan, a user_story or a feature, is a hand-back
 
 @pytest.mark.parametrize("files", [
@@ -171,6 +178,34 @@ def test_a_source_outside_this_issue_is_rejected_and_named(record_property, chec
     assert source in why, f"154.2: the reason does not name the source {source!r}: {why!r}"
 
 
+@pytest.mark.parametrize("source", [
+    "https://github.com/o/r/issues/139",
+    "https://github.com/o/r/issues/91",
+    "https://github.com/o/r/issues/9139#issuecomment-1",
+    "https://github.com/o/x/issues/9",
+    "https://github.com/o/r/pull/9",
+    "https://example.com/o/r/issues/9",
+    "#9 above",
+    "the owner said so",
+], ids=["parent issue", "longer number", "other issue's comment", "other repo", "pull request", "other host", "bare number", "prose"])
+def test_a_source_outside_this_issue_inside_a_split_is_rejected_and_named(record_property, check, source):
+    """A split is no exception: a criterion in any of its stories sourced outside this issue is rejected, and named.
+
+    First checks a split whose stories' criteria cite issue #9's own link, and one citing two of its comment links,
+    both pass. Then puts one wrong source on the second story's criterion, runs the check, and checks it fails with
+    that source in the reason; then the same on the first story's criterion.
+    """
+    record_property("proves", "154.2")
+    for sources in ([ISSUE, ISSUE], [ISSUE + "#issuecomment-1", ISSUE + "#issuecomment-987654321"]):
+        good = feature(lambda f: [st["acceptance_criteria"][0].update(source=src) for st, src in zip(f["stories"], sources)])
+        rc, why = check({"plan.json": good}, "154.2")
+        assert rc == 0 and not why, f"154.2: a split with sources {sources} on issue #9 was rejected: {why!r}"
+    for k in (1, 0):
+        rc, why = check({"plan.json": feature(lambda f: f["stories"][k]["acceptance_criteria"][0].update(source=source))}, "154.2")
+        assert rc == 1, f"154.2: a split whose story {k + 1} has a criterion sourced to {source!r} was accepted on issue #9"
+        assert source in why, f"154.2: the reason does not name the split's source {source!r}: {why!r}"
+
+
 # 154.3: every named test exists and is filed under one of this plan's criteria
 
 @pytest.mark.parametrize("name", ["tests/test_jobs.py::test_ghost", "tests/test_nowhere.py::test_id"],
@@ -235,17 +270,20 @@ def test_a_criterion_proven_only_by_an_older_test_counts_as_proven(record_proper
     (lambda s: s.update(test_changes=["tests/test_old.py::test_old"]), "test_changes"),
     (lambda s: s.update(questions="Why?"), "questions"),
     (lambda s: s.update(kind=5), "kind"),
+    (feature(lambda f: f["stories"][1]["acceptance_criteria"][0].update(source=9)), "source"),
+    (feature(lambda f: f["stories"][0].update(acceptance_criteria="A job id.")), "acceptance_criteria"),
     ([], "plan.json"),
     ("a plan", "plan.json"),
     (5, "plan.json"),
 ], ids=["criterion text", "criterion source", "requirement text", "requirement why", "criteria not a list",
         "requirements not a list", "user_story", "scope", "out_of_scope", "tests", "test_changes", "questions", "kind",
-        "plan.json a list", "plan.json a string", "plan.json a number"])
+        "split's criterion source", "split's criteria not a list", "plan.json a list", "plan.json a string", "plan.json a number"])
 def test_a_value_of_the_wrong_type_is_rejected_naming_the_field(record_property, check, change, field):
     """A plan.json with a number where text belongs, or a string where a list belongs, is rejected naming the field.
 
-    Breaks one field's type at a time in a good story (or makes the whole plan.json a list, a string or a number), runs
-    the check, and checks it fails with a reason naming that field (or plan.json); a crash fails the test instead.
+    Breaks one field's type at a time in a good story or a split's story (or makes the whole plan.json a list, a string
+    or a number), runs the check, and checks it fails with a reason naming that field (or plan.json); a crash fails the
+    test instead.
     """
     record_property("proves", "154.5")
     rc, why = check({"plan.json": story(change) if callable(change) else json.dumps(change)}, "154.5")
