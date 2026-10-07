@@ -27,7 +27,7 @@ def test_a_good_review_passes_and_each_malformation_is_named(record_property):
     assert "1. Board ignores closed PRs: cards go stale" in agent.render(rec("reviewer", "plan", {**GOOD_REVIEW, "issues_found": found}))
     bare = agent.problems_review({**GOOD_REVIEW, "blockers": [{"id": "B1"}]})
     assert {"blocker B1 has no criterion", "blocker B1 has no evidence", "blocker B1 has no fix"} <= set(bare)
-    assert agent.problems_review({**GOOD_REVIEW, "notes": [{}] * 4}) == ["at most three notes"]
+    assert agent.problems_review({**GOOD_REVIEW, "notes": [{"text": "n", "evidence": "e"}] * 4}) == ["at most three notes"]
 
 
 def test_a_good_work_passes_and_each_malformation_is_named(record_property):
