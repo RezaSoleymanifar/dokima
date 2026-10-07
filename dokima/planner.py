@@ -88,6 +88,16 @@ def check_stories(stories, issue=None):
                 if not isinstance(c.get(key), str) or not c[key].strip():
                     raise Garbled(f"story {n}: acceptance criterion {k} has no {key}")
             check_source(f"story {n}: acceptance criterion {k}", c["source"], issue)
+        nfr = s.get("non_functional", [])
+        if not isinstance(nfr, list):
+            raise Garbled(f"story {n} needs non_functional as a list (empty for none)")
+        for k, c in enumerate(nfr, 1):
+            if not isinstance(c, dict):
+                raise Garbled(f"story {n}: non-functional requirement {k} must be an object with its text and why")
+            for key in ("text", "why"):
+                if not isinstance(c.get(key), str) or not c[key].strip():
+                    raise Garbled(f"story {n}: non-functional requirement {k} needs its text and why as non-empty "
+                                  f"text, and its {key} is not")
         if not isinstance(s.get("depends_on"), list):
             raise Garbled(f"story {n} needs depends_on as a list (empty for no dependencies)")
     last = len(stories) - 1
