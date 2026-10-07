@@ -514,6 +514,32 @@ def next_step(items, rec, owners, rounds=3):
     return ("start", "planner" if stage == "plan" else "worker", "")
 
 
+STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker", ""): "Work", ("reviewer", "pr"): "Review"}
+
+
+def board_place(rec, step):
+    """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
+    the owner, and the Needs you pill exactly when the river stops for the owner."""
+    if step[0] == "start":
+        return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
+    return STAGE_COLUMN.get((rec.get("role"), rec.get("stage") or ""), "Plan"), True
+
+
+def move_card(repo, number, column, needs_you, spec, q=None):
+    """Put the issue and its open pull request in that column, with or without the Needs you pill."""
+    from dokima import board
+    b = board.Board(spec, repo, q or board.gql)
+    targets = [("issue", int(number))]
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
+    if pr:
+        targets.append(("pr", int(pr)))
+    for kind, n in targets:
+        iid = b.item(kind, n)
+        b.set(iid, "Status", column)
+        b.set(iid, "Action", "Needs you" if needs_you else None)
+    return targets
+
+
 def next_line(step, owners):
     """The last line of a card: what happens next, mentioning the owner when it is their turn."""
     if step[0] == "start":
@@ -572,6 +598,17 @@ def main(argv):
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
         if not any(r.get("role") == "split" for r in recs):
             gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
+        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        if spec:
+            from dokima import board
+            b = board.Board(spec, repo, board.gql)
+            for f in rec["handback"]["stories"]:
+                iid = b.item("issue", f["issue"])
+                b.set(iid, "Status", "Backlog")
+                b.set(iid, "Action", None)
+            iid = b.item("issue", int(parent))
+            b.set(iid, "Status", "Work")
+            b.set(iid, "Action", None)
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
@@ -586,7 +623,18 @@ def main(argv):
         step = next_step(items, json.load(open(os.path.join(out, "record.json"))), owners)
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
+        column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
+        open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
         print(" ".join(step) if step[0] == "start" else "stop")
+        return 0
+    if argv[1] == "board":
+        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        if not spec:
+            print("No board set; nothing to move.")
+            return 0
+        column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
+        for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
+            print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

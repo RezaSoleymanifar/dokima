@@ -237,6 +237,12 @@ jobs:
           else
             gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file "$OUT/comment.md"
           fi
+      - name: Move the card on the board
+        if: always() && vars.DOKIMA_BOARD != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
+        run: python3 -m dokima.agent board "$N" "$OUT" || echo "::warning title=Board not moved::the card could not be moved"
       - name: Start the next stage
         if: always() && startsWith(steps.next.outputs.next, 'start ')
         env:
