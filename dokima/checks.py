@@ -1,19 +1,21 @@
-"""Turn an issue's criteria into GitHub checks, and annotate the tests they ran.
+"""Turn the criteria of an issue's approved plan into GitHub checks, and annotate the tests they ran.
 
     python3 -m dokima.checks matrix          # print the check list for this PR
     python3 -m dokima.checks annotate r.xml  # print one annotation per test in a JUnit report
 
+The plan is the newest one the planner handed back, once the reviewer approved it, read from the bot's own record
+comments; each criterion's check runs exactly the tests that plan lists for it.
+
 A test proves a criterion by calling record_property("proves", "<issue>.<n>"),
 where n counts the issue's criteria from 1, top to bottom.
 """
-import glob
 import json
 import os
 import re
 import sys
 import xml.etree.ElementTree as ET
 
-from dokima import plan
+from dokima import agent, plan
 
 PROVES = re.compile(r"""record_property\(\s*["']proves["']\s*,\s*["']([\d.]+)["']\s*\)""")
 TEST_DEF = re.compile(r"^def (test_\w+)\(")
@@ -42,16 +44,26 @@ def check_name(key, text, limit=60):
     return f"{key} · {text}"
 
 
-def build_matrix(number, words, tests):
-    """One check per criterion in the plan; empty when there is no issue or no criteria."""
-    rows = []
+def no_plan(name):
+    """One check with no tests, so it can only fail, saying why."""
+    return [{"id": "none", "name": name, "tests": ""}]
+
+
+def build_matrix(number, recs):
+    """One check per criterion of the approved plan (acceptance criteria, then non-functional), each running exactly
+    the plan's tests for it; one failing "No approved plan found" check when there is no issue or no approved plan."""
     if not number:
-        return rows
-    for goal in words["goals"]:
-        for c in goal["criteria"]:
-            key = f"{number}.{c['n']}"
-            rows.append({"id": key, "name": check_name(key, c["text"]), "tests": " ".join(tests.get(key, []))})
-    return rows
+        return no_plan("No approved plan found: no issue linked")
+    if not agent.approved(recs):
+        return no_plan(f"No approved plan found for issue #{number}")
+    h = agent.latest(recs, "planner")["handback"]
+    criteria = [c for k in ("acceptance_criteria", "non_functional") for c in h.get(k) or []]
+    tests = h.get("tests") or {}
+    rows = []
+    for k, c in enumerate(criteria, 1):
+        key = f"{number}.{k}"
+        rows.append({"id": key, "name": check_name(key, c["text"]), "tests": " ".join(tests.get(key, []))})
+    return rows or no_plan(f"No approved plan found for issue #{number}")
 
 
 def annotations(junit_xml, repo, sha, done_when):
@@ -70,11 +82,10 @@ def annotations(junit_xml, repo, sha, done_when):
 def main(argv):
     repo = os.environ["GITHUB_REPOSITORY"]
     if argv[1] == "matrix":
-        pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["number"]
-        number = plan.pr_issue_number(repo, pr)
-        # The plan as approved; edits made after the `work` label are not used.
-        words = plan.fetch_issue(repo, number)["plan"] if number else {"goals": []}
-        print("matrix=" + json.dumps(build_matrix(number, words, find_tests(glob.glob("tests/test_*.py")))))
+        pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]
+        number = agent.issue_of_pr(pr["head"]["ref"], pr.get("body")) or plan.pr_issue_number(repo, pr["number"])
+        recs = agent.records(agent.conversation(repo, number)[1]) if number else []
+        print("matrix=" + json.dumps(build_matrix(number, recs)))
     elif argv[1] == "annotate":
         for line in annotations(open(argv[2]).read(), repo, os.environ["HEAD_SHA"], os.environ["ID"]):
             print(line)
