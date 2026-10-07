@@ -334,3 +334,49 @@ def test_a_replan_checks_tests_against_where_the_branch_left_main(record_propert
     wf = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent.yml")).read()
     assert 'PLANNER_BASE=$(git merge-base HEAD origin/main)' in wf
     assert "PLANNER_BASE: ${{ env.BASE }}" not in wf, "a step still compares against the branch head"
+
+
+def test_the_river_hands_each_stage_to_the_next_until_it_needs_the_owner(record_property):
+    """Planner to reviewer, worker to reviewer, a block back to the doer; questions, approvals, escalations and rejected hand-backs stop and mention the owner."""
+    record_property("proves", "agent.23")
+    plan = rec("planner", handback={"kind": "user_story"})
+    asks = rec("planner", handback={"kind": "user_story", "questions": ["Which? I planned for A."]})
+    work = rec("worker", handback=GOOD_WORK)
+    block = rec("reviewer", "plan", GOOD_REVIEW)
+    pr_block = rec("reviewer", "pr", GOOD_REVIEW)
+    ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
+    pr_ok = rec("reviewer", "pr", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
+    esc = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "escalate"})
+    bad = rec("planner", handback={}, passed=False, problems="criterion 9.1 has no test\n")
+    assert agent.next_step([], plan, ["owner"]) == ("start", "reviewer", "plan")
+    assert agent.next_step([], work, ["owner"]) == ("start", "reviewer", "pr")
+    assert agent.next_step([], block, ["owner"]) == ("start", "planner", "")
+    assert agent.next_step([], pr_block, ["owner"]) == ("start", "worker", "")
+    for r, word in ((asks, "questions"), (ok, "/work"), (pr_ok, "Merge"), (esc, "escalated"), (bad, "rejected by code")):
+        step = agent.next_step([], r, ["owner"])
+        assert step[0] == "stop" and word in step[1], (r["role"], step)
+    assert agent.next_line(("stop", "Your turn."), ["owner"]) == "**Next:** @owner Your turn."
+    assert agent.next_line(("start", "reviewer", "plan"), ["owner"]) == "**Next:** The reviewer starts now."
+
+
+def test_three_blocks_in_a_row_since_the_owner_spoke_go_to_the_owner(record_property):
+    """Two earlier blocks at the same stage plus this one stop the river; an owner comment in between resets the count; another stage's blocks never count."""
+    record_property("proves", "agent.24")
+    block = rec("reviewer", "plan", GOOD_REVIEW)
+    pr_block = rec("reviewer", "pr", GOOD_REVIEW)
+    owner = {"author": {"login": "owner"}, "body": "/plan try again", "createdAt": "t", "where": "issue #7"}
+    two = [comment(block), comment(rec("planner", handback={"kind": "user_story"})), comment(block)]
+    step = agent.next_step(two, block, ["owner"])
+    assert step[0] == "stop" and "3 blocking reviews in a row" in step[1]
+    assert agent.next_step(two[:1] + [owner] + two[2:], block, ["owner"]) == ("start", "planner", "")
+    assert agent.next_step([comment(pr_block), comment(pr_block)], block, ["owner"]) == ("start", "planner", "")
+
+
+def test_the_rivers_signal_comes_only_from_dokimas_bot(record_property):
+    """The workflow listens for the bot's dokima-next signal, lets only that bot skip the code-owner gate, and starts the next stage after posting."""
+    record_property("proves", "agent.25")
+    wf = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent.yml")).read()
+    assert "types: [dokima-next]" in wf
+    assert '[ "$EVENT" = repository_dispatch ] && [ "$SENDER" = "dokima-runtime[bot]" ] && exit 0' in wf
+    assert wf.index("name: Decide what follows") < wf.index("name: Post the record as a comment") < wf.index("name: Start the next stage")
+    assert "group: agent-${{ (inputs.issue || github.event.client_payload.issue) }}" in wf
