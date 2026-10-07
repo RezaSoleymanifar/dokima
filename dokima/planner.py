@@ -299,7 +299,11 @@ def main(argv):
             tc = test_changes([p for p in files if p.startswith("tests/") and p.endswith(".py")], read_at(base), read_now)
             if "declared" in result:
                 tc = declared_labels(tc, result["declared"])
-            bad = problems(number, result, files, tc)
+            # Only what the planner changed in this run counts against "tests only": on a re-plan the branch may
+            # already hold the worker's code, which is not the planner's doing.
+            run_base = os.environ.get("PLANNER_RUN_BASE")
+            own = changed_files(run_base) if run_base else files
+            bad = problems(number, result, own, tc)
             raw = json.load(open(os.path.join(out, "plan.json"))) if os.path.exists(os.path.join(out, "plan.json")) else {}
             bad += problems_questions(raw.get("questions", []) if isinstance(raw, dict) else [])
             if bad:

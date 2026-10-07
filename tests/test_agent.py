@@ -403,3 +403,26 @@ def test_the_card_shows_the_running_stage_and_needs_you_only_when_it_is_the_owne
     monkeypatch.setattr(agent, "gh", lambda *a: "161\n")
     assert agent.move_card("o/r", "157", "Review", True, "o/1") == [("issue", 157), ("pr", 161)]
     assert (("pr", 161), "Action", "Needs you") in moves and (("issue", 157), "Status", "Review") in moves
+
+
+def test_a_replan_is_judged_only_on_what_the_planner_changed_in_its_run(record_property, tmp_path, monkeypatch):
+    """The worker's earlier code on the branch is never blamed on the planner; a code file the planner itself changes still is."""
+    record_property("proves", "agent.27")
+    from dokima import planner
+    out = tmp_path / "out"
+    out.mkdir()
+    plan = {"kind": "user_story", "user_story": "s", "acceptance_criteria": [{"text": "a", "source": "https://github.com/o/r/issues/9"}],
+            "non_functional": [], "scope": ["dokima/x.py"], "out_of_scope": [], "tests": {"9.1": ["tests/test_x.py::test_a"]}}
+    (out / "plan.json").write_text(json.dumps(plan))
+    since = {"SPLIT": ["dokima/x.py", "tests/test_x.py"], "RUN": ["tests/test_x.py"]}
+    monkeypatch.setattr(planner, "changed_files", lambda base: since[base])
+    monkeypatch.setenv("PLANNER_BASE", "SPLIT")
+    monkeypatch.setenv("PLANNER_RUN_BASE", "RUN")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    planner.main(["planner", "check", "9", str(out)])
+    why = (out / "rejected.txt").read_text() if (out / "rejected.txt").exists() else ""
+    assert "outside tests" not in why, f"the worker's code was blamed on the planner: {why}"
+    since["RUN"] = ["dokima/x.py", "tests/test_x.py"]
+    (out / "rejected.txt").unlink(missing_ok=True)
+    planner.main(["planner", "check", "9", str(out)])
+    assert "dokima/x.py is outside tests/" in (out / "rejected.txt").read_text()
