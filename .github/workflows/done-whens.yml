@@ -1,7 +1,8 @@
 name: done-whens
-# One GitHub check per done-when of the PR's linked issue, plus one gate check.
+# One GitHub check per criterion of the PR's approved plan, plus one gate check.
+# Runs main's copy of this workflow and of Dokima's code; only the tests, and the code they judge, come from the PR.
 on:
-  pull_request:
+  pull_request_target:
 permissions:
   contents: read
   issues: read
@@ -30,11 +31,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -q pytest
       - name: Run this done-when's tests
+        working-directory: pr
         env:
           TESTS: ${{ matrix.tests }}
           ID: ${{ matrix.id }}
@@ -46,7 +55,7 @@ jobs:
         env:
           ID: ${{ matrix.id }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 -m dokima.checks annotate r.xml
+        run: python3 -m dokima.checks annotate pr/r.xml
 
   gate:
     name: all done-whens passed
