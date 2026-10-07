@@ -203,3 +203,34 @@ def test_the_reviewer_is_told_to_name_who_fixes_each_blocker(record_property):
     weak = [p for p in grade.split("\n7.")[1:]]
     assert weak and '"fixer": "planner"' in weak[0].split("\nNotes")[0], \
         "166.5: the result grade's weak-test rule does not tell the reviewer to set the fixer to the planner"
+
+
+def test_three_blocks_on_the_test_fix_route_still_stop_for_the_owner(record_property):
+    """On the new route, the third blocking code review in a row stops the river and asks the owner.
+
+    Walks the route after the owner's /work: a code review blocks a weak test, the river starts the planner, the plan
+    review approves the re-plan and the river starts the worker, who builds, and the code review blocks again. The first
+    and second blocks each go on to the planner, and each approved re-plan straight to the worker; the third block stops
+    and names three blocking reviews, whether it is for the planner or only for the worker. A one-off check that the
+    owner's own words since the blocks start the count again, so the third block then goes on to the planner."""
+    record_property("proves", "166.6")
+    work = rec("worker", handback={"summary": "s"})
+    same = rec("planner", handback=with_criteria(["a", "b", "c"]))
+    items = [comment(PLAN), comment(PLAN_OK), OWNER_WORK, comment(work)]
+    for n in (1, 2):
+        block = rec("reviewer", "pr", review(blocker("B1", "planner")))
+        step = agent.next_step(items, block, ["owner"])
+        assert step == ("start", "planner", ""), f"166.6: code review block {n} with a test blocker gave {step}, not the planner"
+        items += [comment(block), comment(same)]
+        step = agent.next_step(items, PLAN_OK, ["owner"])
+        assert step == ("start", "worker", ""), f"166.6: the approved re-plan after block {n} gave {step}, not the worker"
+        items += [comment(PLAN_OK), comment(work)]
+    for name, third in {"a test blocker": review(blocker("B1", "planner")),
+                        "only a code blocker": review(blocker("B1", "worker"))}.items():
+        step = agent.next_step(items, rec("reviewer", "pr", third), ["owner"])
+        assert step[0] == "stop" and "3 blocking reviews" in step[1], \
+            f"166.6: the third blocking code review in a row, with {name}, gave {step}, not a stop for the owner"
+    spoke = items + [{**OWNER_PLAN, "body": "keep going"}]
+    step = agent.next_step(spoke, rec("reviewer", "pr", review(blocker("B1", "planner"))), ["owner"])
+    assert step == ("start", "planner", ""), \
+        f"166.6: after the owner spoke, a code review block gave {step}; the count must start again and go to the planner"
