@@ -9,7 +9,7 @@ from dokima import agent, fence  # noqa: E402
 GOOD_REVIEW = {"previous_step": {"did": ["Split the issue into four stories."], "decided": [], "open": ["Three questions."]},
                "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
                "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No good-case test.",
-                             "evidence": "18 passed against a stub.", "fix": "Add one."}],
+                             "evidence": "18 passed against a stub.", "fix": "Add one.", "fixer": "worker"}],
                "notes": [], "outside_plan": [], "resolved": []}
 GOOD_WORK = {"summary": "Cause and change.", "criteria": {"9.1": "dokima/x.py, parse()"},
              "evidence": "pytest -q: 12 passed", "replies": [{"blocker": "B1", "answer": "fixed", "why": "Added it."}]}
