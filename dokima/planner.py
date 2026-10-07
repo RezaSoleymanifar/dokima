@@ -64,6 +64,50 @@ def strings(v):
     return isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
 
 
+def check_stories(stories):
+    """Garbled unless every story of a split is complete and its dependencies point at the split's own stories with
+    no loop. Stories are named counting from 1, as the split's card numbers them; depends_on counts from 0."""
+    for n, s in enumerate(stories, 1):
+        if not isinstance(s, dict):
+            raise Garbled(f"story {n} must be an object with its title, user_story, acceptance_criteria and depends_on")
+        for key in ("title", "user_story"):
+            if not isinstance(s.get(key), str) or not s[key].strip():
+                raise Garbled(f"story {n} has no {key}")
+        ac = s.get("acceptance_criteria")
+        if not isinstance(ac, list) or not ac:
+            raise Garbled(f"story {n} needs acceptance_criteria as a non-empty list")
+        for k, c in enumerate(ac, 1):
+            if not isinstance(c, dict):
+                raise Garbled(f"story {n}: acceptance criterion {k} must be an object with its text and source")
+            for key in ("text", "source"):
+                if not isinstance(c.get(key), str) or not c[key].strip():
+                    raise Garbled(f"story {n}: acceptance criterion {k} has no {key}")
+        if not isinstance(s.get("depends_on"), list):
+            raise Garbled(f"story {n} needs depends_on as a list (empty for no dependencies)")
+    last = len(stories) - 1
+    for n, s in enumerate(stories, 1):
+        for d in s["depends_on"]:
+            if not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= last:
+                raise Garbled(f"story {n} depends on {d!r}, which is no story index of this split (0 to {last})")
+            if d == n - 1:
+                raise Garbled(f"story {n} depends on itself")
+    state = {}  # index -> "open" while on the path, "done" once every story it waits on is clear
+
+    def visit(i, path):
+        state[i] = "open"
+        for d in stories[i]["depends_on"]:
+            if state.get(d) == "open":
+                loop = path[path.index(d):]
+                raise Garbled("stories wait on each other in a loop: " + ", ".join(f"story {j + 1}" for j in loop))
+            if d not in state:
+                visit(d, path + [d])
+        state[i] = "done"
+
+    for i in range(len(stories)):
+        if i not in state:
+            visit(i, [i])
+
+
 def from_kind(p):
     """Read a plan.json written in the agreed shape (user_story, feature or question) into what the rest of the code uses.
 
@@ -84,6 +128,7 @@ def from_kind(p):
         stories = p.get("stories")
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
+        check_stories(stories)
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
         raise Garbled(f"plan.json kind must be user_story, feature or question, not {kind!r}")

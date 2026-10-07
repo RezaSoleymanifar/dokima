@@ -87,7 +87,7 @@ def test_a_question_and_a_feature_are_shown_as_handed_back(record_property, tmp_
     record_property("proves", "138.2")
     kind, text = hand_back(tmp_path, {"kind": "question", "question": "Split it?", "options": ["Yes", "No"], "recommendation": "Yes"})
     assert kind == "question" and "Split it?" in text and "Recommended: Yes" in text, "138.2: question not read"
-    story = {"title": "t", "user_story": "u", "acceptance_criteria": [], "depends_on": []}
+    story = {"title": "t", "user_story": "u", "acceptance_criteria": [{"text": "a", "source": SRC}], "depends_on": []}
     assert hand_back(tmp_path, {"kind": "feature", "feature": "f", "stories": [story, story]})[0] == "feature", "138.2: feature not read"
     with pytest.raises(planner.Garbled, match="2 to 5"):
         hand_back(tmp_path, {"kind": "feature", "feature": "f", "stories": [story]})

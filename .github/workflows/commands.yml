@@ -63,6 +63,7 @@ jobs:
       - name: File the approved split's stories as sub-issues
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 -m dokima.agent split "${{ needs.route.outputs.issue }}"
   run:
     needs: route
