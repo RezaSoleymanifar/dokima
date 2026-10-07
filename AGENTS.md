@@ -43,30 +43,43 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 - **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and ends with a list of proposed issues.
 - **Code:** everything that must be exact (see the principles).
 
-## The flow
+## The flow (the river)
 
-1. **Issue.** The owner writes what they want, in plain words.
-2. **`/plan`.** The planner writes the plan and its tests into the issue; the reviewer checks it. Too big: it proposes a split. Wrong ask: it says why, with evidence, and offers options, ending with one question.
-3. **`/work`.** The owner's approval. The plan freezes at that moment; edits after it are listed on the card but used only after the next `/work`.
-4. **Build.** The worker builds on a fresh machine and opens the PR.
-5. **Prove.** Each criterion runs as its own check; all tests run too.
-6. **Review.** The reviewer leaves a PR review and a list of proposed issues.
-7. **Merge.** The owner approves. Auto-merge and the merge queue merge it once every check passes (planned).
+1. **Issue.** The owner writes what they want, in plain words, rough or detailed.
+2. **`/plan`.** The planner always plans, on its best reading, and lists any questions with the reading it planned for. Too big: it proposes a split. If the plan has questions, the river stops and mentions the owner, who answers with `/plan` and their words, or says `/review` to go on with the planner's assumptions. Otherwise the reviewer starts by itself.
+3. **Plan review.** A block sends it back to the planner by itself. An approval stops for the owner.
+4. **`/work`.** The owner's approval. An approved split files its stories as sub-issues with blocked-by links; each story then goes through the flow on its own. Otherwise the worker builds on a fresh machine and opens the PR.
+5. **Code review.** The reviewer starts by itself when the worker finishes. A block sends it back to the worker by itself. An approval stops for the owner.
+6. **Merge.** The owner approves and merges.
 
-Commands count only as the first line of an owner's comment: `/plan`, `/work`, `/review` followed by prose in the same comment (re-runs the reviewer with your words, for example changes to its proposed issues) and `/issue` (create every issue on the latest proposed list, each linking back). Amending the current issue goes through `/plan`. (Commands are planned; today `plan` and `work` labels start the stages.)
+Agents work things out between themselves. The river stops and mentions the owner only on questions, approvals, an escalation, a hand-back code rejected, or three blocking reviews in a row at one stage since the owner last spoke. Every card ends with a **Next** line saying what happens next or what is the owner's to do.
 
-## Labels and the board
+## Commands
 
-- Labels show the stage only: `plan`, `work`, `review`, set by code, never by people (planned).
-- The org's project board shows every issue and PR: Waiting on me, Done, By stage, Priority. Priority and "waiting on" are board fields, not labels, so Dokima adds as few labels as possible. Newest items sit at the top.
+A command is the first word of an owner's comment on the issue or its PR, or of a PR review's summary submitted as a comment or a change request. Everything after it, and every other comment, review and line note, reaches the agent.
 
-## The card
+- `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
+- `/issue`: file the reviewer's proposed issues (planned).
+- No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
+- Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.
 
-The same card sits on the issue and its PR, drawn by code from GitHub's records. It shows the stage, links, each objective with its criteria, GitHub's verdict on each, and all tests. "Acceptance criteria" links to the check run; "Verified by" is one plain sentence that links to the test itself (planned). The issue's journey (plan, each try, each review, merge) sits in a fold as a small diagram (planned).
+## Questions
 
-## Comments
+Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation.
 
-Every stage change posts one comment from a fixed template written by code: plan started, plan ready, question asked, plan rejected, build started, build failed, PR opened, merged (planned). A model's words appear only in a template's slot: the plan, the question, the proposed issues. Running progress lives on the card and in the run log, not in comments.
+## The board
+
+- Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
+- "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes.
+- The river moves each card to the stage now running. Priority (Blocker) is a field, not a label.
+
+## The issue body
+
+The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses and says why (planned).
+
+## Agent records and cards
+
+Every agent run posts one comment, written by code: a readable card on top in plain product words, the full JSON record folded below, and a footnote with the model, time, turns, tokens, API-equivalent cost and a one-click link to the run's whole conversation. Those comments are the permanent records; only comments the bot posted count as records. The card on top of the issue is drawn from them (planned). Each run also gets one live card from queued to done (planned, #164).
 
 ## Splitting and the graph
 
@@ -74,6 +87,15 @@ Every stage change posts one comment from a fixed template written by code: plan
 - 2 to 5 children, one level; every promise owned by exactly one child; children may depend on siblings, with no cycles.
 - The planner proposes; code checks the rules and files real GitHub sub-issues. `/work` on the parent approves the split and every child's plan.
 - When a child merges, every sibling whose needs have landed starts; independent children run in parallel. GitHub is the state.
+
+## Changing scope
+
+Never change the scope of an issue silently. Every change of scope is a comment or a native GitHub link.
+
+- **Splitting** uses native sub-issues, each linking back to the parent. This is how `/work` files a split.
+- **Merging or replacing** closes the old issue as a duplicate of the new one. GitHub links both ways.
+- **Moving scope between issues** gets one short comment on each side ("moved X to #Y"). GitHub cross-links them, so the trail is two clicks either way.
+- **A big reshuffle** of several issues closes the old ones as replaced by new ones that link back, instead of rewriting them.
 
 ## Identity and safety
 
