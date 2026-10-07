@@ -119,8 +119,10 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
     """The planner's prompt offers only the user_story and feature kinds, and the planner workflow never looks for question.md.
 
     Reads dokima/roles/planner.md: every "kind" it shows is user_story or feature (both still shown), the line naming the
-    kinds and the line saying how the planner ends never offer a question, and the questions list is still taught.
-    Reads .github/workflows/planner.yml and checks question.md appears nowhere while plan.json is still shown.
+    kinds and the line saying how the planner ends never offer a question, no heading offers "one question" for the owner,
+    no line says a question is shown as handed back, and the questions list is still taught.
+    Reads .github/workflows/planner.yml and checks question.md and "one question for the owner" appear nowhere while
+    plan.json is still shown.
     """
     record_property("proves", "154.1")
     text = open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read()
@@ -131,9 +133,13 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
     assert kinds and "question" not in kinds.group(0), f"154.1: the prompt still offers a question kind: {kinds and kinds.group(0)!r}"
     ends = re.search(r"End with exactly one of[^.]*\.", flat)
     assert ends and "question" not in ends.group(0), f"154.1: the prompt still lets the planner end with a question: {ends and ends.group(0)!r}"
+    headings = [line for line in text.splitlines() if line.startswith("#") and "one question" in line.lower()]
+    assert not headings, f"154.1: the prompt still has a section offering one question for the owner: {headings}"
+    assert "or a question is shown" not in flat, "154.1: the prompt still says a question is shown to the owner as handed back"
     assert '"questions": [' in flat, "154.1: the prompt no longer teaches the plan's questions list"
     wf = open(os.path.join(ROOT, ".github", "workflows", "planner.yml")).read()
     assert "question.md" not in wf, "154.1: the planner workflow still looks for question.md"
+    assert "one question for the owner" not in " ".join(wf.replace("#", " ").split()), "154.1: the planner workflow still says the planner may end with one question for the owner"
     assert "/tmp/dokima-out/plan.json" in wf, "154.1: the planner workflow no longer shows plan.json"
 
 
@@ -152,8 +158,8 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
 def test_a_source_outside_this_issue_is_rejected_and_named(record_property, check, source):
     """A criterion whose source is not this issue's link or one of its comment links is rejected, and the reason names it.
 
-    First checks a story sourced to this issue's link, and one sourced to two of its comments, both pass. Then puts a
-    wrong source on the second criterion, runs the check, and checks it fails with the source in the reason.
+    First checks a story sourced to issue #9's own link, and one sourced to two of its comment links, both pass. Then
+    puts one wrong source on the second criterion, runs the check, and checks it fails with that source in the reason.
     """
     record_property("proves", "154.2")
     for sources in ([ISSUE, ISSUE], [ISSUE + "#issuecomment-1", ISSUE + "#issuecomment-987654321"]):
@@ -172,7 +178,8 @@ def test_a_source_outside_this_issue_is_rejected_and_named(record_property, chec
 def test_a_named_test_that_is_not_in_the_repo_is_rejected_and_named(record_property, check, name):
     """A test the plan names that is not in the repo is rejected, and the reason names it.
 
-    Adds a missing test beside a real one under a criterion, runs the check, and checks it fails naming the test.
+    Adds a missing test (no such test in a real file, or no such file) beside a real one under the first criterion,
+    runs the check, and checks it fails naming the missing test.
     """
     record_property("proves", "154.3")
     rc, why = check({"plan.json": story(lambda s: s["tests"]["9.1"].append(name))}, "154.3")
@@ -189,8 +196,8 @@ def test_a_named_test_that_is_not_in_the_repo_is_rejected_and_named(record_prope
 def test_a_test_filed_under_a_key_that_is_not_a_criterion_is_rejected_and_named(record_property, check, key, name):
     """A test filed under a key that is not one of this plan's three criteria is rejected, and the reason names the key.
 
-    Files a new test, then an older test, under another issue's number and under 9.4 (past the last criterion), runs the
-    check, and checks it fails with the key in the reason.
+    Files a new test, then an older test, under another issue's number (139.1) and under 9.4 (past the last of the
+    three criteria), runs the check, and checks it fails with that key in the reason.
     """
     record_property("proves", "154.3")
     rc, why = check({"plan.json": story(lambda s: s["tests"].update({key: [name]}))}, "154.3")
@@ -203,8 +210,8 @@ def test_a_test_filed_under_a_key_that_is_not_a_criterion_is_rejected_and_named(
 def test_a_criterion_proven_only_by_an_older_test_counts_as_proven(record_property, check):
     """A criterion proven only by an older test already in the repo counts as proven, not as 'has no test'.
 
-    Files the unchanged older test tests/test_old.py::test_old alone under the third criterion, runs the check, and
-    checks it passes.
+    Files the unchanged older test tests/test_old.py::test_old as the only test of the third criterion, runs the
+    check, and checks it passes with no 'has no test' reason.
     """
     record_property("proves", "154.4")
     rc, why = check({"plan.json": story(lambda s: s["tests"].update({"9.3": ["tests/test_old.py::test_old"]}))}, "154.4")
@@ -238,7 +245,7 @@ def test_a_value_of_the_wrong_type_is_rejected_naming_the_field(record_property,
     """A plan.json with a number where text belongs, or a string where a list belongs, is rejected naming the field.
 
     Breaks one field's type at a time in a good story (or makes the whole plan.json a list, a string or a number), runs
-    the check, and checks it fails with a reason naming that field (or plan.json) instead of crashing.
+    the check, and checks it fails with a reason naming that field (or plan.json); a crash fails the test instead.
     """
     record_property("proves", "154.5")
     rc, why = check({"plan.json": story(change) if callable(change) else json.dumps(change)}, "154.5")
