@@ -128,14 +128,14 @@ def test_the_check_command_rejects_a_broken_feature_and_says_why(record_property
     bad["stories"][1].pop("title")
     (tmp_path / "plan.json").write_text(json.dumps(bad))
     run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
-                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+                         cwd=ROOT, env=dict(os.environ, GITHUB_REPOSITORY="o/r"), capture_output=True, text=True, timeout=30)
     assert run.returncode == 1, f"156.1: the check passed a story with no title (exit {run.returncode}): {run.stdout}{run.stderr}"
     why = (tmp_path / "rejected.txt").read_text() if (tmp_path / "rejected.txt").exists() else ""
     assert names(why, 2) and "title" in why, f"156.1: rejected.txt does not say story 2 lacks its title: {why!r}"
     (tmp_path / "rejected.txt").unlink()
     (tmp_path / "plan.json").write_text(json.dumps(feature(story("First", []), story("Second", [0]))))
     run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
-                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+                         cwd=ROOT, env=dict(os.environ, GITHUB_REPOSITORY="o/r"), capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, f"156.1: the check rejected a well-formed feature: {run.stdout}{run.stderr}"
 
 
@@ -173,7 +173,7 @@ def test_the_check_command_rejects_a_loop_and_says_why(record_property, tmp_path
     record_property("proves", "156.2")
     (tmp_path / "plan.json").write_text(json.dumps(feature(story("First", []), story("Second", [2]), story("Third", [1]))))
     run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
-                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+                         cwd=ROOT, env=dict(os.environ, GITHUB_REPOSITORY="o/r"), capture_output=True, text=True, timeout=30)
     assert run.returncode == 1, f"156.2: the check passed a loop (exit {run.returncode}): {run.stdout}{run.stderr}"
     why = (tmp_path / "rejected.txt").read_text() if (tmp_path / "rejected.txt").exists() else ""
     assert (names(why, 2) or names(why, 3)) and not names(why, 1), \
@@ -181,7 +181,7 @@ def test_the_check_command_rejects_a_loop_and_says_why(record_property, tmp_path
     (tmp_path / "rejected.txt").unlink()
     (tmp_path / "plan.json").write_text(json.dumps(feature(story("First", []), story("Second", [0]), story("Third", [1]))))
     run = subprocess.run([sys.executable, "-m", "dokima.planner", "check", "9", str(tmp_path)],
-                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+                         cwd=ROOT, env=dict(os.environ, GITHUB_REPOSITORY="o/r"), capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, f"156.2: the check rejected a valid chain: {run.stdout}{run.stderr}"
 
 

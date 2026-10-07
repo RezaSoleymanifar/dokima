@@ -2,7 +2,7 @@ name: planner
 run-name: "planner for #${{ github.event.issue.number }}${{ github.event.label.name != 'plan' && format(' (label {0}, ignored)', github.event.label.name) || '' }}"
 # Adding the `plan` label to an issue starts the planner: a fresh GitHub machine
 # reads the repo and the issue, and the planner hands back a plan with its tests,
-# or one question for the owner. Only a code owner's label counts. The planner
+# its questions for the owner listed inside it. Only a code owner's label counts. The planner
 # holds no GitHub key: code checks what it handed back, and only then writes the
 # plan into the issue and pushes the tests to work/issue-N.
 on:
@@ -83,7 +83,7 @@ jobs:
         if: always()
         run: |
           echo "## What the planner handed back" >> "$GITHUB_STEP_SUMMARY"
-          for f in /tmp/dokima-out/plan.json /tmp/dokima-out/question.md; do
+          for f in /tmp/dokima-out/plan.json; do
             [ -f "$f" ] && { echo "**$(basename "$f")**"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
           true

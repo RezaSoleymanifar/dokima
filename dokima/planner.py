@@ -1,20 +1,19 @@
 """The planner's hand-back: check its shape, then write it into the issue.
 
-    python3 -m dokima.planner check N OUT   # fail loudly unless OUT holds a well-formed plan or question
-    python3 -m dokima.planner post N OUT    # write the plan into issue N, or post the question
+    python3 -m dokima.planner check N OUT   # fail loudly unless OUT holds a well-formed plan
+    python3 -m dokima.planner post N OUT    # write the plan into issue N, or post the proposed split
     python3 -m dokima.planner rejected N OUT  # say on issue N why the run was rejected
 
-The planner holds no GitHub key. It ends by writing exactly one of these to OUT:
-  plan.json    {"objective": str, "criteria": [str, ...], "non_goals": [str, ...], "scope": [str, ...],
-                "test_changes": {"path::test": "why", ...}}
-               plus its tests in tests/; criterion k in the list is N.k. Every older test it changes
-               or deletes needs a reason in test_changes.
-  question.md  one question for the owner, ending in "?"
+The planner holds no GitHub key. It ends by writing one plan.json to OUT, of kind user_story or feature (see
+dokima/roles/planner.md), with its questions for the owner listed inside it, plus its tests in tests/. Every
+criterion's source is issue N or one of its comments; every test it names is in the repo, filed under one of the
+plan's criteria. Every older test it changes or deletes needs a reason in test_changes.
 Nothing is posted unless `check` passes.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -29,44 +28,50 @@ class Garbled(Exception):
     pass
 
 
-def read_output(out):
-    """('plan', dict) or ('question', str); Garbled if OUT holds anything else."""
-    has_plan = os.path.exists(os.path.join(out, "plan.json"))
-    has_q = os.path.exists(os.path.join(out, "question.md"))
-    if has_plan == has_q:
-        raise Garbled("the planner must hand back exactly one of plan.json or question.md, found "
-                      + ("both" if has_plan else "neither"))
-    if has_q:
-        q = open(os.path.join(out, "question.md")).read().strip()
-        if not q.endswith("?"):
-            raise Garbled("question.md must hold one question ending in '?'")
-        return "question", q
+ALWAYS = ("the planner always hands back a plan, a plan.json of kind user_story or feature, "
+          "with its questions listed inside it")
+
+
+def issue_link(number):
+    """This issue's link on GitHub, from the repo the check runs in."""
+    server = os.environ.get("GITHUB_SERVER_URL") or "https://github.com"
+    return f"{server}/{os.environ.get('GITHUB_REPOSITORY', '')}/issues/{number}"
+
+
+def read_output(out, number=None):
+    """('plan', dict) or ('feature', str); Garbled if OUT holds anything else.
+
+    Given the issue number, every criterion's source must be that issue's link or one of its comment links.
+    """
+    if os.path.exists(os.path.join(out, "question.md")):
+        raise Garbled(f"found question.md: {ALWAYS}")
+    if not os.path.exists(os.path.join(out, "plan.json")):
+        raise Garbled(f"found no plan.json: {ALWAYS}")
     try:
         p = json.load(open(os.path.join(out, "plan.json")))
     except ValueError as e:
         raise Garbled(f"plan.json is not valid JSON: {e}")
-    if isinstance(p, dict) and "kind" in p:
-        return from_kind(p)
-    if not isinstance(p, dict) or not isinstance(p.get("objective"), str) or not p["objective"].strip():
-        raise Garbled("plan.json needs a non-empty objective")
-    for key, required in (("criteria", True), ("scope", True), ("non_goals", False)):
-        v = p.get(key, [] if not required else None)
-        if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v) or (required and not v):
-            raise Garbled(f"plan.json needs {key} as a {'non-empty ' if required else ''}list of non-empty strings")
-    p.setdefault("non_goals", [])
-    tc = p.setdefault("test_changes", {})
-    if not isinstance(tc, dict) or not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in tc.items()):
-        raise Garbled("plan.json test_changes must map each changed older test to a non-empty reason")
-    return "plan", p
+    if not isinstance(p, dict):
+        raise Garbled(f"plan.json must be an object, not a {type(p).__name__}: {ALWAYS}")
+    if "kind" not in p:
+        raise Garbled(f"plan.json has no kind: {ALWAYS}")
+    return from_kind(p, issue_link(number) if number is not None else None)
 
 
 def strings(v):
     return isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
 
 
-def check_stories(stories):
-    """Garbled unless every story of a split is complete and its dependencies point at the split's own stories with
-    no loop. Stories are named counting from 1, as the split's card numbers them; depends_on counts from 0."""
+def check_source(where, source, issue):
+    """Garbled unless the source is this issue's link or one of its comment links; no issue given, nothing to check."""
+    if issue and not re.fullmatch(re.escape(issue) + r"(#issuecomment-\d+)?", source.strip()):
+        raise Garbled(f"{where} has the source {source}, which is not this issue ({issue}) or one of its comments")
+
+
+def check_stories(stories, issue=None):
+    """Garbled unless every story of a split is complete, its criteria cite this issue, and its dependencies point at
+    the split's own stories with no loop. Stories are named counting from 1, as the split's card numbers them;
+    depends_on counts from 0."""
     for n, s in enumerate(stories, 1):
         if not isinstance(s, dict):
             raise Garbled(f"story {n} must be an object with its title, user_story, acceptance_criteria and depends_on")
@@ -82,6 +87,17 @@ def check_stories(stories):
             for key in ("text", "source"):
                 if not isinstance(c.get(key), str) or not c[key].strip():
                     raise Garbled(f"story {n}: acceptance criterion {k} has no {key}")
+            check_source(f"story {n}: acceptance criterion {k}", c["source"], issue)
+        nfr = s.get("non_functional", [])
+        if not isinstance(nfr, list):
+            raise Garbled(f"story {n} needs non_functional as a list (empty for none)")
+        for k, c in enumerate(nfr, 1):
+            if not isinstance(c, dict):
+                raise Garbled(f"story {n}: non-functional requirement {k} must be an object with its text and why")
+            for key in ("text", "why"):
+                if not isinstance(c.get(key), str) or not c[key].strip():
+                    raise Garbled(f"story {n}: non-functional requirement {k} needs its text and why as non-empty "
+                                  f"text, and its {key} is not")
         if not isinstance(s.get("depends_on"), list):
             raise Garbled(f"story {n} needs depends_on as a list (empty for no dependencies)")
     last = len(stories) - 1
@@ -108,42 +124,44 @@ def check_stories(stories):
             visit(i, [i])
 
 
-def from_kind(p):
-    """Read a plan.json written in the agreed shape (user_story, feature or question) into what the rest of the code uses.
+def from_kind(p, issue=None):
+    """Read a plan.json written in the agreed shape (user_story or feature) into what the rest of the code uses.
 
     A story becomes a plan: its acceptance criteria come first, then its non-functional requirements, numbered N.1,
-    N.2 ... in that order. A feature or a question is shown to the owner as handed back, as a comment.
+    N.2 ... in that order. A feature is shown to the owner as handed back, as a comment. Given this issue's link,
+    every criterion's source must be it or one of its comment links.
     """
     kind = p["kind"]
-    if kind == "question":
-        q = p.get("question")
-        if not isinstance(q, str) or not q.strip().endswith("?"):
-            raise Garbled("a question needs one question ending in '?'")
-        opts = p.get("options") or []
-        text = q.strip() + "".join(f"\n- {o}" for o in opts if isinstance(o, str))
-        if isinstance(p.get("recommendation"), str) and p["recommendation"].strip():
-            text += f"\n\nRecommended: {p['recommendation'].strip()}"
-        return "question", text
     if kind == "feature":
         stories = p.get("stories")
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
-        check_stories(stories)
+        check_stories(stories, issue)
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
-        raise Garbled(f"plan.json kind must be user_story, feature or question, not {kind!r}")
+        raise Garbled(f"plan.json kind is {kind!r}: {ALWAYS}")
     if not isinstance(p.get("user_story"), str) or not p["user_story"].strip():
         raise Garbled("a story needs a non-empty user_story")
     ac, nfr = p.get("acceptance_criteria"), p.get("non_functional", [])
     if not isinstance(ac, list) or not ac:
         raise Garbled("a story needs a non-empty list of acceptance_criteria")
-    for c in ac:
-        if not isinstance(c, dict) or not str(c.get("text", "")).strip():
-            raise Garbled("every acceptance criterion needs its text")
-        if not str(c.get("source", "")).strip():
-            raise Garbled(f"acceptance criterion '{c['text'][:60]}' has no source link")
-    if not isinstance(nfr, list) or not all(isinstance(c, dict) and str(c.get("text", "")).strip() and str(c.get("why", "")).strip() for c in nfr):
-        raise Garbled("every non-functional requirement needs its text and why")
+    for k, c in enumerate(ac, 1):
+        if not isinstance(c, dict):
+            raise Garbled(f"acceptance criterion {k} must be an object with its text and source")
+        for key in ("text", "source"):
+            if not isinstance(c.get(key), str) or not c[key].strip():
+                raise Garbled(f"acceptance criterion {k} has no {'source link' if key == 'source' else key}: "
+                              f"its {key} must be non-empty text")
+        check_source(f"acceptance criterion {k}", c["source"], issue)
+    if not isinstance(nfr, list):
+        raise Garbled("a story needs non_functional as a list (empty for none)")
+    for k, c in enumerate(nfr, 1):
+        if not isinstance(c, dict):
+            raise Garbled(f"non-functional requirement {k} must be an object with its text and why")
+        for key in ("text", "why"):
+            if not isinstance(c.get(key), str) or not c[key].strip():
+                raise Garbled(f"non-functional requirement {k} needs its text and why as non-empty text, "
+                              f"and its {key} is not")
     if not strings(p.get("scope")) or not p["scope"]:
         raise Garbled("a story needs scope as a non-empty list of files")
     if not strings(p.get("out_of_scope", [])):
@@ -160,12 +178,18 @@ def from_kind(p):
                     "declared": tests, "raw": p}
 
 
-def declared_labels(tc, declared):
-    """Use the criteria the plan declares for each test, never labels guessed from the test's text."""
+def declared_by_test(declared):
+    """Each test the plan names -> the criterion keys it is filed under."""
     by_test = {}
     for key, names in declared.items():
         for t in names:
             by_test.setdefault(t, []).append(key)
+    return by_test
+
+
+def declared_labels(tc, declared):
+    """Use the criteria the plan declares for each test, never labels guessed from the test's text."""
+    by_test = declared_by_test(declared)
     added = {t: by_test.get(t, []) for t in tc["added"]}
     changed = {t: (old, by_test.get(t, old)) for t, (old, _) in tc["changed"].items()}
     return {"added": added, "changed": changed, "deleted": tc["deleted"]}
@@ -209,13 +233,28 @@ def proving(tc):
     return dict(tc["added"], **{t: new for t, (_, new) in tc["changed"].items()})
 
 
-def problems(number, plan, files, tc):
-    """What is wrong with a plan and the tests it touched; empty when it can be posted."""
+def missing_tests(names):
+    """The named tests (path::name) that are not in the repo: no such file, or no such test in it."""
+    return [t for t in names if t.partition("::")[2] not in test_functions(read_now(t.partition("::")[0]))]
+
+
+def problems(number, plan, files, tc, declared=None):
+    """What is wrong with a plan and the tests it touched; empty when it can be posted.
+
+    Given the tests the plan declares, each must be in the repo and filed under one of the plan's criteria, and an
+    older test already in the repo counts as proof of the criteria it is filed under.
+    """
     out = [f"{p} is outside tests/; the planner may only write tests" for p in files if not p.startswith("tests/")]
     if not tc["added"] and not tc["changed"]:
         out.append("the plan came with no tests")
     keys = {f"{number}.{k}" for k in range(1, len(plan["criteria"]) + 1)}
     proven = {k for ks in proving(tc).values() for k in ks}
+    if declared is not None:
+        names = sorted(declared_by_test(declared))
+        out += [f"the plan names {t}, which is not in the repo" for t in missing_tests(names)]
+        out += [f"tests are filed under {k}, which is not a criterion of this plan ({number}.1 to {number}.{len(keys)})"
+                for k in sorted(declared) if k not in keys]
+        proven |= {k for k, ts in declared.items() if ts}
     out += [f"criterion {k} has no test" for k in sorted(keys - proven)]
     out += [f"{t} proves {k}, which is not a criterion of this plan" for t, ks in tc["added"].items() for k in ks if k not in keys]
     out += [f"{t} now proves {k}, which is neither a criterion of this plan nor what it proved before"
@@ -292,7 +331,7 @@ def main(argv):
         gh("issue", "comment", number, "-R", repo, "--body", f"**Plan rejected:** {why}\n\n[See the run]({run})")
         return 0
     try:
-        kind, result = read_output(out)
+        kind, result = read_output(out, number)
         if kind == "plan":
             base = os.environ.get("PLANNER_BASE", "HEAD")
             files = changed_files(base)
@@ -303,9 +342,8 @@ def main(argv):
             # already hold the worker's code, which is not the planner's doing.
             run_base = os.environ.get("PLANNER_RUN_BASE")
             own = changed_files(run_base) if run_base else files
-            bad = problems(number, result, own, tc)
-            raw = json.load(open(os.path.join(out, "plan.json"))) if os.path.exists(os.path.join(out, "plan.json")) else {}
-            bad += problems_questions(raw.get("questions", []) if isinstance(raw, dict) else [])
+            bad = problems(number, result, own, tc, result.get("declared"))
+            bad += problems_questions(result["raw"].get("questions", []))
             if bad:
                 raise Garbled("; ".join(bad))
     except Garbled as e:
@@ -314,14 +352,12 @@ def main(argv):
         print(f"::error title=Planner output rejected::{e}")
         return 1
     if action == "post":
-        if kind == "question":
-            gh("issue", "comment", number, "-R", repo, "--body", f"**Planner question**\n\n{result}")
-        elif kind == "feature":
+        if kind == "feature":
             gh("issue", "comment", number, "-R", repo, "--body", f"**Planner proposes a split**\n\n```json\n{result}\n```")
         else:
             older = sorted(t for t in tc["changed"] if not set(tc["changed"][t][0]) <= {f"{number}.{k}" for k in range(1, len(result["criteria"]) + 1)}) + sorted(tc["deleted"])
             body = gh("issue", "view", number, "-R", repo, "--json", "body", "-q", ".body")
-            gh("issue", "edit", number, "-R", repo, "--body-file", "-", input=render(number, body, result, proving(tc), older))
+            gh("issue", "edit", number, "-R", repo, "--body-file", "-", input=render(number, body, result, dict(proving(tc), **declared_by_test(result["declared"])), older))
             gh("issue", "comment", number, "-R", repo, "--body",
                f"Plan written above, tests on `work/issue-{number}`. Add `work` to approve it.")
     print(kind)
