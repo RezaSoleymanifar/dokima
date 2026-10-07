@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 VERDICTS = {"approve", "block", "escalate"}
+FIXERS = {"worker", "planner"}
 ANSWERS = {"fixed", "disagree"}
 
 
@@ -106,6 +107,21 @@ def open_blockers(recs, stage):
         if r.get("role") == "reviewer" and (r.get("stage") or "") == stage and r.get("check", {}).get("passed"):
             return [] if r["handback"].get("verdict") == "approve" else r["handback"].get("blockers", [])
     return []
+
+
+def blockers_for(recs, role):
+    """The blockers this role must answer by id. A planner answers the test blockers of a code review that sent the work
+    back to it, else the newest plan review's; a worker answers only the code blockers of the newest code review."""
+    if role == "worker":
+        return [b for b in open_blockers(recs, "pr") if not (isinstance(b, dict) and b.get("fixer") == "planner")]
+    for r in reversed(recs):
+        if r.get("role") == "reviewer" and r.get("check", {}).get("passed"):
+            if (r.get("stage") or "") == "pr" and r["handback"].get("verdict") == "block":
+                tests = [b for b in r["handback"].get("blockers", []) if isinstance(b, dict) and b.get("fixer") == "planner"]
+                if tests:
+                    return tests
+            break
+    return open_blockers(recs, "plan")
 
 
 def problems_round(role, h, pack_dir):
@@ -201,7 +217,8 @@ def render(rec):
         lines += ["", h.get("user_story") or h.get("question") or ""]
     elif role == "reviewer":
         lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
-        lines += [f"- **{b.get('id')}** ({b.get('criterion')}): {b.get('problem')}" for b in h.get("blockers", [])]
+        fixes = lambda b: f", the {b['fixer']} fixes it" if b.get("fixer") in FIXERS else ""
+        lines += [f"- **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers", [])]
         if h.get("issues_found"):
             lines += ["", "**Issues found outside this one** (proposals until you file them):"]
             lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
@@ -315,8 +332,8 @@ def pack(repo, number, role, stage, dest):
     d, items = conversation(repo, number)
     recs = records(items)
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
-    answers_to = {"planner": "plan", "worker": "pr", "reviewer": stage}[role]
-    json.dump(open_blockers(recs, answers_to), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
+    answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
+    json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
     for i, r in enumerate(recs, 1):
         name = f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
@@ -437,6 +454,8 @@ def problems_shape(kind, h):
         for i, b in enumerate(h.get("blockers") if isinstance(h.get("blockers"), list) else [], 1):
             if isinstance(b, dict) and ("test" not in b or not (b["test"] is None or isinstance(b["test"], str))):
                 bad.append(f"blockers item {i}" + (f" ({b.get('id')})" if filled(b.get("id")) else "") + " needs test: a test name, or null")
+            if isinstance(b, dict) and b.get("fixer") not in FIXERS:
+                bad.append(f"blockers item {i}" + (f" ({b.get('id')})" if filled(b.get("id")) else "") + " needs fixer: worker or planner")
         bad += problems_items(h, "notes", ("text", "evidence"))
         bad += problems_items(h, "outside_plan", ("file", "change"))
         bad += problems_items(h, "issues_found", ("title", "why", "evidence"))
@@ -627,6 +646,8 @@ def next_step(items, rec, owners, rounds=3):
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
+    if verdict == "approve" and stage == "plan" and test_fix(items, owners):
+        return ("start", "worker", "")
     if verdict == "approve":
         return ("stop", "The plan is approved. Say `/work` to build it, or `/plan` with changes." if stage == "plan" else
                 "The work is approved. Merge the pull request, or review it with a command to send it back.")
@@ -637,7 +658,33 @@ def next_step(items, rec, owners, rounds=3):
     blocks = sum(1 for r in later if (r.get("handback") or {}).get("verdict") == "block") + 1
     if blocks >= rounds:
         return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
-    return ("start", "planner" if stage == "plan" else "worker", "")
+    to_planner = stage == "plan" or any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", []))
+    return ("start", "planner" if to_planner else "worker", "")
+
+
+def criteria_texts(plan):
+    """A plan's criteria as the owner approves them: every acceptance and non-functional criterion's text, in order."""
+    return [[c.get("text") if isinstance(c, dict) else c for c in plan.get(k) or []] for k in ("acceptance_criteria", "non_functional")]
+
+
+def test_fix(items, owners):
+    """True when the newest plan is a re-plan a code review asked for with a test blocker, the owner has not spoken
+    since that review, and its criteria are exactly those of the plan the owner approved with `/work`."""
+    owner_at = [i for i, c in enumerate(items) if (c.get("author") or {}).get("login") in owners]
+    works = [i for i in owner_at if command_of(items[i].get("body")) == "worker"]
+    if not works:
+        return False
+    review = next((i for i in range(len(items) - 1, works[-1], -1) if is_record(items[i], "reviewer", "pr")), None)
+    if review is None or any(i > review for i in owner_at):
+        return False
+    r = records([items[review]])[0]
+    h = r.get("handback") or {}
+    if not r.get("check", {}).get("passed") or h.get("verdict") != "block" or \
+            not any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", [])):
+        return False
+    replan = latest(records(items[review + 1:]), "planner")
+    agreed = latest(records(items[:works[-1]]), "planner")
+    return bool(replan and agreed) and criteria_texts(replan["handback"]) == criteria_texts(agreed["handback"])
 
 
 STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker", ""): "Work", ("reviewer", "pr"): "Review"}
