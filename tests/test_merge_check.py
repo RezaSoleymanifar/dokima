@@ -68,14 +68,14 @@ def stamp(comments):
     return [{**c, "createdAt": f"2026-10-07T20:{i:02d}:00Z"} for i, c in enumerate(comments)]
 
 
-def run_matrix(tmp_path, comments=(), head="try/issue-168", body="", number=168):
+def run_matrix(tmp_path, comments=(), head="try/issue-168", body="", number=168, issue_body="rough ask"):
     """Run the merge check's matrix command against a faked GitHub; return (exit code, rows or None, output)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
     gh.write_text(STUB_GH)
     gh.chmod(0o755)
-    issue = {"number": number, "title": "t", "body": "rough ask", "comments": stamp(list(comments))}
+    issue = {"number": number, "title": "t", "body": issue_body, "comments": stamp(list(comments))}
     (tmp_path / "data.json").write_text(json.dumps({"issues": {str(number): issue}}))
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"pull_request": {"number": 900, "head": {"ref": head}, "body": body}}))
@@ -114,20 +114,29 @@ def test_one_check_per_criterion_of_the_approved_plan_running_exactly_its_tests(
                                           "tests/test_c.py::test_four"], f"168.1: checks do not run the plan's tests: {rows}"
 
 
-def test_the_newest_approved_plan_wins_and_issue_text_is_ignored(record_property, tmp_path):
-    """The newest plan the reviewer approved is the one checked, not an older approved plan and not the issue's text.
+def test_the_newest_plan_is_checked_only_once_approved_and_issue_text_is_ignored(record_property, tmp_path):
+    """The newest plan is the one checked, and only once the reviewer approved it; the issue's text is ignored.
 
-    An older plan is approved, then a newer plan is approved. The checks must follow the newer plan. Then a newer plan
-    is handed back but not yet reviewed: the checks still follow the newest plan that was approved."""
+    An older plan is approved, then a newer plan is approved: the checks follow the newer plan, even though the issue's
+    text holds criteria in the old done-when format. Then a newer plan is handed back and not yet reviewed: the merge
+    check fails with "No approved plan found for issue #168" until it is approved, never falling back to the older
+    approved plan (the owner's answer, option B). A newer hand-back that code rejected is not a plan, so the approved
+    plan still stands."""
     record_property("proves", "168.1")
+    text = ("- [ ] Goal: g\n  - [ ] Done when: issue text thing\n    Verified by: a test\n"
+            "  - [ ] Done when: another issue text thing\n    Verified by: a test\n")
     two = [planned(OTHER_PLAN), reviewed(APPROVE), planned(PLAN), reviewed(APPROVE)]
-    code, rows, out = run_matrix(tmp_path, two)
-    assert rows is not None and [r["id"] for r in rows] == ["168.1", "168.2", "168.3"], \
-        f"168.1: the newer approved plan was not the one checked:\n{out}"
-    code, rows, out = run_matrix(tmp_path, two + [planned(OTHER_PLAN)])
-    assert rows is not None and [r["id"] for r in rows] == ["168.1", "168.2", "168.3"], \
-        f"168.1: an unreviewed newer plan replaced the newest approved one:\n{out}"
-    assert rows[0]["tests"] == "tests/test_a.py::test_one", f"168.1: wrong plan's tests: {rows}"
+    code, rows, out = run_matrix(tmp_path, two, issue_body=text)
+    assert rows is not None and [r["name"] for r in rows] == ["168.1 · First thing works", "168.2 · Second thing works",
+                                                              "168.3 · Only records count"], \
+        f"168.1: the newest approved plan was not the one checked (or the issue's text was used):\n{rows}\n{out}"
+    code, rows, out = run_matrix(tmp_path, two + [planned(OTHER_PLAN)], issue_body=text)
+    assert no_plan_row(rows, "No approved plan found for issue #168"), \
+        f"168.1: a newer plan not yet reviewed did not stop the merge check; it used an older plan: {rows}\n{out}"
+    code, rows, out = run_matrix(tmp_path, two + [planned(OTHER_PLAN, passed=False)], issue_body=text)
+    assert rows is not None and [r["id"] for r in rows] == ["168.1", "168.2", "168.3"] \
+        and rows[0]["tests"] == "tests/test_a.py::test_one", \
+        f"168.1: a hand-back code rejected replaced the approved plan: {rows}\n{out}"
 
 
 def test_a_criterion_without_tests_gets_a_check_that_can_only_fail(record_property, tmp_path):
@@ -153,13 +162,16 @@ def test_a_pull_request_with_no_approved_plan_gets_one_failing_check_saying_so(r
     """A pull request whose issue has no approved plan fails, with a check named "No approved plan found for issue #168".
 
     Checked for every way a plan can be missing: no records at all, a plan never reviewed, a plan the reviewer blocked,
-    an approval later overturned by a block, and a plan whose hand-back code rejected. Each must give exactly that one
+    an approval later overturned by a block, a newer plan not yet reviewed or blocked after an older one was approved,
+    and a plan whose hand-back code rejected. Each must give exactly that one
     check, with no tests, so it fails; never an empty list and never the criteria of a plan that was not approved."""
     record_property("proves", "168.3")
     cases = {"no records": [],
              "never reviewed": [planned(PLAN)],
              "blocked": [planned(PLAN), reviewed(BLOCK)],
              "approval overturned": [planned(PLAN), reviewed(APPROVE), reviewed(BLOCK)],
+             "newer plan not yet reviewed": [planned(OTHER_PLAN), reviewed(APPROVE), planned(PLAN)],
+             "newer plan blocked": [planned(OTHER_PLAN), reviewed(APPROVE), planned(PLAN), reviewed(BLOCK)],
              "plan rejected by code": [planned(PLAN, passed=False), reviewed(APPROVE)]}
     for why, comments in cases.items():
         code, rows, out = run_matrix(tmp_path, comments)
