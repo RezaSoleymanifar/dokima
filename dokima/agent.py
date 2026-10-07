@@ -483,6 +483,72 @@ def route(body, on_pr, number, head="", pr_body=""):
     return {"role": role, "stage": stage, "issue": issue}
 
 
+def next_step(items, rec, owners, rounds=3):
+    """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
+
+    A planner hands to the reviewer unless it has questions for the owner. A worker hands to the reviewer. A blocking
+    review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
+    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner."""
+    role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
+    if not rec.get("check", {}).get("passed"):
+        return ("stop", "The hand-back was rejected by code, see the problems above. Fix the cause, then start the stage again.")
+    if role == "planner":
+        if h.get("questions"):
+            return ("stop", "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions.")
+        return ("start", "reviewer", "plan")
+    if role == "worker":
+        return ("start", "reviewer", "pr")
+    if role != "reviewer":
+        return ("stop", "")
+    verdict = h.get("verdict")
+    if verdict == "approve":
+        return ("stop", "The plan is approved. Say `/work` to build it, or `/plan` with changes." if stage == "plan" else
+                "The work is approved. Merge the pull request, or review it with a command to send it back.")
+    if verdict == "escalate":
+        return ("stop", "The reviewer escalated this to you, see why above.")
+    last_owner = max([i for i, c in enumerate(items) if (c.get("author") or {}).get("login") in owners], default=-1)
+    later = [r for r in records(items[last_owner + 1:]) if r.get("role") == "reviewer" and (r.get("stage") or "") == stage]
+    blocks = sum(1 for r in later if (r.get("handback") or {}).get("verdict") == "block") + 1
+    if blocks >= rounds:
+        return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
+    return ("start", "planner" if stage == "plan" else "worker", "")
+
+
+STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker", ""): "Work", ("reviewer", "pr"): "Review"}
+
+
+def board_place(rec, step):
+    """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
+    the owner, and the Needs you pill exactly when the river stops for the owner."""
+    if step[0] == "start":
+        return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
+    return STAGE_COLUMN.get((rec.get("role"), rec.get("stage") or ""), "Plan"), True
+
+
+def move_card(repo, number, column, needs_you, spec, q=None):
+    """Put the issue and its open pull request in that column, with or without the Needs you pill."""
+    from dokima import board
+    b = board.Board(spec, repo, q or board.gql)
+    targets = [("issue", int(number))]
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
+    if pr:
+        targets.append(("pr", int(pr)))
+    for kind, n in targets:
+        iid = b.item(kind, n)
+        b.set(iid, "Status", column)
+        b.set(iid, "Action", "Needs you" if needs_you else None)
+    return targets
+
+
+def next_line(step, owners):
+    """The last line of a card: what happens next, mentioning the owner when it is their turn."""
+    if step[0] == "start":
+        who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
+        return f"**Next:** {who} starts now."
+    mention = " ".join(f"@{o}" for o in owners)
+    return f"**Next:** {mention} {step[1]}".strip()
+
+
 def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md)"""
@@ -532,12 +598,43 @@ def main(argv):
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
         if not any(r.get("role") == "split" for r in recs):
             gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
+        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        if spec:
+            from dokima import board
+            b = board.Board(spec, repo, board.gql)
+            for f in rec["handback"]["stories"]:
+                iid = b.item("issue", f["issue"])
+                b.set(iid, "Status", "Backlog")
+                b.set(iid, "Action", None)
+            iid = b.item("issue", int(parent))
+            b.set(iid, "Status", "Work")
+            b.set(iid, "Action", None)
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
         recs = records(items)
         plan = latest(recs, "planner")
         print(plan["handback"].get("kind", "") if plan and approved(recs) else "")
+        return 0
+    if argv[1] == "next":
+        number, out = argv[2], argv[3]
+        owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+        _, items = conversation(os.environ["GITHUB_REPOSITORY"], number)
+        step = next_step(items, json.load(open(os.path.join(out, "record.json"))), owners)
+        with open(os.path.join(out, "comment.md"), "a") as f:
+            f.write("\n" + next_line(step, owners) + "\n")
+        column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
+        open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
+        print(" ".join(step) if step[0] == "start" else "stop")
+        return 0
+    if argv[1] == "board":
+        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        if not spec:
+            print("No board set; nothing to move.")
+            return 0
+        column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
+        for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
+            print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"
