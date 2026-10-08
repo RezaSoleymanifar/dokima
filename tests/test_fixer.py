@@ -140,6 +140,9 @@ def fake_github(monkeypatch, recs):
             return json.dumps({"number": 9, "title": "T", "body": "B", "comments": comments})
         if args[:2] == ("pr", "list"):
             return "[]"
+        if args[:2] == ("issue", "list") or (args[0] == "api" and args[1].lstrip("/").startswith("repos/o/r/issues")
+                                             and "/comments" not in args[1]):
+            return "[]"  # the repo's open issues, which the planner's pack lists
         raise AssertionError(f"unexpected gh call {args}")
     monkeypatch.setattr(agent, "gh", gh)
 
@@ -157,7 +160,7 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     agent.pack("o/r", 9, "planner", "", str(tmp_path / "p"))
     got = [b.get("id") for b in json.load(open(tmp_path / "p" / "open_blockers.json"))]
     assert got == ["B1"], f"166.3: the planner was handed blockers {got}, not exactly the test blocker B1"
-    assert agent.problems_round("planner", {"replies": []}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
+    assert agent.problems_round("planner", {"replies": [], "links": {"blocked_by": [], "blocks": [], "relates_to": []}}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
         "166.3: the planner's hand-back may skip the code review's test blocker B1"
     fake_github(monkeypatch, base + [rec("planner", handback=STORY), PLAN_OK])
     agent.pack("o/r", 9, "worker", "", str(tmp_path / "w"))
