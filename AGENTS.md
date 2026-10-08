@@ -39,7 +39,7 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 ## Roles
 
 - **Owner:** decides. Approves plans and results, routes proposals. Only a code owner's commands count.
-- **Planner:** turns a rough issue into a plan: an objective, acceptance criteria, scope, and a test for every criterion written before any code. It judges the ask first and raises a concern only with evidence. It may change or delete an older test when the plan makes it wrong, with a reason the owner sees. It proposes splits; it never writes code.
+- **Planner:** turns a rough issue into a plan: an objective, acceptance criteria, scope, and a test for every criterion written before any code. It judges the ask first; a doubt about the ask goes in as a question, with evidence. It may change or delete an older test when the plan makes it wrong, with a reason the owner sees. It proposes splits; it never writes code.
 - **Worker:** builds what the approved plan says, on a fresh machine, within scope, until its tests pass. It never changes the plan's tests.
 - **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and ends with a list of proposed issues.
 - **Code:** everything that must be exact (see the principles).
