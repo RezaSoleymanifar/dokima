@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from dokima import plan  # noqa: E402
+from dokima import body, plan  # noqa: E402
 
 WORKER_ACTIVE = {"queued", "in_progress", "requested", "pending", "waiting"}
 FULL_SUITE = "all tests"
@@ -189,11 +189,12 @@ def main():
         pr = json.loads(gh("api", f"repos/{repo}/pulls/{pr_number}"))
         check_runs = json.loads(gh("api", f"repos/{repo}/commits/{pr['head']['sha']}/check-runs?per_page=100"))["check_runs"]
     # The issue keeps its current words, so rewriting it never erases an edit; the PR shows the approved plan.
-    current = plan.parse(issue["current_body"])
-    with open("issue.md", "w") as f:
-        f.write(issue_body(render(repo, issue, current, pr, check_runs, worker), current["notes"]))
-    gh("api", "-X", "PATCH", f"repos/{repo}/issues/{number}", "-F", "body=@issue.md")
-    print(f"Card written into issue #{number}")
+    # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
+    text = issue["current_body"] or ""
+    current = plan.parse(text.split(body.MARKER, 1)[0])
+    notes = current["notes"] if body.MARKER in text else ""
+    if body.save(repo, number, text, issue_body(render(repo, issue, current, pr, check_runs, worker), notes)):
+        print(f"Card written into issue #{number}")
     if pr and pr["state"] == "open":
         with open("pr.md", "w") as f:
             f.write(pr_body(render(repo, issue, issue["plan"], pr, check_runs, worker, page="pr"), pr.get("body")))
