@@ -343,7 +343,7 @@ def criterion_caps(p):
 
 
 def docstrings(path, text):
-    """Each docstring in a file's source, by how the check names it (path, or path::name) -> its first line."""
+    """Each docstring in a file's source, by how the check names it (path, or path::name) -> its first line of text."""
     try:
         tree = ast.parse(text or "", path)
     except (SyntaxError, ValueError):
@@ -353,7 +353,7 @@ def docstrings(path, text):
     def visit(node, name):
         doc = ast.get_docstring(node, clean=False)
         if doc is not None:
-            out[name] = doc.split("\n")[0].strip()
+            out[name] = next((line.strip() for line in doc.split("\n") if line.strip()), "")
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 visit(child, f"{name}.{child.name}" if node is not tree else f"{path}::{child.name}")
