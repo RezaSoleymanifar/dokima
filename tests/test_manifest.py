@@ -22,6 +22,18 @@ What counts as relying on a setting:
     permission  a workflow asking an app token for it (permission-<name>: <level>), or code calling
                 branches/<branch>/protection, which needs administration: read to read it, write to change it
                 (-X PUT/POST/PATCH/DELETE, or rest("PUT", ...)); a level higher than the manifest's is left out too
+
+The app's permission behind every GitHub call (282.4): the guard also names every GitHub call whose app permission, at
+the level it needs, the manifest leaves out, with the permission and the file. The calls it sees:
+    in Python under dokima/: gh("api", [-X METHOD,] PATH, ...) and rest/api/self.rest(METHOD, PATH, ...), where PATH is
+        written in the call (a string or f-string); without -X, a gh api call with -f/-F fields is POST, else GET;
+        gh("<command>", "<subcommand>", ...) for gh's other commands; and every GraphQL query or mutation written in
+        the code (a string starting "query" or "mutation"). A wrapper passing on a path it was given is not a call.
+    in workflows: gh and git push in a step whose GH_TOKEN (or a token in a git URL) is an app token
+        (steps.<id>.outputs.token); a step running on github.token uses Actions' own key, not the app's.
+GET and GraphQL queries need read; POST, PUT, PATCH, DELETE, mutations, git push and gh commands that change
+something need write. Calls that need no permission (users/<login>, installation/token) are quiet. A call the guard
+cannot tie to a permission is named too, with its file, so a new kind of call never slips through.
 """
 import importlib
 import json
@@ -364,7 +376,7 @@ def test_the_guard_catches_a_label_taken_out_of_the_manifest(record_property, mo
 
 
 def test_the_guard_catches_a_check_taken_out_of_the_manifest(record_property, monkeypatch):
-    """A check taken out of the manifest is named with the code that looks it up.
+    """A check taken out of the manifest is named with the code using it.
 
     Proves 282.3. With "all tests" left out of the manifest's required checks, the guard run on this repo names "all tests" and
     dokima/card.py, which finds that check by name."""
@@ -404,9 +416,10 @@ def test_the_guard_catches_a_branch_rule_or_permission_taken_out_of_the_manifest
 # 282.4: the manifest's app permissions match dokima/app.json, with Administration read
 
 def test_the_manifest_permissions_match_the_app_with_administration_read(record_property):
-    """The manifest's app permissions equal dokima/app.json's, both with Administration read.
+    """The manifest's app permissions equal dokima/app.json's, with Administration read and Organization projects write.
 
-    Proves 282.4. Neither asks for Administration write."""
+    Proves 282.4. Neither asks for Administration write. Both ask for Organization projects write, which the board's calls
+    to the organization's project need."""
     record_property("proves", "282.4")
     m = manifest("282.4")
     app = json.load(open(os.path.join(ROOT, "dokima", "app.json")))["default_permissions"]
@@ -414,7 +427,160 @@ def test_the_manifest_permissions_match_the_app_with_administration_read(record_
         f"282.4: dokima/app.json asks for Administration {app.get('administration')!r}, not read"
     assert m.PERMISSIONS.get("administration") == "read", \
         f"282.4: the manifest asks for Administration {m.PERMISSIONS.get('administration')!r}, not read"
+    assert app.get("organization_projects") == "write", \
+        f"282.4: dokima/app.json asks for Organization projects {app.get('organization_projects')!r}, not write, " \
+        "which the board's project calls need"
     assert m.PERMISSIONS == app, f"282.4: the manifest's permissions {m.PERMISSIONS} differ from dokima/app.json's {app}"
+
+
+
+APP = "${{ steps.app.outputs.token }}"
+
+
+def app_step(run, token=APP):
+    """A workflow running `run` in one step with the given key in GH_TOKEN."""
+    lines = "\n".join("              " + l for l in textwrap.dedent(run).strip().splitlines())
+    return ("on: workflow_dispatch\njobs:\n  go:\n    runs-on: ubuntu-24.04\n    steps:\n"
+            "      - id: app\n        uses: actions/create-github-app-token@v2\n        with:\n"
+            "          app-id: ${{ vars.DOKIMA_APP_ID }}\n          private-key: ${{ secrets.DOKIMA_APP_KEY }}\n"
+            f"      - env:\n          GH_TOKEN: {token}\n        run: |\n{lines}\n")
+
+
+# (file, text, permission, level it needs)
+CALLS = [
+    ("dokima/c_comment.py", 'def f(gh, repo, n):\n    gh("issue", "comment", str(n), "-R", repo, "--body", "hi")\n', "issues", "write"),
+    ("dokima/c_view.py", 'def f(gh, repo, n):\n    return gh("issue", "view", str(n), "-R", repo, "--json", "body")\n', "issues", "read"),
+    ("dokima/c_prlist.py", 'def f(gh, repo):\n    return gh("pr", "list", "-R", repo, "--json", "number")\n', "pull_requests", "read"),
+    ("dokima/c_prcreate.py", 'def f(gh, repo):\n    gh("pr", "create", "-R", repo, "--head", "x", "--title", "t", "--body", "b")\n', "pull_requests", "write"),
+    ("dokima/c_merge.py", 'def f(gh, repo, n):\n    gh("pr", "merge", str(n), "-R", repo, "--squash")\n', "contents", "write"),
+    ("dokima/c_download.py", 'def f(gh, repo, rid):\n    gh("run", "download", str(rid), "-R", repo, "-n", "x")\n', "actions", "read"),
+    ("dokima/c_checkruns.py", 'def f(gh, repo, sha):\n    return gh("api", f"repos/{repo}/commits/{sha}/check-runs")\n', "checks", "read"),
+    ("dokima/c_status.py", 'def f(gh, repo, sha):\n    return gh("api", f"repos/{repo}/commits/{sha}/status")\n', "statuses", "read"),
+    ("dokima/c_dispatch.py", 'def f(gh, repo):\n    gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=x")\n', "contents", "write"),
+    ("dokima/c_update.py", 'def f(rest, repo, n):\n    rest("PUT", f"repos/{repo}/pulls/{n}/update-branch")\n', "pull_requests", "write"),
+    ("dokima/c_fields.py", 'def f(gh, repo, n):\n    gh("api", f"repos/{repo}/issues/{n}/comments", "-f", "body=hi")\n', "issues", "write"),
+    ("dokima/c_contents.py", 'def f(gh, repo, path):\n    return gh("api", f"repos/{repo}/contents/{path}")\n', "contents", "read"),
+    ("dokima/c_run.py", 'def f(gh, repo, rid):\n    return gh("api", f"repos/{repo}/actions/runs/{rid}")\n', "actions", "read"),
+    ("dokima/c_unlabel.py", 'def f(gh, repo, n):\n    gh("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/autopilot")\n', "issues", "write"),
+    ("dokima/c_view_add.py", 'class B:\n    def f(self):\n        self.rest("POST", f"orgs/{self.owner}/projectsV2/{self.number}/views", name="x")\n',
+     "organization_projects", "write"),
+    ("dokima/c_mutation.py", "def f(q):\n    q('mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}', p=1, c=2)\n",
+     "organization_projects", "write"),
+    ("dokima/c_project.py", "def f(q):\n    return q('query($o:String!,$n:Int!){organization(login:$o){projectV2(number:$n){id}}}', o='o', n=1)\n",
+     "organization_projects", "read"),
+    ("dokima/c_issue_gql.py", 'def f(gh):\n    query = ("query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n)"\n'
+     '             "{issue(number:$i){title}}}")\n    return gh("api", "graphql", "-f", f"query={query}")\n', "issues", "read"),
+    ("dokima/c_pr_gql.py", 'def f(gh):\n    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n)"\n'
+     '             "{pullRequest(number:$p){title}}}")\n    return gh("api", "graphql", "-f", f"query={query}")\n', "pull_requests", "read"),
+    (".github/workflows/c_prcomment.yml", app_step('gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body hi'), "pull_requests", "write"),
+    (".github/workflows/c_push.yml", app_step('git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:x'),
+     "contents", "write"),
+    (".github/workflows/c_patch.yml", app_step('gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$ID" -F body=@x.md'),
+     "issues", "write"),
+]
+
+
+def without(m, permission):
+    """The manifest's permissions with one permission taken out."""
+    return {k: v for k, v in m.PERMISSIONS.items() if k != permission}
+
+
+@pytest.mark.parametrize("path,text,permission,level", CALLS, ids=[p for p, _, _, _ in CALLS])
+def test_the_guard_names_the_app_permission_behind_a_github_call(record_property, monkeypatch, tmp_path,
+                                                                  path, text, permission, level):
+    """The guard names a missing app permission a GitHub call needs, and its file.
+
+    Proves 282.4. A repo holding one file making one GitHub call (a gh command, a gh api or REST call, a GraphQL query or
+    mutation, or a gh or git push call in a workflow step on the app's key) gets a line naming the permission that call
+    needs and the file when the manifest leaves that permission out, and when it grants only read where the call writes.
+    With the permission granted at the level the call needs, the guard is quiet, so it ties the call to that permission
+    and level and to no other."""
+    record_property("proves", "282.4")
+    m = manifest("282.4")
+    write(str(tmp_path), path, text)
+    monkeypatch.setattr(m, "PERMISSIONS", without(m, permission))
+    lines = m.undeclared(str(tmp_path))
+    assert reported(lines, permission, path), \
+        f"282.4: {path} makes a call needing {permission} {level}, which the manifest leaves out, and the guard said {lines}"
+    if level == "write":
+        monkeypatch.setattr(m, "PERMISSIONS", {**without(m, permission), permission: "read"})
+        lines = m.undeclared(str(tmp_path))
+        assert reported(lines, permission, path), \
+            f"282.4: {path} makes a call needing {permission} write, the manifest grants read, and the guard said {lines}"
+    monkeypatch.setattr(m, "PERMISSIONS", {**without(m, permission), permission: level})
+    lines = m.undeclared(str(tmp_path))
+    assert lines == [], f"282.4: {path} needs only {permission} {level}, which the manifest grants, and the guard said {lines}"
+
+
+def test_the_guard_stays_quiet_for_calls_that_need_no_app_permission(record_property, monkeypatch, tmp_path):
+    """Calls needing no permission, or on Actions' own key, need no app permission.
+
+    Proves 282.4. With the manifest granting no permissions at all, code looking up a bot user and revoking its own key,
+    a workflow step on github.token merging a pull request, and a wrapper passing on a path it was given get no line."""
+    record_property("proves", "282.4")
+    m = manifest("282.4")
+    write(str(tmp_path), "dokima/free.py", """\
+        import subprocess
+
+
+        def free(gh, slug):
+            gh("api", f"users/{slug}[bot]", "--jq", ".id")
+            gh("api", "-X", "DELETE", "installation/token", "--silent")
+
+
+        def api(method, path, **fields):
+            return subprocess.run(["gh", "api", "-X", method, path], check=True, capture_output=True, text=True).stdout
+        """)
+    write(str(tmp_path), ".github/workflows/own.yml", app_step('gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --squash',
+                                                               token="${{ github.token }}"))
+    monkeypatch.setattr(m, "PERMISSIONS", {})
+    lines = m.undeclared(str(tmp_path))
+    assert lines == [], f"282.4: calls that need no app permission were reported: {lines}"
+
+
+@pytest.mark.parametrize("path,text,call", [
+    ("dokima/odd_path.py", 'def f(gh, repo):\n    return gh("api", f"repos/{repo}/frobnicate")\n', "frobnicate"),
+    ("dokima/odd_command.py", 'def f(gh):\n    gh("frob", "nicate")\n', "frob"),
+], ids=["path", "command"])
+def test_the_guard_names_a_github_call_it_cannot_tie_to_a_permission(record_property, tmp_path, path, text, call):
+    """A GitHub call tied to no known permission is named with its file.
+
+    Proves 282.4. With the manifest as it is, code calling a REST path or a gh command the guard does not know gets a line
+    naming the call and the file."""
+    record_property("proves", "282.4")
+    m = manifest("282.4")
+    write(str(tmp_path), path, text)
+    lines = m.undeclared(str(tmp_path))
+    assert reported(lines, call, path), f"282.4: {path} makes an unknown GitHub call {call!r} and the guard said {lines}"
+
+
+@pytest.mark.parametrize("permission,level,path", [
+    ("organization_projects", None, "dokima/board.py"),
+    ("issues", None, "dokima/body.py"),
+    ("checks", None, "dokima/card.py"),
+    ("actions", None, "dokima/card.py"),
+    ("statuses", None, "dokima/agent.py"),
+    ("pull_requests", None, "dokima/uptodate.py"),
+    ("contents", "read", "dokima/agent.py"),
+    ("contents", "read", ".github/workflows/worker.yml"),
+    ("issues", "read", ".github/workflows/agent.yml"),
+], ids=lambda v: str(v))
+def test_the_guard_catches_a_permission_this_repos_calls_need(record_property, monkeypatch, permission, level, path):
+    """A permission this repo's calls need, when missing, is named with a file needing it.
+
+    Proves 282.4. On this repo: without Organization projects the guard names dokima/board.py; without issues, body.py; without
+    checks or actions, card.py; without statuses, agent.py; without pull requests, uptodate.py. With contents cut to read
+    it names agent.py (dispatch, merge) and worker.yml (git push on the app's key); with issues cut to read, agent.yml
+    (editing a comment on the app's key)."""
+    record_property("proves", "282.4")
+    m = manifest("282.4")
+    perms = without(m, permission)
+    if level:
+        perms[permission] = level
+    monkeypatch.setattr(m, "PERMISSIONS", perms)
+    lines = m.undeclared(ROOT)
+    assert reported(lines, permission, path), \
+        f"282.4: with {permission} {'cut to ' + level if level else 'left out'}, the guard did not name it and {path}: {lines}"
 
 
 # 282.5: the manifest is plain data, read without a network
