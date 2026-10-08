@@ -10,6 +10,18 @@ The manifest is `dokima/manifest.py`, plain data read without a network:
     undeclared(root) -> [str, ...]: one line per setting the code or workflows under `root` rely on that the manifest
         leaves out, naming the setting and the file (path relative to root, with forward slashes). It reads the
         manifest's data when called, so a test can take an entry out and see the guard report it.
+
+What counts as relying on a setting:
+    label       a workflow started by it (github.event.label.name == '...'), or code adding it ("labels[]": "...",
+                labels[]=...)
+    field       code setting it: board.set(iid, "Field", "Option"); the option counts too
+    view        code adding it: add_view("Name", ...)
+    check       code looking a check run up by name: r["name"] == "..." or r["name"] == NAME, where NAME = "..." in that
+                file (a name subscripted once, so p["label"]["name"] == "plan" is a label, not a check)
+    branch rule code reading a branch's rule: branches/<branch>/protection or rules/branches/<branch>
+    permission  a workflow asking an app token for it (permission-<name>: <level>), or code calling
+                branches/<branch>/protection, which needs administration: read to read it, write to change it
+                (-X PUT/POST/PATCH/DELETE, or rest("PUT", ...)); a level higher than the manifest's is left out too
 """
 import importlib
 import json
@@ -232,6 +244,46 @@ UNDECLARED = [
         def put(gh, repo, n):
             gh("api", "-X", "POST", f"repos/{repo}/issues/{n}/labels", "-f", "labels[]=deploy")
         """),
+    ("dokima/lint.py", "lint", """\
+        def lint(runs):
+            return next(r for r in runs if r["name"] == "lint")
+        """),
+    ("dokima/lint_name.py", "lint", """\
+        LINT = "lint"
+
+
+        def lint(runs):
+            return next(r for r in runs if r["name"] == LINT)
+        """),
+    ("dokima/release_rule.py", "release", """\
+        def rule(gh, repo):
+            return gh("api", f"repos/{repo}/branches/release/protection")
+        """),
+    ("dokima/release_rules.py", "release", """\
+        def rules(gh, repo):
+            return gh("api", f"repos/{repo}/rules/branches/release")
+        """),
+    (".github/workflows/pages.yml", "pages", """\
+        on: workflow_dispatch
+        jobs:
+          go:
+            runs-on: ubuntu-24.04
+            steps:
+              - uses: actions/create-github-app-token@v2
+                id: app
+                with:
+                  app-id: ${{ vars.DOKIMA_APP_ID }}
+                  private-key: ${{ secrets.DOKIMA_APP_KEY }}
+                  permission-pages: write
+        """),
+    ("dokima/protect.py", "administration", """\
+        def protect(gh, repo):
+            gh("api", "-X", "PUT", f"repos/{repo}/branches/main/protection", "--input", "rule.json")
+        """),
+    ("dokima/protect_rest.py", "administration", """\
+        def protect(rest, repo):
+            rest("PUT", f"repos/{repo}/branches/main/protection")
+        """),
 ]
 
 
@@ -239,9 +291,11 @@ UNDECLARED = [
 def test_the_guard_names_an_undeclared_setting_and_its_file(record_property, tmp_path, path, setting, text):
     """The guard names a setting the manifest leaves out, and the file relying on it.
 
-    Proves 282.3. A repo holding only one file that relies on an undeclared setting (a workflow keyed on the label deploy, code
-    setting the option Shipped or the field Stage, adding the view Mine, or adding the label deploy through the REST
-    or gh form) gets a line from the guard naming that setting and that file."""
+    Proves 282.3. A repo holding only one file that relies on an undeclared setting gets a line from the guard naming that setting
+    and that file: a workflow keyed on the label deploy; code setting the option Shipped or the field Stage, adding the
+    view Mine, or adding the label deploy through the REST or gh form; code looking up the check lint by name, written
+    out or through a constant; code reading the branch rule of release either way; a workflow asking an app token for
+    pages; and code changing main's branch rule, which needs administration write where the manifest grants read."""
     record_property("proves", "282.3")
     m = manifest("282.3")
     write(str(tmp_path), path, text)
@@ -253,8 +307,10 @@ def test_the_guard_names_an_undeclared_setting_and_its_file(record_property, tmp
 def test_the_guard_passes_settings_the_manifest_declares(record_property, tmp_path):
     """The guard stays quiet for declared settings, and the repo as it is passes.
 
-    Proves 282.3. A workflow keyed on the label plan, code setting Status to Done, adding the Autopilot view and adding the label
-    autopilot both ways gets no line from the guard, and neither does the repo as it is."""
+    Proves 282.3. A workflow keyed on the label plan and asking an app token for issues write and administration read, and code
+    setting Status to Done, adding the Autopilot view, adding the label autopilot both ways, looking up the checks
+    "all tests" and "all done-whens passed" by name and through a constant, and reading main's branch rule both ways,
+    gets no line from the guard, and neither does the repo as it is."""
     record_property("proves", "282.3")
     m = manifest("282.3")
     write(str(tmp_path), ".github/workflows/plan.yml", """\
@@ -266,14 +322,28 @@ def test_the_guard_passes_settings_the_manifest_declares(record_property, tmp_pa
             if: github.event.label.name == 'plan'
             runs-on: ubuntu-24.04
             steps:
-              - run: echo hi
+              - uses: actions/create-github-app-token@v2
+                id: app
+                with:
+                  app-id: ${{ vars.DOKIMA_APP_ID }}
+                  private-key: ${{ secrets.DOKIMA_APP_KEY }}
+                  permission-issues: write
+                  permission-administration: read
         """)
     write(str(tmp_path), "dokima/fine.py", """\
-        def fine(board, rest, gh, iid, path):
+        DONE_WHENS = "all done-whens passed"
+
+
+        def fine(board, rest, gh, iid, path, runs, repo):
             board.set(iid, "Status", "Done")
             board.add_view("Autopilot", "table", "label:autopilot is:open")
             rest("POST", path, **{"labels[]": "autopilot"})
             gh("api", "-X", "POST", path, "-f", "labels[]=autopilot")
+            tests = next(r for r in runs if r["name"] == "all tests")
+            whens = next(r for r in runs if r["name"] == DONE_WHENS)
+            gh("api", f"repos/{repo}/branches/main/protection")
+            rest("GET", f"repos/{repo}/rules/branches/main")
+            return tests, whens
         """)
     assert m.undeclared(str(tmp_path)) == [], f"282.3: the guard reported declared settings: {m.undeclared(str(tmp_path))}"
     assert m.undeclared(ROOT) == [], f"282.3: code or workflows in this repo rely on settings the manifest leaves out: {m.undeclared(ROOT)}"
@@ -291,6 +361,44 @@ def test_the_guard_catches_a_label_taken_out_of_the_manifest(record_property, mo
     lines = m.undeclared(ROOT)
     assert reported(lines, label, path), \
         f"282.3: with {label} left out of the manifest, the guard did not name it and {path}: {lines}"
+
+
+def test_the_guard_catches_a_check_taken_out_of_the_manifest(record_property, monkeypatch):
+    """A check taken out of the manifest is named with the code that looks it up.
+
+    Proves 282.3. With "all tests" left out of the manifest's required checks, the guard run on this repo names "all tests" and
+    dokima/card.py, which finds that check by name."""
+    record_property("proves", "282.3")
+    m = manifest("282.3")
+    monkeypatch.setattr(m, "CHECKS", [c for c in m.CHECKS if c != "all tests"])
+    lines = m.undeclared(ROOT)
+    assert reported(lines, "all tests", "dokima/card.py"), \
+        f"282.3: with \"all tests\" left out of the manifest, the guard did not name it and dokima/card.py: {lines}"
+
+
+def test_the_guard_catches_a_branch_rule_or_permission_taken_out_of_the_manifest(record_property, monkeypatch, tmp_path):
+    """A branch rule or permission taken out of the manifest is named with its file.
+
+    Proves 282.3. Code reading main's branch rule passes while the manifest declares main and administration read. With main
+    left out of the branch rules the guard names main and the file; with administration left out of the permissions it
+    names administration and the file."""
+    record_property("proves", "282.3")
+    m = manifest("282.3")
+    write(str(tmp_path), "dokima/rule.py", """\
+        def rule(gh, repo):
+            return gh("api", f"repos/{repo}/branches/main/protection")
+        """)
+    assert m.undeclared(str(tmp_path)) == [], f"282.3: the guard reported main's declared rule: {m.undeclared(str(tmp_path))}"
+    with monkeypatch.context() as mp:
+        mp.delitem(m.BRANCH_RULES, "main")
+        lines = m.undeclared(str(tmp_path))
+        assert reported(lines, "main", "dokima/rule.py"), \
+            f"282.3: with main left out of the branch rules, the guard did not name it and dokima/rule.py: {lines}"
+    with monkeypatch.context() as mp:
+        mp.delitem(m.PERMISSIONS, "administration")
+        lines = m.undeclared(str(tmp_path))
+        assert reported(lines, "administration", "dokima/rule.py"), \
+            f"282.3: with administration left out of the permissions, the guard did not name it and dokima/rule.py: {lines}"
 
 
 # 282.4: the manifest's app permissions match dokima/app.json, with Administration read
