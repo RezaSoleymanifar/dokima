@@ -8,7 +8,8 @@ The planner holds no GitHub key. It ends by writing one plan.json to OUT, of kin
 dokima/roles/planner.md), with its questions for the owner listed inside it, plus its tests in tests/. Every
 criterion's source is issue N or one of its comments; every test it names is in the repo, filed under one of the
 plan's criteria. Every older test it changes, renames or deletes needs a reason in test_changes. Every new test has a
-one-sentence summary and fails on today's code.
+one-sentence summary, names each criterion it proves by number below it, and fails on today's code. Criteria and the
+docstrings the planner adds are held to word caps (dokima/words.py): a little over is listed, far over is rejected.
 Nothing is posted unless `check` passes.
 """
 
@@ -23,10 +24,13 @@ import tarfile
 import tempfile
 
 from dokima import body as issue_body
+from dokima import words
 from dokima.checks import PROVES, TEST_DEF
 from dokima.agent import problems_questions  # noqa: E402
 
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
+CRITERION_CAP = 25  # words in a criterion's first sentence
+DOCSTRING_CAP = 15  # words in the first line of a docstring the planner adds
 
 
 class Garbled(Exception):
@@ -321,6 +325,71 @@ def unsummarized(added):
     return out
 
 
+def criterion_texts(p):
+    """Each criterion of a plan or of a split's stories, as (how the check names it, its text)."""
+    def of(owner, prefix=""):
+        out = [(f"{prefix}acceptance criterion {k}", c["text"]) for k, c in enumerate(owner.get("acceptance_criteria", []), 1)]
+        return out + [(f"{prefix}non-functional requirement {k}", c["text"])
+                      for k, c in enumerate(owner.get("non_functional", []), 1)]
+    if p.get("kind") == "feature":
+        return [t for n, s in enumerate(p["stories"], 1) for t in of(s, f"story {n}: ")]
+    return of(p)
+
+
+def criterion_caps(p):
+    """(listed, rejected) for each criterion whose first sentence runs over its cap."""
+    return words.check([(where, words.first_sentence(text)) for where, text in criterion_texts(p)], CRITERION_CAP,
+                       "opens with a sentence of")
+
+
+def docstrings(path, text):
+    """Each docstring in a file's source, by how the check names it (path, or path::name) -> its first line."""
+    try:
+        tree = ast.parse(text or "", path)
+    except (SyntaxError, ValueError):
+        return {}
+    out = {}
+
+    def visit(node, name):
+        doc = ast.get_docstring(node, clean=False)
+        if doc is not None:
+            out[name] = doc.split("\n")[0].strip()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                visit(child, f"{name}.{child.name}" if node is not tree else f"{path}::{child.name}")
+    visit(tree, path)
+    return out
+
+
+def docstring_caps(paths, before, after):
+    """(listed, rejected) for each docstring the planner added or rewrote whose first line runs over its cap.
+
+    A docstring whose first line is the same as before is an older one left alone, and is not held to the cap.
+    """
+    texts = []
+    for path in paths:
+        old = docstrings(path, before(path))
+        texts += [(where, line) for where, line in docstrings(path, after(path)).items() if old.get(where) != line]
+    return words.check(texts, DOCSTRING_CAP, "has a docstring whose first line holds")
+
+
+def unnumbered(added):
+    """The new tests (path::name) whose docstring does not name, below its first line, each criterion it proves."""
+    out = []
+    for path in sorted({t.partition("::")[0] for t in added}):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        for node in tree.body:
+            t = f"{path}::{getattr(node, 'name', '')}"
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and t in added:
+                below = (ast.get_docstring(node, clean=False) or "").partition("\n")[2]
+                for k in sorted(set(added[t])):
+                    if not re.search(r"(?<![\d.])" + re.escape(k) + r"(?!\d|\.\d)", below):
+                        out.append(f"{t} is a new test whose docstring does not name {k}, a criterion it proves, below "
+                                   f"its first line: add 'Proves {k}.' to the paragraph under it")
+    return out
+
+
 def main_with_tests(base, into):
     """Lay main's code (`base`) into the folder `into`, with the branch's tests/ as they stand now on top.
 
@@ -420,13 +489,14 @@ def main(argv):
         return 0
     try:
         kind, result = read_output(out, number)
+        listed, bad = criterion_caps(result["raw"] if kind == "plan" else json.loads(result))
         if kind == "plan":
             base = os.environ.get("PLANNER_BASE", "HEAD")
             files = changed_files(base)
             paths = [p for p in files if p.startswith("tests/") and p.endswith(".py")]
-            bad = unreadable(paths)
-            if bad:
-                raise Garbled("; ".join(bad))
+            broken = unreadable(paths)
+            if broken:
+                raise Garbled("; ".join(broken))
             tc = test_changes(paths, read_at(base), read_now)
             if "declared" in result:
                 tc = declared_labels(tc, result["declared"])
@@ -434,11 +504,15 @@ def main(argv):
             # already hold the worker's code, which is not the planner's doing.
             run_base = os.environ.get("PLANNER_RUN_BASE")
             own = changed_files(run_base) if run_base else files
-            bad = problems(number, result, own, tc, result.get("declared"))
+            bad = problems(number, result, own, tc, result.get("declared")) + bad
             bad += problems_questions(result["raw"].get("questions", []))
-            bad += unsummarized(tc["added"]) + passing_today(tc["added"], base)
-            if bad:
-                raise Garbled("; ".join(bad))
+            more, too_long = docstring_caps(paths, read_at(base), read_now)
+            listed, bad = listed + more, bad + too_long
+            bad += unsummarized(tc["added"]) + unnumbered(tc["added"]) + passing_today(tc["added"], base)
+        for line in listed:
+            print(f"::warning title=Over the word cap::{line}")
+        if bad:
+            raise Garbled("; ".join(bad))
     except Garbled as e:
         os.makedirs(out, exist_ok=True)
         open(os.path.join(out, "rejected.txt"), "w").write(str(e))
