@@ -32,6 +32,14 @@ TODO = {"questions": "Answer the questions with /plan, or say /review",
         "not every check passed": "See why not every check passed"}
 STAGES = {"Backlog", "Plan", "Work", "Review", "Merged"}
 ICON_FILE = {"passed": "passed", "failed": "failed", "running": "running", "not started": "none"}
+# Every field a card or run comment shows, and its own Octicon in dokima/icons/. Fixed here, never chosen by an agent.
+FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-review", "code review": "code-review",
+               "autopilot": "autopilot", "passed": "passed", "failed": "failed", "needs you": "needs-you",
+               "owner approval": "owner-approval", "merged": "merged", "still open": "still-open",
+               "acceptance criterion": "acceptance-criterion", "verified by": "verified-by",
+               "files changed": "files-changed", "question": "question", "blocker": "blocker", "note": "note",
+               "outside the plan": "outside-the-plan", "issue found": "issue-found", "related": "related",
+               "blocked by": "blocked-by", "blocks": "blocks", "stats": "stats"}
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
 
 
@@ -39,6 +47,11 @@ def icon(repo, name, alt=None):
     """One of GitHub's own circle icons (Octicons, MIT), served from this repo, centered on its line."""
     url = f"https://raw.githubusercontent.com/{repo}/main/dokima/icons/{name}.svg"
     return f'<img src="{url}" width="16" height="16" align="absmiddle" alt="{alt or name}">'
+
+
+def field_icon(repo, field):
+    """The fixed icon of a field, drawn in front of it, with the field's name as its alt text."""
+    return icon(repo, FIELD_ICONS[field], alt=field)
 
 
 def state(check):
@@ -135,14 +148,17 @@ def status(issue, found):
     return column, todo(issue, found, rec) if needs else None
 
 
-def status_line(stage, todo):
+def status_line(repo, stage, todo):
     """The small status line under the summary: the stage, then Needs you and the owner's to-do when there is one."""
-    return f"**{stage}**" + (f" · Needs you: {todo}" if todo else "")
+    head = f"{field_icon(repo, 'merged')} **{stage}**" if stage == "Merged" else f"**{stage}**"
+    return head + (f" · {field_icon(repo, 'needs you')} Needs you: {todo}" if todo else "")
 
 
 def child_row(repo, child):
     """One child of a split: its link, its title and its stage, or unknown when its stage could not be read."""
     st = child.get("stage") if child.get("stage") in STAGES else "unknown"
+    if st == "Merged":
+        st = f"{field_icon(repo, 'merged')} {st}"
     n = child["number"]
     return f"- [#{n}](https://github.com/{repo}/issues/{n}) {escape(child.get('title'))} · {st}"
 
@@ -157,7 +173,7 @@ def links_row(repo, issue, pr, worker, check_runs, page):
     if pr and page != "pr":
         links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
     if pr:
-        links.append(f"[files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
+        links.append(f"{field_icon(repo, 'files changed')} [files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
 
 
@@ -168,7 +184,7 @@ def criterion_row(repo, text, check, tests):
     words = escape(text)
     proofs = [f'<a href="{t["url"]}">{escape(t["verified_by"])}</a>' for t in tests if t and t.get("verified_by")]
     if proofs:
-        words += "<br>Verified by: " + "; ".join(proofs)
+        words += f"<br>{field_icon(repo, 'verified by')} Verified by: " + "; ".join(proofs)
     return f"<tr><td>{circle(repo, st, check and check['html_url'])}</td><td>{words}</td></tr>"
 
 
@@ -204,8 +220,9 @@ def done_row(repo, found, all_tests):
     approval_st = "not started" if not approval else "passed" if approval["state"] == "APPROVED" else "failed"
     return ("**Definition of Done:** "
             f"{circle(repo, state(all_tests), all_tests and all_tests['html_url'])} All tests · "
-            f"{circle(repo, review_st, review and review.get('run'))} Code review · "
-            f"{circle(repo, approval_st, approval and approval.get('html_url'))} Owner approval")
+            f"{circle(repo, review_st, review and review.get('run'))} {field_icon(repo, 'code review')} Code review · "
+            f"{circle(repo, approval_st, approval and approval.get('html_url'))} {field_icon(repo, 'owner approval')} "
+            "Owner approval")
 
 
 def render(repo, issue, found, page="issue"):
@@ -220,7 +237,7 @@ def render(repo, issue, found, page="issue"):
     lines = [plan.CARD_START]
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
-    lines += [status_line(*status(issue, found)), ""]
+    lines += [status_line(repo, *status(issue, found)), ""]
     links = links_row(repo, issue, pr, worker, check_runs, page)
     if links:
         lines += [links, ""]
@@ -234,7 +251,7 @@ def render(repo, issue, found, page="issue"):
         tests, plan_tests = found["tests"], h.get("tests") or {}
         if h.get("user_story"):
             lines += [f"**User story:** {escape(h['user_story'])}", ""]
-        lines += ["**Acceptance criteria**", ""]
+        lines += [f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria**", ""]
         lines += criteria_table(repo, issue["number"], 1, criteria, plan_tests, by_key, tests) + [""]
         if nfr:
             lines += fold("Non-functional requirements",
