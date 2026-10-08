@@ -32,8 +32,8 @@ ISSUE = "https://github.com/o/r/issues/57"
 
 QUESTIONS = [{"question": "Should a failed run move its card to Needs you?",
               "assumption": "It does, so the owner sees it without looking."},
-             {"question": "Should the board show a cost column?",
-              "assumption": "It does, priced per run."}]
+             {"question": "Should the card name the step that failed?",
+              "assumption": "It does, so the owner sees where it broke."}]
 STORY_Q = {**ts.STORY, "questions": QUESTIONS}
 APPROVE = {**ts.APPROVE, "previous_step": {"did": ["Planned one story."], "decided": [], "open": []},
            "summary": "Every ask has a criterion and every criterion a test that breaks on any deviation.",
@@ -41,16 +41,21 @@ APPROVE = {**ts.APPROVE, "previous_step": {"did": ["Planned one story."], "decid
 BLOCK = {**APPROVE, "verdict": "block", "summary": "The test for 57.1 proves nothing.",
          "blockers": [{"id": "B1", "criterion": "57.1", "problem": "The test passes against a stub.",
                        "evidence": "tests/test_x.py::test_a", "fix": "Run the real thing.", "test": None, "fixer": "planner"}]}
-ACCEPT_1 = {"question": QUESTIONS[0]["question"], "accepted": True,
+OWNER_SAID = {**ts.owner_comment("Every failure should name the step that failed, nothing vaguer.", "2026-10-07T09:50:00Z"),
+              "url": ISSUE + "#issuecomment-77"}
+STRANGER_SAID = {"author": {"login": "stranger"}, "body": "Cards should name the step that broke.",
+                 "createdAt": "2026-10-07T09:55:00Z", "url": ISSUE + "#issuecomment-78"}
+ACCEPT_1 = {"question": QUESTIONS[0]["question"], "accepted": True, "changes": False,
             "matched": "a failure always says why on the issue", "source": "AGENTS.md"}
-ACCEPT_2 = {"question": QUESTIONS[1]["question"], "accepted": True,
-            "matched": "Show the cost of every run.", "source": ISSUE + "#issuecomment-77"}
-REFUSE_2 = {"question": QUESTIONS[1]["question"], "accepted": False,
-            "why": "A cost column changes what the board costs to keep; nothing the owner said backs it."}
+ACCEPT_2 = {"question": QUESTIONS[1]["question"], "accepted": True, "changes": False,
+            "matched": "Every failure should name the step that failed", "source": ISSUE + "#issuecomment-77"}
+REFUSE_2 = {"question": QUESTIONS[1]["question"], "accepted": False, "changes": False,
+            "why": "Nothing the owner said covers which step the card names."}
+COSTLY_2 = {**ACCEPT_2, "changes": True}
 
 STORY_WAITING = ts.STORY_PLANNED + [ts.record_comment(ts.review_record(APPROVE), "2026-10-07T10:20:00Z")]
-STORY_Q_PLANNED = [ts.owner_comment("/plan", "2026-10-07T10:00:00Z"),
-                   ts.record_comment(ts.planner_record(STORY_Q), "2026-10-07T10:10:00Z")]
+STORY_Q_PLANNED = [OWNER_SAID, STRANGER_SAID, ts.owner_comment("/plan", "2026-10-07T10:00:00Z"),
+                   {**ts.record_comment(ts.planner_record(STORY_Q), "2026-10-07T10:10:00Z"), "url": ISSUE + "#issuecomment-79"}]
 SPLIT_FILED = {"role": "split", "stage": None, "run": "https://github.com/o/r/actions/runs/3",
                "handback": {"stories": [{"story": 1, "issue": 901, "title": "First", "id": 9010, "blocked_by": []},
                                         {"story": 2, "issue": 902, "title": "Second", "id": 9020, "blocked_by": [1]}]},
@@ -382,20 +387,28 @@ def check_review(tmp, review, plan):
 
 
 def test_the_plan_reviewer_judges_every_question_against_the_owners_words(record_property, tmp_path):
-    """The plan reviewer must judge every question's assumption, accepting one only with the owner's words and where they said them.
+    """The plan reviewer must judge every question's assumption, never accepting one that changes how the system works or what it costs.
 
     Runs the code check on plan reviews of a plan with two questions. Rejected: no judgements (both questions named),
     one judged and one not (the missing one named), an accepted one with no matched words, one whose source is
-    neither the issue, one of its comments nor AGENTS.md, an accepted value that is not true or false, one not
-    accepted with no reason why, and a judgement of a question the plan does not ask. Passed: both judged (one
-    accepted from AGENTS.md and one from an issue comment, or one accepted and one not, with its why), and a plan with
-    no questions reviewed with no judgements. The reviewer's prompt must ask for these judgements."""
+    neither this issue, one of its comments nor AGENTS.md (an outside site, and a comment on another issue), an
+    accepted value that is not true or false, a judgement that does not say true or false whether the assumption
+    changes how the system works or what it costs, an accepted one that does change them, one not accepted with no
+    reason why, and a judgement of a question the plan does not ask. Passed: both judged (one accepted from AGENTS.md
+    and one from an issue comment, or one accepted and one not, with its why, also when the one not accepted changes
+    them), and a plan with no questions reviewed with no judgements. The reviewer's prompt must ask for these
+    judgements."""
     record_property("proves", "211.5")
     q1, q2 = QUESTIONS[0]["question"], QUESTIONS[1]["question"]
     bad = (("none judged", {}, [q1, q2]),
            ("one missing", {"assumptions": [ACCEPT_1]}, [q2]),
            ("no matched words", {"assumptions": [ACCEPT_1, {k: v for k, v in ACCEPT_2.items() if k != "matched"}]}, ["matched"]),
            ("source elsewhere", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "source": "https://example.com/post"}]}, ["source"]),
+           ("another issue", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "source": "https://github.com/o/r/issues/58#issuecomment-77"}]},
+            ["source"]),
+           ("changes not said", {"assumptions": [ACCEPT_1, {k: v for k, v in ACCEPT_2.items() if k != "changes"}]}, ["changes"]),
+           ("changes not true or false", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "changes": "no"}]}, ["changes"]),
+           ("accepted though it changes them", {"assumptions": [ACCEPT_1, COSTLY_2]}, ["changes", QUESTIONS[1]["question"]]),
            ("accepted not true or false", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "accepted": "yes"}]}, ["accepted"]),
            ("no why", {"assumptions": [ACCEPT_1, {k: v for k, v in REFUSE_2.items() if k != "why"}]}, ["why"]),
            ("not the plan's question", {"assumptions": [ACCEPT_1, ACCEPT_2, {**ACCEPT_2, "question": "Should it be blue?"}]},
@@ -407,12 +420,15 @@ def test_the_plan_reviewer_judges_every_question_against_the_owners_words(record
             assert word in out, f"211.5 ({case}): the check's problems do not name {word!r}:\n{out}"
     for case, review, plan in (("both accepted", {**APPROVE, "assumptions": [ACCEPT_1, ACCEPT_2]}, STORY_Q),
                                ("one not accepted", {**APPROVE, "assumptions": [ACCEPT_1, REFUSE_2]}, STORY_Q),
+                               ("not accepted, it changes them", {**APPROVE, "assumptions": [ACCEPT_1, {**REFUSE_2, "changes": True}]},
+                                STORY_Q),
                                ("no questions", APPROVE, ts.STORY)):
         code, out = check_review(tmp_path / case.replace(" ", "-"), review, plan)
         assert code == 0, f"211.5 ({case}): the check rejected a well-judged plan review:\n{out}"
     prompt = open(os.path.join(ts.ROOT, "dokima", "roles", "reviewer.md")).read()
-    assert "assumptions" in prompt and "matched" in prompt, \
-        "211.5: the reviewer's prompt does not ask it to judge each question's assumption in `assumptions`, with the words it `matched`"
+    for word in ("assumptions", "matched", "changes"):
+        assert f"`{word}`" in prompt, \
+            f"211.5: the reviewer's prompt does not ask for `{word}` when it judges each question's assumption"
 
 
 def test_on_autopilot_an_accepted_assumption_goes_on_and_one_not_accepted_stops(record_property, tmp_path, monkeypatch):
@@ -421,7 +437,8 @@ def test_on_autopilot_an_accepted_assumption_goes_on_and_one_not_accepted_stops(
     Runs the plan review of #57's plan with two questions, on autopilot. Approving with both accepted, the worker
     must start with one "Autopilot: plan approved, starting work" line. Approving with the second not accepted, and
     blocking with it not accepted, nothing may start and no line be posted, and the card's Next line must mention the
-    owner and name the question not accepted, with Needs you."""
+    owner and name the question not accepted, with Needs you. Approving with the second accepted though the reviewer
+    says it changes how the system works or what it costs is rejected by code and stops the same way."""
     record_property("proves", "211.5")
     r = run(monkeypatch, tmp_path / "accepted", "reviewer", "plan", STORY_Q_PLANNED, ON, try_branch=True,
             review={**APPROVE, "assumptions": [ACCEPT_1, ACCEPT_2]})
@@ -436,6 +453,50 @@ def test_on_autopilot_an_accepted_assumption_goes_on_and_one_not_accepted_stops(
         nxt = next_of(record_body(r, f"211.5 ({case})"))
         assert QUESTIONS[1]["question"] in nxt, f"211.5 ({case}): the Next line does not name the question not accepted: {nxt!r}"
         assert QUESTIONS[0]["question"] not in nxt, f"211.5 ({case}): the Next line names a question that was accepted: {nxt!r}"
+    r = run(monkeypatch, tmp_path / "changes", "reviewer", "plan", STORY_Q_PLANNED, ON, try_branch=True,
+            review={**APPROVE, "assumptions": [ACCEPT_1, COSTLY_2]})
+    assert r.agent_started(), f"211.5 (changes): setup: the plan review did not run:\n{r.tail()}"
+    assert_stops(r, "rejected by code", "211.5", "accepted though it changes how the system works or what it costs")
+    body = record_body(r, "211.5 (changes)")
+    assert "changes" in body.split("<details>")[0], \
+        f"211.5 (changes): the card does not say the accepted assumption changes how the system works or what it costs:\n{body[:900]}"
+
+
+def test_an_assumption_is_accepted_only_on_words_the_owner_really_said(record_property, tmp_path):
+    """On autopilot an accepted assumption goes on only when its matched words really are the owner's, where it says.
+
+    Decides what follows an approving plan review of #57's plan with two questions, on autopilot. The worker starts
+    when the matched words are word for word in AGENTS.md, in a code owner's comment on #57 that the source links,
+    or in the issue's own text. Every other case stops for the owner, sets Needs you and names the question in the
+    Next line (and not the other one): words that are not in the comment it links, a comment by someone who is not a
+    code owner, a comment the bot posted, a comment that does not exist, words not in the issue's text, and words
+    not in AGENTS.md."""
+    record_property("proves", "211.5")
+    q1, q2 = QUESTIONS[0]["question"], QUESTIONS[1]["question"]
+    good = (("owner's comment and AGENTS.md", [ACCEPT_1, ACCEPT_2]),
+            ("the issue's own text", [ACCEPT_1, {**ACCEPT_2, "matched": "Fix it.", "source": ISSUE}]))
+    for case, judged in good:
+        rec = ts.review_record({**APPROVE, "assumptions": judged})
+        out, card, board, err = decide(tmp_path / case.replace(" ", "-").replace("'", ""), rec, STORY_Q_PLANNED, ON)
+        assert out == "start worker", f"211.5 ({case}): the owner's real words did not let the worker start: {out!r} {next_of(card)!r}\n{err[-800:]}"
+        assert board == "Work none", f"211.5 ({case}): the card should be in Work without Needs you, not {board!r}"
+    bad = (("words not in the comment", [ACCEPT_1, {**ACCEPT_2, "matched": "Show the cost of every run."}], q2, q1),
+           ("not a code owner's comment", [ACCEPT_1, {**ACCEPT_2, "matched": "Cards should name the step that broke.",
+                                                      "source": ISSUE + "#issuecomment-78"}], q2, q1),
+           ("the bot's comment", [ACCEPT_1, {**ACCEPT_2, "matched": QUESTIONS[1]["assumption"],
+                                             "source": ISSUE + "#issuecomment-79"}], q2, q1),
+           ("no such comment", [ACCEPT_1, {**ACCEPT_2, "source": ISSUE + "#issuecomment-99"}], q2, q1),
+           ("words not in the issue's text", [ACCEPT_1, {**ACCEPT_2, "source": ISSUE}], q2, q1),
+           ("words not in AGENTS.md", [{**ACCEPT_1, "matched": "a failed run always moves to Needs you"}, ACCEPT_2], q1, q2))
+    for case, judged, named, other in bad:
+        rec = ts.review_record({**APPROVE, "assumptions": judged})
+        out, card, board, err = decide(tmp_path / case.replace(" ", "-").replace("'", ""), rec, STORY_Q_PLANNED, ON)
+        nxt = next_of(card)
+        assert out == "stop", f"211.5 ({case}): an assumption accepted on words the owner did not say there let the river go on: {out!r}"
+        assert nxt.startswith(f"**Next:** @{OWNER}") and board == "Plan needs", \
+            f"211.5 ({case}): the stop does not mention the owner with Needs you: {nxt!r} {board!r}\n{err[-800:]}"
+        assert named in nxt and other not in nxt, \
+            f"211.5 ({case}): the Next line should name only the question whose words were not found ({named!r}): {nxt!r}"
 
 
 def test_the_review_card_shows_the_owners_words_each_assumption_matched(record_property):
