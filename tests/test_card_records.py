@@ -13,6 +13,9 @@ Issue #180 (story 2 of #143). The card is drawn by `dokima/card.py` from what Gi
                 "worker":     the latest worker run or None}
     card.test_entry(repo, ref, path, source, name)   one entry of found["tests"], read from a test file's source
     card.gather(repo, number, pr_number)             fetches `found` from GitHub; main draws the card from it
+        It reads GitHub only through `gh` (card.gh, or agent.gh / plan.gh when it reuses their helpers): the REST API
+        (`gh api repos/...`, files through `contents/<path>?ref=<sha>`), `gh issue view`, `gh pr view`, `gh pr list`.
+        The code owners are the ones named on the default branch, never on the PR's own commit.
     card.find_work(repo)                             the issue and its PR, asked of GitHub through card.gh
 
 The plan is the newest planner record whose check passed. Criterion k is <issue>.k, the acceptance criteria first and
@@ -26,6 +29,7 @@ on the card: All tests, then review, then owner approval, each a circle (linked 
 Every circle's alt is one of: passed, failed, running, not started.
 """
 import inspect
+import json
 import os
 import re
 import sys
@@ -181,6 +185,118 @@ def write_main(monkeypatch, tmp_path, current, found=FOUND):
     return saved.get("issue"), saved.get("pr")
 
 
+BOT_LOGIN = "dokima-runtime"
+HEAD, OLD = "head1", "old0"
+HEAD_SOURCE = ('import os\n\n\ndef test_one(record_property):\n    """The first thing runs.\n\n    More words."""\n'
+               '    assert True\n')
+MAIN_SOURCE = 'def test_one(record_property):\n    """An old sentence from main."""\n    assert True\n'
+HEAD_RUNS = [run("40.1 · First thing works", n=1), run("all tests", n=4)]
+OLD_RUNS = [run("40.1 · First thing works", conclusion="failure", n=91), run("all tests", conclusion="failure", n=94)]
+
+
+def record_comment(login, r, at):
+    """A comment holding an agent record, as the bot posts it (or as a person might paste it)."""
+    return {"login": login, "at": at,
+            "body": f"<!-- dokima-record -->\n**Card**\n\n<details><summary>Full record</summary>\n\n```json\n{json.dumps(r)}\n```\n\n</details>"}
+
+
+def fake_github(monkeypatch, tmp_path, issue_text, reviews):
+    """Fake GitHub for issue #40 and its PR #5, serving card.gh, agent.gh and plan.gh; returns the calls it saw.
+
+    It answers the REST API (`gh api repos/o/r/...`) and `gh issue view` / `gh pr view` / `gh pr list`, the ways
+    Dokima reads GitHub today, and fails naming 180.1 on anything else. The issue's text holds a plan of its own; its
+    comments hold the planner's and plan reviewer's records, and a person's comment pasting an approving code review;
+    the PR's comments hold the worker's and code reviewer's records. The PR's head commit has passing checks; an older
+    commit has failing ones. CODEOWNERS names boss and second on main, and intruder on the PR's head. The test file
+    reads one way at the PR's head and another on main.
+    """
+    import base64
+    from dokima import agent
+    issue_comments = [record_comment(BOT_LOGIN, dict(PLANNED, run_id="11"), "2026-10-08T01:00:00Z"),
+                      record_comment(BOT_LOGIN, dict(PLAN_OK, run_id="12"), "2026-10-08T02:00:00Z"),
+                      record_comment("mallory", dict(CODE_OK, run_id="66"), "2026-10-08T05:00:00Z")]
+    pr_comments = [record_comment(BOT_LOGIN, dict(BUILT, run_id="13"), "2026-10-08T03:00:00Z"),
+                   record_comment(BOT_LOGIN, dict(CODE_BLOCK, run_id="14"), "2026-10-08T04:00:00Z")]
+    files = {(".github/CODEOWNERS", "main"): "* @boss @second\n", (".github/CODEOWNERS", HEAD): "* @intruder\n",
+             ("tests/test_a.py", HEAD): HEAD_SOURCE, ("tests/test_a.py", "main"): MAIN_SOURCE}
+    pr = {"number": 5, "state": "open", "merged": False, "body": "Closes #40", "html_url": "https://github.com/o/r/pull/5",
+          "head": {"sha": HEAD, "ref": "try/issue-40"}, "base": {"ref": "main", "sha": "base0"}}
+    issue = {"number": 40, "title": "t", "body": issue_text, "html_url": ISSUE["url"], "state": "open"}
+
+    def rest(c):
+        return {"user": {"login": c["login"] + ("[bot]" if c["login"] == BOT_LOGIN else ""), "type": "User"},
+                "body": c["body"], "created_at": c["at"], "html_url": ISSUE["url"]}
+
+    def cli(c):
+        return {"author": {"login": c["login"]}, "body": c["body"], "createdAt": c["at"]}
+
+    def content(path, ref, raw):
+        if (path, ref) not in files:
+            raise AssertionError(f"180.1: the fake has no {path} at {ref}")
+        text = files[(path, ref)]
+        return text if raw else json.dumps({"path": path, "encoding": "base64", "content": base64.b64encode(text.encode()).decode()})
+
+    seen = []
+
+    def gh(*args, **kw):
+        args = [str(a) for a in args]
+        seen.append(args)
+        if args[:2] == ["issue", "view"] and args[2] == "40":
+            return json.dumps({"number": 40, "title": "t", "body": issue_text, "url": ISSUE["url"],
+                               "comments": [cli(c) for c in issue_comments]})
+        if args[:2] == ["pr", "view"] and args[2] == "5":
+            return json.dumps({"number": 5, "body": pr["body"], "headRefOid": HEAD, "comments": [cli(c) for c in pr_comments],
+                               "reviews": [{"author": r["user"], "state": r["state"], "body": "", "submittedAt": r["submitted_at"]}
+                                           for r in reviews]})
+        if args[:2] == ["pr", "list"]:
+            return json.dumps([{"number": 5}] if "try/issue-40" in args else [])
+        if args[0] != "api":
+            raise AssertionError(f"180.1: card.gather asked GitHub something the fake does not serve: {args}")
+        target = next(a for a in args[1:] if a.startswith("repos/") or a.startswith("/repos/")).lstrip("/")
+        path, _, query = target.partition("?")
+        params = dict(q.split("=", 1) for q in query.split("&") if "=" in q)
+        for i, a in enumerate(args):
+            if a in ("-f", "-F", "--field", "--raw-field") and args[i + 1].startswith("ref="):
+                params["ref"] = args[i + 1][4:]
+        raw = any("vnd.github.raw" in a for a in args)
+        if path.startswith("repos/o/r/contents/"):
+            return content(path[len("repos/o/r/contents/"):], params.get("ref", "main"), raw)
+        answers = {"repos/o/r/issues/40": issue, "repos/o/r/issues/40/comments": [rest(c) for c in issue_comments],
+                   "repos/o/r/issues/5/comments": [rest(c) for c in pr_comments], "repos/o/r/pulls/5": pr,
+                   "repos/o/r/pulls/5/reviews": reviews, "repos/o/r/pulls/5/comments": [],
+                   f"repos/o/r/commits/{HEAD}/check-runs": {"total_count": 2, "check_runs": HEAD_RUNS},
+                   f"repos/o/r/commits/{OLD}/check-runs": {"total_count": 2, "check_runs": OLD_RUNS},
+                   "repos/o/r/pulls": [{"number": 5}] if "try/issue-40" in query.replace("%2F", "/") else [],
+                   "repos/o/r/actions/workflows/worker.yml/runs": {"workflow_runs": [
+                       {"display_title": "worker for #40", "status": "completed", "conclusion": "success",
+                        "html_url": "https://github.com/o/r/actions/runs/13"}]}}
+        if path not in answers:
+            raise AssertionError(f"180.1: card.gather asked GitHub something the fake does not serve: {args}")
+        return json.dumps(answers[path])
+
+    (tmp_path / ".github").mkdir(exist_ok=True)
+    (tmp_path / ".github" / "CODEOWNERS").write_text("* @boss @second\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REPO", REPO)
+    monkeypatch.setattr(agent, "BOT", BOT_LOGIN)
+    for module in (card, agent, plan):
+        monkeypatch.setattr(module, "gh", gh)
+    return seen
+
+
+def gather(monkeypatch, tmp_path, issue_text="My ask.", reviews=(), k="180.1"):
+    """What the real card.gather fetches for issue #40 and PR #5 from the faked GitHub; a plain failure naming
+    criterion k while it does not exist."""
+    if not hasattr(card, "gather"):
+        pytest.fail(f"{k}: the card is not drawn from the records yet: card.gather does not exist")
+    fake_github(monkeypatch, tmp_path, issue_text, list(reviews))
+    return card.gather(REPO, 40, 5)
+
+
+def run_ids(recs):
+    return [str(r.get("run_id")) for r in recs]
+
+
 # 180.1: the same card on the issue and its PR, drawn only from the records and the checks
 
 def test_the_issue_text_never_changes_the_card(record_property, monkeypatch, tmp_path):
@@ -226,6 +342,34 @@ def test_the_card_finds_the_pr_on_either_branch(record_property, monkeypatch):
     for branch in ("try/issue-40", "work/issue-40"):
         monkeypatch.setattr(card, "gh", lambda *a, b=branch: '[{"number": 7}]' if any(f"head=o:{b}" in x for x in a) else "[]")
         assert card.find_work(REPO) == (40, 7), f"180.1: the card did not find the PR built on {branch}"
+
+
+
+def test_the_card_fetches_only_the_bots_records_and_the_latest_commits_checks(record_property, monkeypatch, tmp_path):
+    """The card fetches only the bot's records and the checks of the PR's latest commit, never the issue's text.
+
+    Runs the real card.gather against a faked GitHub where the issue's text holds a plan of its own, a person pasted
+    an approving review record, and an older commit has failing checks. Checks it holds exactly the bot's four
+    records from the issue and the PR in order, only the latest commit's checks, each test's Verified by read at that
+    commit, and that a different issue text changes nothing it fetched."""
+    record_property("proves", "180.1")
+    own_plan = ("**User story:** an issue text story\n\n**Acceptance criteria:**\n- Issue text thing works\n"
+                "- [ ] Objective: issue text goal\n")
+    found = gather(monkeypatch, tmp_path, own_plan)
+    assert run_ids(found["recs"]) == ["11", "12", "13", "14"], \
+        f"180.1: expected only the bot's records 11, 12, 13, 14 in order, got {run_ids(found['recs'])}"
+    assert "Issue text thing" not in json.dumps(found, default=str), "180.1: the card fetched plan words from the issue's text"
+    urls = sorted(r["html_url"] for r in found["check_runs"])
+    assert urls == sorted(r["html_url"] for r in HEAD_RUNS), f"180.1: the checks are not the PR's latest commit's: {urls}"
+    assert found["pr"]["number"] == 5, "180.1: the card did not fetch the PR"
+    entry = found["tests"].get("tests/test_a.py::test_one")
+    assert entry == {"verified_by": "The first thing runs.", "url": "https://github.com/o/r/blob/head1/tests/test_a.py#L4"}, \
+        f"180.1: Verified by was not read from the test at the PR's latest commit: {entry}"
+    again = gather(monkeypatch, tmp_path, "A completely different ask, with no plan at all.")
+    assert json.dumps(again, default=sorted, sort_keys=True) == json.dumps(found, default=sorted, sort_keys=True), \
+        "180.1: changing the issue's text changed what the card is drawn from"
+    text = card.render(REPO, ISSUE, found, page="issue")
+    assert "First thing works" in text and "Issue text thing" not in text, "180.1: the card is not drawn from the records"
 
 
 # 180.2: the user story, then each criterion with its circle hanging outside it, linked, and its Verified by
@@ -456,3 +600,21 @@ def test_a_missing_stale_or_unproven_review_never_shows_as_passed(record_propert
     withdrawn = dod(draw(reviews=[review("APPROVED"), review("CHANGES_REQUESTED", url=CHANGES)]), "180.6")
     assert alts(withdrawn)[2] == "failed", "180.6: an owner's approval withdrawn by asking for changes did not show failed"
     assert alts(dod(draw(), "180.6"))[1:] == ["passed", "passed"], "180.6: a current approval did not show passed"
+
+
+def test_only_a_code_owner_on_main_makes_the_approval_pass(record_property, monkeypatch, tmp_path):
+    """Only an approval by a code owner named on main shows passed; anyone else's, even one the PR names, never does.
+
+    Runs the real card.gather against a faked GitHub whose CODEOWNERS names boss and second on main, while the PR's
+    own commit names intruder. Checks the owners fetched are boss and second, that approvals by someone and by
+    intruder leave the owner approval not passed on the card, and that boss's approval makes it pass."""
+    record_property("proves", "180.6")
+    others = [review("APPROVED", login="someone"), review("APPROVED", login="intruder")]
+    found = gather(monkeypatch, tmp_path, reviews=others, k="180.6")
+    assert set(found["owners"]) == {"boss", "second"}, f"180.6: the code owners fetched are {found['owners']}, not boss and second from main"
+    assert [r["user"]["login"] for r in found["reviews"]] == ["someone", "intruder"], "180.6: the PR's reviews were not fetched"
+    assert alts(dod(card.render(REPO, ISSUE, found, page="pr"), "180.6"))[2] != "passed", \
+        "180.6: an approval by someone who is not a code owner showed passed"
+    found = gather(monkeypatch, tmp_path, reviews=[review("APPROVED")], k="180.6")
+    assert alts(dod(card.render(REPO, ISSUE, found, page="pr"), "180.6"))[2] == "passed", \
+        "180.6: a code owner's approval did not show passed"
