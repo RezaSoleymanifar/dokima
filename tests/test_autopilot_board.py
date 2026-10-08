@@ -7,6 +7,7 @@ reach GitHub. The fake keeps, in memory, one world shared with a fake `gh`:
 - cards: each card's Status and Action (the single-select field holding "Needs you" and now "Autopilot");
 - labels: the labels each issue and pull request carries; `autopilot` is autopilot's state (story 1, #209);
 - the open pull request of each issue (branch try/issue-N, body "Closes #N");
+- the parent issue of each sub-issue;
 - the board's views by name.
 
 What the fake Board offers, and the code is expected to use:
@@ -17,6 +18,7 @@ What the fake Board offers, and the code is expected to use:
     .value(item, field) -> option      the card's current option of that field, or None
     .autopilot(kind, n) -> bool        whether that issue or pull request carries the `autopilot` label
     .open_pr(n) -> number or None      the open pull request built for issue n
+    .parent(n) -> number or None       the issue's parent issue (GitHub's native sub-issues), or None
     .label(kind, n, on)                put the `autopilot` label on (True) or off (False) that issue or pull request
     .views() -> [name, ...]            the board's views
     .add_view(name, layout, filter)    add a view to the board
@@ -44,8 +46,9 @@ BOT, YOU = {"type": "Bot"}, {"type": "User"}
 class World:
     """The GitHub the board and `gh` both see: cards, labels, open pull requests and views."""
 
-    def __init__(self, labels=None, prs=None, cards=None, views=("Needs you",), options=("Needs you", "Autopilot")):
+    def __init__(self, labels=None, prs=None, cards=None, views=("Needs you",), options=("Needs you", "Autopilot"), parents=None):
         self.labels = {k: set(v) for k, v in (labels or {}).items()}
+        self.parents = dict(parents or {})
         self.prs = dict(prs or {})
         self.cards = {k: dict(v) for k, v in (cards or {}).items()}
         self.view_list = [{"name": v, "layout": "table", "filter": ""} for v in views]
@@ -97,6 +100,9 @@ def fake_board(world):
 
         def open_pr(self, n):
             return world.prs.get(int(n))
+
+        def parent(self, n):
+            return world.parents.get(int(n))
 
         def label(self, kind, n, on):
             world.put(kind, int(n), on)
@@ -425,6 +431,10 @@ def test_without_a_board_autopilot_still_works_and_nothing_fails(record_property
 # answers both. A card's current option is read in GraphQL from the item: node(id:) { ... on ProjectV2Item {
 # fieldValueByName(name:) { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } (fieldValues is answered too).
 # An issue's open pull request is read from repository { pullRequests(headRefName: "try/issue-N", states: OPEN) }.
+# An issue's parent is read in GraphQL from repository { issue(number:) { parent { number labels { ... } } } }, or in
+# REST from repos/{repo}/issues/{n}/parent (GitHub answers 404 when there is none); the fake answers both.
+# With stale_views, every read of the views returns the views the board had before the test, the way parallel board
+# runs all read the views before any of them has added one.
 
 import subprocess  # noqa: E402
 
@@ -432,8 +442,10 @@ import subprocess  # noqa: E402
 class FakeGitHub:
     """GitHub as the real Board sees it: one project with Status and Action, issues, pull requests, labels and views."""
 
-    def __init__(self, labels=None, prs=None, closed_prs=None, cards=None, views=("Needs you",), refuse_views=False):
+    def __init__(self, labels=None, prs=None, closed_prs=None, cards=None, views=("Needs you",), refuse_views=False,
+                 parents=None, stale_views=False):
         self.labels = {n: set(v) for n, v in (labels or {}).items()}  # issue and PR numbers share one space, as on GitHub
+        self.parents = dict(parents or {})  # sub-issue number -> parent issue number
         self.prs = dict(prs or {})  # issue number -> open PR number
         self.closed_prs = dict(closed_prs or {})  # issue number -> a closed PR on the same branch
         self.kinds = {**{n: "pr" for n in list(self.prs.values()) + list(self.closed_prs.values())}}
@@ -443,7 +455,8 @@ class FakeGitHub:
             self.items[(kind, n)] = f"ITEM_{kind}_{n}"
             self.cards[f"ITEM_{kind}_{n}"] = dict(fields)
         self.views = [{"name": v, "layout": "TABLE_LAYOUT", "filter": ""} for v in views]
-        self.refuse_views = refuse_views
+        self.before = [dict(x) for x in self.views]
+        self.refuse_views, self.stale_views = refuse_views, stale_views
         self.rest_calls = []
 
     def kind(self, n):
@@ -460,13 +473,17 @@ class FakeGitHub:
         """The number behind a node id like I_57 or PR_60."""
         return int(str(node_id).split("_")[-1])
 
-    def item_node(self, kind, n):
+    def item_node(self, kind, n, parent=True):
         iid = self.items.get((kind, n))
         card = self.cards.get(iid, {})
         nodes = [{"id": iid, "project": {"id": "P"},
                   "fieldValueByName": {"name": card["Action"]} if card.get("Action") else None}] if iid else []
-        return {"id": ("I_" if kind == "issue" else "PR_") + str(n), "number": n, "projectItems": {"nodes": nodes},
+        node = {"id": ("I_" if kind == "issue" else "PR_") + str(n), "number": n, "projectItems": {"nodes": nodes},
                 "labels": {"nodes": [{"name": l} for l in sorted(self.labels.get(n, set()))]}}
+        if kind == "issue" and parent:
+            up = self.parents.get(n)
+            node["parent"] = self.item_node("issue", up, parent=False) if up else None
+        return node
 
     def q(self, query, **v):
         """Answer one GraphQL call the way GitHub would."""
@@ -476,7 +493,7 @@ class FakeGitHub:
             return {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
                 {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
                 {"id": "W", "name": "Action", "options": [{"id": "w-you", "name": "Needs you"}, {"id": "w-auto", "name": "Autopilot"}]}]},
-                "views": {"nodes": [dict(x) for x in self.views]}}}}
+                "views": {"nodes": [dict(x) for x in (self.before if self.stale_views else self.views)]}}}}
         if "addProjectV2ItemById" in text:
             n = self.content(v.get("c") or next(x for x in values if x.startswith(("I_", "PR_"))))
             kind = "issue" if str(v.get("c", "I_")).startswith("I_") else "pr"
@@ -538,6 +555,12 @@ class FakeGitHub:
             self.views.append({"name": fields.get("name"), "layout": {"table": "TABLE_LAYOUT"}.get(fields.get("layout"), fields.get("layout")),
                                "filter": fields.get("filter")})
             return {"id": 9, "name": fields.get("name")}
+        m = re.fullmatch(r"repos/dokima-dev/dokima/issues/(\d+)/parent", path)
+        if m and method == "GET":
+            up = self.parents.get(int(m.group(1)))
+            if not up:
+                raise subprocess.CalledProcessError(1, ["gh", "api", path], output="", stderr="Not Found (HTTP 404)")
+            return {"number": up, "labels": [{"name": l} for l in sorted(self.labels.get(up, set()))]}
         m = re.fullmatch(r"repos/dokima-dev/dokima/issues/(\d+)(/labels(?:/(.+))?)?", path)
         if m:
             n = int(m.group(1))
@@ -677,3 +700,95 @@ def test_a_refused_view_never_stops_the_pills_and_says_why(record_property):
     assert (gh.action("issue", 57), gh.action("pr", 60)) == ("Autopilot", "Autopilot"), \
         "210.4: a refused view stopped the Autopilot pills from being set"
     assert LABEL in gh.labels.get(60, set()), "210.4: a refused view stopped PR #60 from being labelled"
+
+
+# 210.4: switching a whole tree on adds the Autopilot view once, even when the tree's board runs overlap (B1 of the
+# code review). /autopilot start labels every issue of a tree within seconds, and each label starts its own board run
+# in parallel, so each run may read the views before any has added the Autopilot view. Only the run of the tree's top
+# issue, the one switched on whose parent is not on autopilot, adds the view.
+
+def creates(gh):
+    """The create-view calls the board sent to GitHub."""
+    return [c for c in gh.rest_calls if c[0] == "POST" and c[1].endswith("/views")]
+
+
+def test_the_real_board_reads_an_issues_parent(record_property):
+    """The board finds the parent of a sub-issue on GitHub, and none for an issue at the top of its tree.
+
+    Runs the real Board against a faked GitHub where #71 and #72 are sub-issues of #70 and #73 is a sub-issue of #71:
+    the parents read are #70, #70 and #71, and #70 has none."""
+    record_property("proves", "210.4")
+    ready("210.4", "parent")
+    gh = FakeGitHub(parents={71: 70, 72: 70, 73: 71})
+    b = real_board(gh)
+    for n, up in ((71, 70), (72, 70), (73, 71), (70, None)):
+        assert b.parent(n) == up, f"210.4: the board read the parent of #{n} as {b.parent(n)!r}, not {up!r}"
+
+
+def start_tree(gh, monkeypatch, top, tree):
+    """Run the real /autopilot start labeling (agent.switch_autopilot) on top, with labels landing on the faked GitHub.
+
+    tree maps each issue to its sub-issues. Returns the issues in the order their autopilot label was added."""
+    added = []
+
+    def fake(*args):
+        path = next(x for x in args if x.startswith("repos/"))
+        m = re.fullmatch(r"repos/o/r/issues/(\d+)/sub_issues\?per_page=100", path)
+        if m:
+            return json.dumps([{"number": c} for c in tree.get(int(m.group(1)), [])])
+        m = re.fullmatch(r"repos/o/r/issues/(\d+)/labels", path)
+        if m:
+            added.append(int(m.group(1)))
+            gh.put(int(m.group(1)), True)
+            return "[]"
+        n = int(path.rsplit("/", 1)[1])
+        return json.dumps({"number": n, "labels": [{"name": l} for l in sorted(gh.labels.get(n, set()))]})
+
+    monkeypatch.setattr(agent, "gh", fake)
+    agent.switch_autopilot("o/r", top, "start")
+    return added
+
+
+def test_switching_a_whole_tree_on_adds_the_view_once_even_when_runs_overlap(record_property, monkeypatch):
+    """Switching a whole tree on autopilot adds exactly one Autopilot view, even when every board run reads the views at once.
+
+    #70 has sub-issues #71 and #72, and #71 has #73. The real /autopilot start labeling puts all four on autopilot,
+    each parent before its sub-issues. The faked GitHub then answers every read of the views with the board as it was
+    before (only Needs you), the way parallel runs all read before any adds. The board sync runs for each label event,
+    sub-issues first: none of theirs adds a view, #70's sends exactly one create-view call (Autopilot, table,
+    label:autopilot), and all cards show Autopilot. A story filed later under #70 (#74) adds no second view."""
+    record_property("proves", "210.4")
+    ready("210.4", "parent", sync=True)
+    parents = {71: 70, 72: 70, 73: 71, 74: 70}
+    gh = FakeGitHub(parents=parents, stale_views=True)
+    added = start_tree(gh, monkeypatch, 70, {70: [71, 72], 71: [73]})
+    assert sorted(added) == [70, 71, 72, 73], f"210.4: /autopilot start labeled {added}, not the whole tree of #70"
+    for child, up in ((71, 70), (72, 70), (73, 71)):
+        assert added.index(up) < added.index(child), f"210.4: #{child} was put on autopilot before its parent #{up}: {added}"
+    for n in (73, 72, 71):
+        board.sync("issues", label_event("labeled", LABEL, [LABEL], n), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert creates(gh) == [], f"210.4: a sub-issue whose parent is on autopilot added the Autopilot view: {creates(gh)}"
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 70), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert len(creates(gh)) == 1, f"210.4: switching the tree of #70 on sent {len(creates(gh))} create-view calls, not exactly one"
+    assert creates(gh)[0][2] == {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"}, \
+        f"210.4: the top of the tree added {creates(gh)[0][2]}, not the Autopilot table view filtered to label:{LABEL}"
+    gh.put(74, True)
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 74), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert len(creates(gh)) == 1, "210.4: a story filed later under #70 on autopilot added the Autopilot view a second time"
+    for n in (70, 71, 72, 73, 74):
+        assert gh.action("issue", n) == "Autopilot", f"210.4: #{n} in the tree shows {gh.action('issue', n)!r}, not Autopilot"
+
+def test_a_sub_issue_switched_on_alone_still_gets_the_view(record_property):
+    """A sub-issue switched on by itself, under a parent not on autopilot, is the top of what was switched and adds the view.
+
+    #81 is a sub-issue of #80, which is not on autopilot; only #81 carries the label. Its board run sends exactly one
+    create-view call. On a second board, #91 has no parent at all and is switched on: one create-view call too."""
+    record_property("proves", "210.4")
+    ready("210.4", "parent", sync=True)
+    gh = FakeGitHub(labels={80: {"bug"}, 81: {LABEL}}, parents={81: 80}, stale_views=True)
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 81), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert len(creates(gh)) == 1, f"210.4: #81, switched on under #80 not on autopilot, sent {len(creates(gh))} create-view calls"
+    gh = FakeGitHub(labels={91: {LABEL}}, stale_views=True)
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 91), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert len(creates(gh)) == 1, f"210.4: #91, switched on with no parent, sent {len(creates(gh))} create-view calls"
+
