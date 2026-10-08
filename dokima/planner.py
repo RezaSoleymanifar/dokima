@@ -16,8 +16,11 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 
 from dokima.checks import PROVES, TEST_DEF
 from dokima.agent import problems_questions  # noqa: E402
@@ -317,18 +320,44 @@ def unsummarized(added):
     return out
 
 
-def passing_today(added):
-    """Run each new test (path::name) on today's code; the ones that pass or are skipped, or run past the limit."""
+def main_with_tests(base, into):
+    """Lay main's code (`base`) into the folder `into`, with the branch's tests/ as they stand now on top.
+
+    On a re-plan the branch may already hold the worker's code, so new tests are judged on main's code instead. The
+    copy lives outside the repo, so the branch, its worktrees and its files stay exactly as they were.
+    """
+    tar = subprocess.run(["git", "archive", "--format=tar", base], check=True, capture_output=True).stdout
+    with tempfile.TemporaryFile() as f:
+        f.write(tar)
+        f.seek(0)
+        with tarfile.open(fileobj=f) as t:
+            t.extractall(into, filter="data")
+    shutil.rmtree(os.path.join(into, "tests"), ignore_errors=True)
+    listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "tests"],
+                            check=True, capture_output=True, text=True).stdout.split("\n")
+    for p in listed:
+        if p and os.path.isfile(p):
+            os.makedirs(os.path.dirname(os.path.join(into, p)), exist_ok=True)
+            shutil.copyfile(p, os.path.join(into, p))
+
+
+def passing_today(added, base="HEAD"):
+    """Run each new test (path::name) on main's code (`base`) with the planner's tests on top; the ones that pass or
+    are skipped, or run past the limit."""
     out = []
-    for t in sorted(added):
-        try:
-            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", t],
-                               capture_output=True, text=True, timeout=NEW_TEST_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            out.append(f"{t} is a new test still running after {NEW_TEST_TIMEOUT} s on today's code; it was stopped")
-            continue
-        if r.returncode in (0, 5):  # 0: passed or skipped, 5: nothing ran
-            out.append(f"{t} is a new test that passes today (or is skipped); every new test must fail on today's code")
+    if not added:
+        return out
+    with tempfile.TemporaryDirectory() as into:
+        main_with_tests(base, into)
+        for t in sorted(added):
+            try:
+                r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", t], cwd=into,
+                                   capture_output=True, text=True, timeout=NEW_TEST_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                out.append(f"{t} is a new test still running after {NEW_TEST_TIMEOUT} s on today's code; it was stopped")
+                continue
+            if r.returncode in (0, 5):  # 0: passed or skipped, 5: nothing ran
+                out.append(f"{t} is a new test that passes today (or is skipped); every new test must fail on today's code")
     return out
 
 
@@ -415,7 +444,7 @@ def main(argv):
             own = changed_files(run_base) if run_base else files
             bad = problems(number, result, own, tc, result.get("declared"))
             bad += problems_questions(result["raw"].get("questions", []))
-            bad += unsummarized(tc["added"]) + passing_today(tc["added"])
+            bad += unsummarized(tc["added"]) + passing_today(tc["added"], base)
             if bad:
                 raise Garbled("; ".join(bad))
     except Garbled as e:
