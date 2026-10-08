@@ -41,10 +41,14 @@ def git(*args):
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-def fence(base, scope):
-    """Undo every change since base that is a test file or outside scope; return the dropped paths, sorted."""
+def fence(base, scope, clashed=()):
+    """Undo every change since base that is a test file or outside scope; return the dropped paths, sorted.
+
+    `clashed` are the files that clashed when main was merged into base: the worker's resolution of one is kept even
+    outside scope, since base holds it with conflict markers; main's own changes are part of base and never dropped."""
     changed = set(git("diff", "--name-only", base).split()) | set(git("ls-files", "--others", "--exclude-standard").split())
-    dropped = sorted(p for p in changed if (is_test(p) and p not in TEST_SETUP & set(scope)) or p not in scope)
+    allowed = set(scope) | set(clashed)
+    dropped = sorted(p for p in changed if (is_test(p) and p not in TEST_SETUP & set(scope)) or p not in allowed)
     for p in dropped:
         if subprocess.run(["git", "cat-file", "-e", f"{base}:{p}"], capture_output=True).returncode == 0:
             git("checkout", base, "--", p)
@@ -53,13 +57,28 @@ def fence(base, scope):
     return dropped
 
 
+MARKERS = re.compile(r"(?m)^(<<<<<<<|=======|>>>>>>>)( |$)")
+
+
+def marked(paths):
+    """The paths that still hold a conflict marker line, sorted."""
+    return sorted(p for p in paths if os.path.isfile(p) and MARKERS.search(open(p, errors="replace").read()))
+
+
 def main(argv):
-    """fence BASE PLAN: apply the fence and print each dropped path. PLAN is plan.json, or the issue text holding the plan."""
+    """fence BASE PLAN [CLASHED]: apply the fence and print each dropped path. PLAN is plan.json, or the issue text
+    holding the plan; CLASHED lists the files that clashed with main, when that file exists. Exits 1 saying which
+    clashed files still hold conflict markers."""
     text = open(argv[2]).read()
     scope = json.loads(text).get("scope", []) if argv[2].endswith(".json") else scope_of(text)
-    dropped = fence(argv[1], scope)
+    clashed = open(argv[3]).read().split() if len(argv) > 3 and os.path.exists(argv[3]) else []
+    dropped = fence(argv[1], scope, clashed) if clashed else fence(argv[1], scope)
     for p in dropped:
         print(p)
+    left = marked(clashed)
+    if left:
+        print(f"Conflict markers are still in {', '.join(left)}: the clash with main is not resolved.", file=sys.stderr)
+        return 1
     return 0
 
 

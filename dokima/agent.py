@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from dokima import card
+from dokima import card, words
 from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
@@ -354,17 +354,6 @@ def role_icon(repo, role, stage):
 HEADS = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker", "split": "Code"}
 
 
-def sentences(text):
-    """Text cut into its sentences: a sentence ends at a full stop, question or exclamation mark followed by a space."""
-    return [x for x in re.split(r"(?<=[.?!])\s+", text.strip() if isinstance(text, str) else "") if x]
-
-
-def change_sentence(summary):
-    """The worker's own words on what it changed: its summary after the cause sentence, or all of it when it is one."""
-    said = sentences(summary)
-    return " ".join(said[1:] if len(said) > 1 else said)
-
-
 def bullets(items, show):
     """One line per item, drawn by `show`; non-dict items, and a malformed field that is no list, are shown as they are."""
     items = items if isinstance(items, list) else [items] if items not in (None, "", {}) else []
@@ -392,9 +381,7 @@ def details(rec):
                   ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
                   ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
     elif role == "worker":
-        cause = sentences(h.get("summary"))
-        parts += [("What it built", ([f"- {cause[0]}"] if len(cause) > 1 else [])
-                   + pairs(h.get("criteria"))
+        parts += [("What it built", pairs(h.get("criteria"))
                    + ([f"- Its own test run: {h['evidence']}"] if h.get("evidence") else [])),
                   ("What it found", bullets(h.get("outside_scope"), lambda o: f"{mark('outside the plan')} Outside the plan: {o.get('file', '')}: {o.get('why', '')}")),
                   ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
@@ -440,7 +427,7 @@ def opening(rec):
                 "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
     if role == "split":
         return f"Code filed the split as {len(h.get('stories') or [])} stories."
-    return change_sentence(h.get("summary"))
+    return h["summary"].strip() if filled(h.get("summary")) else ""
 
 
 def record_fold(rec):
@@ -469,6 +456,14 @@ def render(rec, pr=None, plan=None):
                 else f"{who} run was cancelled before its agent started.")
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
         lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "updater":
+        # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
+        by = f" (#{h['merged_pr']})" if h.get("merged_pr") else ""
+        lines = [MARK, f"Pull request #{h.get('pr')} clashes with `{h.get('base') or 'main'}` since {str(h.get('merge', ''))[:7]}{by} "
+                       "merged, so the planner re-plans against the new main. The files that clashed:", ""]
+        lines += [f"- `{f}`" for f in h.get("files") or []] or [f"- {h.get('why') or 'none listed'}"]
+        lines += record_fold(rec) + ["", f"<sub>Found by code, no model" + (f" · [run]({rec['run']})" if rec.get("run") else "") + "</sub>"]
         return "\n".join(lines) + "\n"
     passed = rec["check"]["passed"]
     first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
@@ -516,6 +511,9 @@ def render(rec, pr=None, plan=None):
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
                          for f in h.get("stories", [])]
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
+    related = card.link_lines(repo, h.get("links")) if passed and role == "planner" else []
+    if related:
+        lines += [""] + related
     if passed and role == "planner" and h.get("questions"):
         lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
@@ -851,7 +849,7 @@ def problems_shape(kind, h):
             bad.append("resolved must be a list of blocker ids")
         return bad
     if not filled(h.get("summary")):
-        bad.append("summary must be two non-empty sentences")
+        bad.append("summary must be one non-empty sentence")
     crit = h.get("criteria")
     if not isinstance(crit, dict) or not crit:
         bad.append("criteria must be an object giving one line per criterion")
@@ -921,6 +919,13 @@ def check(kind, path, plan_path=None, number=None):
         print(err)
         return 1
     bad = problems_shape(kind, data) or (problems_review if kind == "review" else problems_work)(data)
+    listed = []
+    if filled(data.get("summary")):
+        listed, too_long = words.summary_caps(data["summary"])
+        bad += too_long
+    if kind == "work" and os.environ.get("PLANNER_BASE"):
+        more, too_long = worker_docstring_caps(os.environ["PLANNER_BASE"])
+        listed, bad = listed + more, bad + too_long
     if plan_path is not None:
         plan, err = load(plan_path, "plan.json")
         if err:
@@ -932,9 +937,22 @@ def check(kind, path, plan_path=None, number=None):
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
                 bad += problems_assumptions(data, plan, number)
-    for b in bad:
-        print(b)
+    for line in listed + bad:
+        print(line)
     return 1 if bad else 0
+
+
+def worker_docstring_caps(base):
+    """(listed, rejected) for each Python docstring added or rewritten since `base`.
+
+    Older docstrings whose first line is unchanged are left alone; a base git cannot read fails closed.
+    """
+    from dokima import planner  # planner imports this module, so it is read only when needed
+    try:
+        paths = [p for p in planner.changed_files(base) if p.endswith(".py")]
+    except subprocess.CalledProcessError as e:
+        return [], [f"the docstrings the worker added can't be read: git can't compare with {base} ({e.stderr.strip()})"]
+    return planner.docstring_caps(paths, planner.read_at(base), planner.read_now)
 
 
 NEEDS = {
@@ -1350,6 +1368,9 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         return ("start", "reviewer", "plan")
     if role == "worker":
         return ("start", "reviewer", "pr")
+    if role == "updater":
+        # A clash with main goes to the planner by itself: the plan may not fit main anymore.
+        return ("start", "planner", "")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
