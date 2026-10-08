@@ -246,7 +246,8 @@ def render(rec):
         lines += ["", h.get("summary", "")]
     if role == "planner" and h.get("questions"):
         lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
-        lines += [f"- {q}" for q in h["questions"]]
+        lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
+                  for q in h["questions"]]
     prev = h.get("previous_step") if isinstance(h, dict) else None
     if isinstance(prev, dict) and any(prev.get(k) for k in ("did", "decided", "open")):
         lines += ["", "<details><summary>What the previous step did</summary>", ""]
@@ -365,12 +366,29 @@ def pack(repo, number, role, stage, dest):
     return bool(plan)
 
 
+QUESTION_SHAPE = '{"question": "...?", "assumption": "..."}'
+
+
 def problems_questions(qs):
-    """Everything wrong with the planner's questions for the owner: a list of plain questions, each asking something ('?')."""
+    """Everything wrong with the planner's questions for the owner: each is exactly a question (with a '?') and the
+    reading the plan assumed, nothing else."""
     if not isinstance(qs, list):
-        return ["questions must be a list of plain questions"]
-    return [f"question {i} must be a plain question with a '?'" for i, q in enumerate(qs, 1)
-            if not isinstance(q, str) or "?" not in q]
+        return [f"questions must be a list, each {QUESTION_SHAPE}"]
+    bad = []
+    for i, q in enumerate(qs, 1):
+        if not isinstance(q, dict):
+            bad.append(f"question {i} must be a question and its assumption, {QUESTION_SHAPE}")
+            continue
+        extra = sorted(str(k) for k in q if k not in ("question", "assumption"))
+        if extra:
+            bad.append(f"question {i} has {', '.join(extra)}: a question is only the question and its assumption, "
+                       "never options or a recommendation")
+        for field in ("question", "assumption"):
+            if not filled(q.get(field)):
+                bad.append(f"question {i} has no {field}: it must be non-empty text")
+        if filled(q.get("question")) and "?" not in q["question"]:
+            bad.append(f"question {i} asks nothing: its question needs a '?'")
+    return bad
 
 
 def problems_review(r):

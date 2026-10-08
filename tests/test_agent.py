@@ -62,12 +62,12 @@ def test_the_fence_reads_scope_from_plan_json(record_property, tmp_path, monkeyp
 
 
 def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
-    """Plain questions pass; anything that is not a plain question is named; review and work may not ask."""
+    """A question with its assumption passes; anything else is named; review and work may not ask."""
     record_property("proves", "agent.5")
-    q = "Should a failed run move its card to Needs you? I planned for yes."
-    assert agent.problems_questions([q, "Which board view?"]) == []
-    assert agent.problems_questions(["Split it."]) == ["question 1 must be a plain question with a '?'"]
-    assert agent.problems_questions([{"question": "Split it?"}]) == ["question 1 must be a plain question with a '?'"]
+    q = {"question": "Should a failed run move its card to Needs you?", "assumption": "The plan assumes it does."}
+    assert agent.problems_questions([q, {"question": "Which board view?", "assumption": "The default one."}]) == []
+    assert agent.problems_questions(["Split it?"]) and agent.problems_questions(["Split it?"])[0].startswith("question 1")
+    assert agent.problems_questions([{"question": "Split it.", "assumption": "Yes."}])[0].startswith("question 1")
     assert agent.problems_review({**GOOD_REVIEW, "questions": [q]}) == ["the reviewer never asks the owner; escalate on round three instead"]
     assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]
 
@@ -88,7 +88,8 @@ def rec(role, stage="", handback=None, passed=True, problems=""):
 def test_a_record_survives_its_comment_and_only_the_bot_counts(record_property):
     """A record rendered into a comment reads back exactly; the same text posted by anyone else, or broken JSON, is not a record."""
     record_property("proves", "agent.6")
-    r = rec("planner", handback={"kind": "user_story", "user_story": "first", "questions": ["Split it?"]})
+    r = rec("planner", handback={"kind": "user_story", "user_story": "first",
+                                 "questions": [{"question": "Split it?", "assumption": "The plan assumes not."}]})
     assert agent.records([comment(r)]) == [r]
     assert agent.records([comment(r, who="someone")]) == [], "a pasted record from a person was trusted"
     broken = comment(r)

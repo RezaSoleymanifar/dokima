@@ -80,8 +80,8 @@ More, one per rule:
 
       Writes an issue in a format the card can't read, runs the card, and checks every original line is still there."""
   The card then shows: Verified by: The owner's words survive every card update.
-- Question: Should a failed run move its card to Needs you, or only mark it red? (A) Needs you, recommended: the owner
-  sees it without looking. (B) Red mark only.
+- Question: Should a failed run move its card to Needs you? Assumption: the plan assumes it does, so the owner sees it
+  without looking.
 - Concern: This overlaps the board refresh issue. Evidence: `dokima/board.py`, `decide()`. Recommend folding it in.
 
 # Where your tests run
@@ -119,10 +119,10 @@ Exactly one kind: user_story or feature.
 - A feature: {"kind": "feature", "feature": "...", "stories": [{"title": "...", "user_story": "...",
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
-A plan may also carry "questions": ["...?", ...], plain questions for the owner, as many as you need. Ask only where the owner's
-words allow two readings or an ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best
-reading, and say in the question which reading you planned for: the owner may answer or not, and the plan stands either
-way until they do. Such an ask becomes a
+A plan may also carry "questions": [{"question": "...?", "assumption": "..."}, ...], each a question for the owner and the
+reading the plan assumed, nothing else, as many as you need. Ask only where the owner's words allow two readings or an
+ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best reading, and put that reading in
+the assumption: the owner may answer or not, and the plan stands either way until they do. Such an ask becomes a
 question here, never a concern and never dropped. The planner is the only agent that asks the owner anything.
 Every round after the first carries "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}], one
 per open blocker. "disagree" needs evidence the reviewer can check; otherwise fix it.
