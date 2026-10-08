@@ -213,14 +213,17 @@ def test_a_command_starts_its_stage_and_anything_else_starts_nothing(record_prop
 
 
 def test_each_round_answers_every_open_blocker(record_property, tmp_path):
-    """The worker must answer every open blocker by id; the reviewer must resolve or keep each earlier one.
+    """The worker answers each open blocker by id; the reviewer resolves or keeps each.
 
     The planner no longer replies (#241): its round check passes with no replies, since the reviewer carries each one."""
     record_property("proves", "agent.14")
     (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}, {"id": "B2"}]))
     assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}, {"blocker": "B2"}]}, str(tmp_path)) == []
     assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}]}, str(tmp_path)) == ["blocker B2 is not answered"]
-    assert agent.problems_round("planner", {}, str(tmp_path)) == []
+    (tmp_path / "issue.md").write_text("# Issue #9: T\n\n## Comments\n")
+    (tmp_path / "open_issues.json").write_text("[]")
+    links = {"blocked_by": [], "blocks": [], "relates_to": []}
+    assert agent.problems_round("planner", {"links": links}, str(tmp_path)) == []
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": [{"id": "B2"}]}, str(tmp_path)) == []
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": []}, str(tmp_path)) == ["earlier blocker B2 is neither resolved nor still listed"]
     assert agent.problems_round("worker", {}, str(tmp_path / "none")) == []

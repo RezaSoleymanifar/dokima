@@ -1,4 +1,4 @@
-"""The planner hands back no concerns or replies, keeps its questions, and holds at most five criteria per story (#241).
+"""The planner hands back no concerns or replies, and five criteria per story at most.
 
 The owner asked (story 3 of #229) that a doubt about the ask go in as a question, not a concern; that the planner stop
 answering blockers with replies, since the reviewer already resolves or keeps each one itself; that questions keep
@@ -26,15 +26,23 @@ QUESTIONS = [{"question": "Should job ids be numbers?", "assumption": "The plan 
              {"question": "Should a failed run move to Needs you?", "assumption": "The plan assumes it does."}]
 BLOCKERS = [{"id": "B1", "criterion": "9.1", "test": None, "problem": "p", "evidence": "e", "fix": "f", "fixer": "planner"},
             {"id": "B2", "criterion": "9.2", "test": None, "problem": "p", "evidence": "e", "fix": "f", "fixer": "planner"}]
+# Every plan names the open issues it is blocked by, blocks and relates to (#256); these plans link none.
+NO_LINKS = {"blocked_by": [], "blocks": [], "relates_to": []}
 
 
 def round_check(tmp_path, role, handback, blockers=BLOCKERS):
-    """Run `agent check-round ROLE FILE PACK` from the repo root on a pack whose newest review left `blockers` open.
+    """Run a role's round check on a pack where `blockers` are still open.
 
-    PYTHONPATH points at the repo so the check that runs is this repo's code, never another copy of dokima."""
+    The check runs as `agent check-round ROLE FILE PACK` from the repo root.
+
+    The pack is built the way the planner's real pack is: issue #9 with no open issues to link (open_issues.json is
+    an empty list, #256). PYTHONPATH points at the repo so the check that runs is this repo's code, never another copy
+    of dokima."""
     pack = tmp_path / f"pack-{role}"
     pack.mkdir(exist_ok=True)
     (pack / "open_blockers.json").write_text(json.dumps(blockers))
+    (pack / "issue.md").write_text("# Issue #9: T\n\n## Comments\n")
+    (pack / "open_issues.json").write_text("[]")
     f = tmp_path / f"{role}-handback.json"
     f.write_text(json.dumps(handback))
     r = subprocess.run([sys.executable, "-m", "dokima.agent", "check-round", role, str(f), str(pack)],
@@ -44,7 +52,10 @@ def round_check(tmp_path, role, handback, blockers=BLOCKERS):
 
 
 def both_checks(check, tmp_path, plan, crit, blockers=BLOCKERS):
-    """Run the planner check, then the planner's round check with `blockers` open: (passed, every reason given)."""
+    """Run the planner check, then its round check: (passed, every reason given).
+
+    A plan with no links gets three empty lists, as every real hand-back carries them, so only this issue's rules decide."""
+    plan = plan if "links" in plan else with_(plan, links=NO_LINKS)
     rc, why = check({"plan.json": plan}, crit)
     rc2, why2 = round_check(tmp_path, "planner", plan, blockers)
     return rc == 0 and rc2 == 0, (why + "\n" + why2).strip()
@@ -58,24 +69,28 @@ def with_(base, **fields):
 
 
 def sized(base, n, story=1):
-    """A copy of the good story, or of the feature with its story `story` resized, holding n criteria in all.
+    """A copy of the good plan with one story holding n criteria in all.
 
-    The story keeps its one non-functional requirement and gets n - 1 acceptance criteria; every criterion of a user
-    story is filed under the plan's real tests, so nothing but the count can be wrong."""
+    The story keeps its one non-functional requirement and gets n - 1 acceptance criteria. A user story files 9.1 under
+    test_id, 9.2 and 9.3 under test_unique (whose docstrings name exactly those), and 9.4 and up under the older test
+    tests/test_old.py::test_old, which counts as proof and needs no docstring naming them; so nothing but the count
+    can be wrong."""
     p = copy.deepcopy(base)
     target = p if p["kind"] == "user_story" else p["stories"][story - 1]
     nfr = [{"text": "A failed call says why.", "why": "the owner is never left guessing", "principle": "fail closed"}]
     target["acceptance_criteria"] = [{"text": f"Outcome {k} is shown.", "source": ISSUE} for k in range(1, n)]
     target["non_functional"] = nfr
     if p["kind"] == "user_story":
-        p["tests"] = {f"9.{k}": ["tests/test_jobs.py::test_id" if k == 1 else "tests/test_jobs.py::test_unique"]
-                      for k in range(1, n + 1)}
+        name = {1: "tests/test_jobs.py::test_id", 2: "tests/test_jobs.py::test_unique", 3: "tests/test_jobs.py::test_unique"}
+        p["tests"] = {f"9.{k}": [name.get(k, "tests/test_old.py::test_old")] for k in range(1, n + 1)}
     return p
 
 
 @pytest.mark.parametrize("base", [STORY, FEATURE], ids=["story", "feature"])
 def test_a_plan_with_concerns_is_rejected_saying_a_doubt_goes_in_as_a_question(record_property, check, tmp_path, base):
-    """A plan or split carrying concerns is rejected, and the reason says a doubt about the ask goes in as a question.
+    """A plan with concerns is rejected: a doubt goes in as a question.
+
+    Proves 241.1, for a user story and a split.
 
     On a first round, first checks the good plan with no concerns field passes both checks. Then hands it back with one concern, and with
     an empty concerns list, and checks each is rejected with a reason naming concerns and saying "a doubt about the
@@ -91,7 +106,9 @@ def test_a_plan_with_concerns_is_rejected_saying_a_doubt_goes_in_as_a_question(r
 
 
 def test_the_prompt_and_agents_md_no_longer_offer_concerns(record_property):
-    """The planner's prompt no longer offers concerns, and AGENTS.md says the planner puts a doubt in as a question.
+    """The planner's prompt and AGENTS.md say a doubt goes in as a question.
+
+    Proves 241.1.
 
     Reads dokima/roles/planner.md: it never shows a "concerns" field, no example line starts with "- Concern:", and
     some line says a doubt goes in as a question. Reads the Planner line of AGENTS.md's Roles: it no longer says the
@@ -113,7 +130,9 @@ def test_the_prompt_and_agents_md_no_longer_offer_concerns(record_property):
 
 @pytest.mark.parametrize("base", [STORY, FEATURE], ids=["story", "feature"])
 def test_a_plan_with_replies_is_rejected_saying_replies_are_no_longer_part_of_a_plan(record_property, check, tmp_path, base):
-    """A plan or split carrying replies is rejected, and the reason says replies are no longer part of a plan.
+    """A plan carrying replies is rejected, saying replies are no longer part of a plan.
+
+    Proves 241.2, for a user story and a split.
 
     Hands back the good plan with a reply answering each open blocker, and with an empty replies list, and checks
     each is rejected with a reason naming replies and saying "replies are no longer part of a plan"."""
@@ -129,6 +148,8 @@ def test_a_plan_with_replies_is_rejected_saying_replies_are_no_longer_part_of_a_
 def test_the_prompt_no_longer_asks_the_planner_for_replies(record_property):
     """The planner's prompt no longer asks for replies.
 
+    Proves 241.2.
+
     Reads dokima/roles/planner.md and checks the word "replies" appears nowhere in it, neither the field nor the
     instruction to answer every open blocker in replies."""
     record_property("proves", "241.2")
@@ -139,7 +160,9 @@ def test_the_prompt_no_longer_asks_the_planner_for_replies(record_property):
 
 @pytest.mark.parametrize("base", [STORY, FEATURE], ids=["story", "feature"])
 def test_a_later_round_plan_with_no_replies_passes_and_the_reviewer_still_carries_each_blocker(record_property, check, tmp_path, base):
-    """A later-round plan with no replies passes, and the reviewer still resolves or keeps each open blocker.
+    """A later-round plan with no replies passes; the reviewer still resolves or keeps each blocker.
+
+    Proves 241.3.
 
     With B1 and B2 open from the newest review, hands back the good plan with no replies and checks both the planner
     check and the planner's round check pass. Then runs the reviewer's round check: a review that resolves B1 and
@@ -156,7 +179,9 @@ def test_a_later_round_plan_with_no_replies_passes_and_the_reviewer_still_carrie
 
 @pytest.mark.parametrize("base", [STORY, FEATURE], ids=["story", "feature"])
 def test_questions_still_pass_and_reach_the_owner_on_a_later_round(record_property, check, tmp_path, base):
-    """A plan's questions still pass the check on a later round and still show on its card.
+    """A plan's questions still pass on a later round and still show on its card.
+
+    Proves 241.4.
 
     With B1 and B2 open, hands back the good plan carrying two questions and no replies, and checks both checks pass.
     Then draws the planner's run comment and checks each question and its assumption show above the folds."""
@@ -172,7 +197,9 @@ def test_questions_still_pass_and_reach_the_owner_on_a_later_round(record_proper
 
 @pytest.mark.parametrize("base,story", [(STORY, 1), (FEATURE, 1), (FEATURE, 2)], ids=["story", "split-story-1", "split-story-2"])
 def test_a_story_with_more_than_five_criteria_is_rejected_saying_split_it(record_property, check, tmp_path, base, story):
-    """A story with more than five criteria, counting non-functional ones, is rejected, saying it should be split.
+    """A story with more than five criteria is rejected, saying it should be split.
+
+    Proves 241.5; non-functional requirements count too.
 
     On a first round, hands back a story (or a split whose first or second story is resized) with exactly five criteria, four acceptance
     and one non-functional, and checks it passes. Then with six, and with seven, and checks each is rejected with a

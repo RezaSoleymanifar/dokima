@@ -140,6 +140,9 @@ def fake_github(monkeypatch, recs):
             return json.dumps({"number": 9, "title": "T", "body": "B", "comments": comments})
         if args[:2] == ("pr", "list"):
             return "[]"
+        if args[:2] == ("issue", "list") or (args[0] == "api" and args[1].lstrip("/").startswith("repos/o/r/issues")
+                                             and "/comments" not in args[1]):
+            return "[]"  # the repo's open issues, which the planner's pack lists
         raise AssertionError(f"unexpected gh call {args}")
     monkeypatch.setattr(agent, "gh", gh)
 
