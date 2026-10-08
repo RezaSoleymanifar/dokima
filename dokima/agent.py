@@ -129,8 +129,50 @@ def blockers_for(recs, role):
     return open_blockers(recs, "plan")
 
 
+LINKS = ("blocked_by", "blocks", "relates_to")
+
+
+def open_issues(repo):
+    """Every open issue of the repo, every page, with its number, title and body; pull requests are left out."""
+    items = [i for p in pages(gh("api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate")) for i in p]
+    return [{"number": i["number"], "title": i["title"], "body": i.get("body") or ""} for i in items
+            if "pull_request" not in i]
+
+
+def problems_links(h, pack_dir):
+    """Everything wrong with a plan's links: three lists of open issue numbers from the pack, never the issue itself,
+    and no issue in two lists."""
+    path = os.path.join(pack_dir, "open_issues.json")
+    if not os.path.exists(path):
+        return ["open_issues.json is missing from the pack, so the links cannot be checked"]
+    links = h.get("links")
+    if not isinstance(links, dict):
+        return ["links must be an object with three lists: " + ", ".join(LINKS)]
+    issue = os.path.join(pack_dir, "issue.md")
+    m = re.match(r"# Issue #(\d+)", open(issue).read()) if os.path.exists(issue) else None
+    me = int(m.group(1)) if m else None
+    known = {i.get("number") for i in json.load(open(path)) if isinstance(i, dict)}
+    bad, seen = [], {}
+    for k in LINKS:
+        v = links.get(k)
+        if not isinstance(v, list) or not all(isinstance(n, int) and not isinstance(n, bool) for n in v):
+            bad.append(f"links.{k} must be a list of issue numbers")
+            continue
+        for n in v:
+            if n == me:
+                bad.append(f"links.{k} links #{n}, the issue itself")
+            elif n not in known:
+                bad.append(f"links.{k} links #{n}, which is not an open issue")
+            seen.setdefault(n, [])
+            if k not in seen[n]:
+                seen[n].append(k)
+    bad += [f"#{n} sits in more than one list of links: {', '.join(ks)}" for n, ks in seen.items() if len(ks) > 1]
+    return bad
+
+
 def problems_round(role, h, pack_dir):
-    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one."""
+    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one, and
+    the planner's links must name open issues in the pack."""
     path = os.path.join(pack_dir, "open_blockers.json")
     blockers = {b.get("id") for b in (json.load(open(path)) if os.path.exists(path) else []) if isinstance(b, dict)}
     bad = []
@@ -149,6 +191,8 @@ def problems_round(role, h, pack_dir):
         bad.append("replies must be a list of objects")
         replies = replies if isinstance(replies, list) else []
     replied = {r.get("blocker") for r in replies if isinstance(r, dict)}
+    if role == "planner":
+        bad += problems_links(h, pack_dir)
     return bad + [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
 
 
@@ -560,10 +604,13 @@ def models_used(log_dir):
 
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
-    and the newest passed plan. The pull request review also gets the worker's session log from its run."""
+    the newest passed plan and, for the planner, every open issue of the repo. The pull request review also gets the worker's session log from its run."""
     d, items = conversation(repo, number)
     recs = records(items)
+    listed = open_issues(repo) if role == "planner" else None
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
+    if listed is not None:
+        json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
     answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
     json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
