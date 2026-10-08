@@ -239,6 +239,23 @@ def workflow(name):
     return load_yaml(open(os.path.join(ROOT, ".github", "workflows", name)).read())
 
 
+def github_shell(step, job, defaults):
+    """The bash command GitHub runs a step's script with, on Linux.
+
+    A step, its job's `defaults.run` or the workflow's `defaults.run` may name a shell; the nearest one wins. With
+    none, GitHub runs `bash -e {0}`, with no pipefail, so a failure inside a pipe goes unnoticed unless the script
+    catches it itself. Only `shell: bash` gets `bash --noprofile --norc -eo pipefail {0}`. Any other shell is refused,
+    so the tests never run a step under settings GitHub would not use."""
+    shell = step.get("shell")
+    for d in ((job.get("defaults") or {}).get("run") or {}, ((defaults or {}).get("run") or {})):
+        shell = shell or d.get("shell")
+    if not shell:
+        return ["bash", "-e"]
+    if shell == "bash":
+        return ["bash", "--noprofile", "--norc", "-eo", "pipefail"]
+    raise AssertionError(f"the tests only know how GitHub runs bash steps, not shell: {shell}")
+
+
 def sh(cwd, *args):
     """Run git or another command quietly; fail loudly with its output."""
     p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=git_env(os.environ))
@@ -325,8 +342,10 @@ class Machine:
                         "GIT_CONFIG_KEY_0": f"url.file://{t}/origin.git.insteadOf",
                         "GIT_CONFIG_VALUE_0": "https://x-access-token:fake-token@github.com/o/r.git"})
 
-    def run_job(self, name, job, ctx, event_name, paths):
-        """Run one job's steps in order on a fresh clone, keeping its status, env and step outputs; returns its result."""
+    def run_job(self, name, job, ctx, event_name, paths, defaults=None):
+        """Run one job's steps in order on a fresh clone, keeping its status, env and step outputs; returns its result.
+
+        `defaults` is the workflow's own `defaults:` block, so each step gets the shell GitHub would give it."""
         t = self.tmp
 
         def moved(s):
@@ -354,7 +373,7 @@ class Machine:
                 for f in (env["GITHUB_ENV"], env["GITHUB_OUTPUT"]):
                     open(f, "w").close()
                 open(f"{t}/step.sh", "w").write(moved(fill(step["run"], sctx, status)))
-                p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", f"{t}/step.sh"], cwd=ws,
+                p = subprocess.run(github_shell(step, job, defaults) + [f"{t}/step.sh"], cwd=ws,
                                    env=env, capture_output=True, text=True, timeout=120)
                 self.log.append(f"## {name}: {label} (exit {p.returncode})\n{p.stdout[-1500:]}{p.stderr[-1500:]}")
                 for l in open(env["GITHUB_ENV"]).read().splitlines():
@@ -416,8 +435,9 @@ class Run(Machine):
                              server_url="https://github.com", repository="o/r", token="fake-github-token"),
                "secrets": Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k"),
                "vars": Ctx(DOKIMA_APP_ID="1"), "needs": Ctx()}
-        self.result, _ = self.run_job("run", workflow("agent.yml")["jobs"]["run"], ctx, "workflow_dispatch",
-                                      [("/tmp/", f"{t}/"), ("/home/runner/", f"{t}/home/")])
+        wf = workflow("agent.yml")
+        self.result, _ = self.run_job("run", wf["jobs"]["run"], ctx, "workflow_dispatch",
+                                      [("/tmp/", f"{t}/"), ("/home/runner/", f"{t}/home/")], wf.get("defaults"))
         self.failed = self.result == "failure"
 
     def board(self):
@@ -439,7 +459,8 @@ class Listener(Machine):
         open(f"{t}/event.json", "w").write(json.dumps(event))
         github = Ctx(event_name="issue_comment", actor=actor, event=event, run_id="42", run_attempt="1",
                      server_url="https://github.com", repository="o/r", token="fake-github-token")
-        jobs = workflow("commands.yml")["jobs"]
+        wf = workflow("commands.yml")
+        jobs = wf["jobs"]
         self.results, outputs, self.ran = {}, {}, []
         while len(self.results) < len(jobs):
             for name, job in jobs.items():
@@ -460,7 +481,7 @@ class Listener(Machine):
                     self.results[name] = "success"
                     continue
                 self.results[name], outputs[name] = self.run_job(name, job, ctx, "issue_comment",
-                                                                 [("/tmp/", f"{t}/jobs/{name}/tmp/")])
+                                                                 [("/tmp/", f"{t}/jobs/{name}/tmp/")], wf.get("defaults"))
         self.failed = "failure" in self.results.values()
 
     def agent_run_started(self):
