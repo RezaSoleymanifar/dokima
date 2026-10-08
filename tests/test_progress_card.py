@@ -35,6 +35,8 @@ FULL = ["queued", "setting up", "working", "checking", "record"]
 INSTALL = "Install pytest and Claude Code"
 CHECK = "Code checks the hand-back"
 BAD_REVIEW = {"verdict": "maybe"}
+SECRETS = ["fake-claude-token", "fake-github-token"]
+PLANTED = "https://fake-claude-token.fake-github-token.example"
 
 
 def noting(name):
@@ -72,10 +74,13 @@ class Scenario:
 def runs(tmp_path_factory):
     """Every scenario these tests read, each run once through the whole agent workflow, noting the card at two steps."""
     real = ts.workflow
+    planted = {"on": False}
 
     def watched(name):
         wf = real(name)
         if name == "agent.yml":
+            if planted["on"]:
+                wf["jobs"]["run"].setdefault("env", {})["GITHUB_SERVER_URL"] = PLANTED
             for step in wf["jobs"]["run"]["steps"]:
                 if step.get("name") == INSTALL:
                     step["run"] = noting("install") + step["run"]
@@ -85,13 +90,16 @@ def runs(tmp_path_factory):
     t = tmp_path_factory.mktemp("stages")
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(ts, "workflow", watched)
-        return {
+        found = {
             "pass": Scenario(t / "pass", "reviewer", "plan", STORY_PLANNED, try_branch=True),
             "fail": Scenario(t / "fail", "reviewer", "plan", STORY_PLANNED, try_branch=True, review=BAD_REVIEW),
             "branch": Scenario(t / "branch", "worker", "", STORY_APPROVED),
             "install": Scenario(t / "install", "worker", "", STORY_APPROVED, try_branch=True, broken={"pip": PIP_BROKEN}),
             "no-edit": Scenario(t / "no-edit", "reviewer", "plan", STORY_PLANNED, try_branch=True, options={"fail_edits": True}),
         }
+        planted["on"] = True
+        found["secret"] = Scenario(t / "secret", "reviewer", "plan", STORY_PLANNED, try_branch=True)
+        return found
 
 
 def as_comment(body):
@@ -256,3 +264,28 @@ def test_a_stage_that_cannot_be_shown_never_stops_the_run(record_property, runs)
     recs = [r for c in s.comments if c["author"] == agent.BOT for r in agent.records([as_comment(c["versions"][-1])])]
     assert [(r["role"], r["check"]["passed"]) for r in recs] == [("reviewer", True)], \
         f"187.4: the run's result was not posted as exactly one passed record: {[(r['role'], r['check']['passed']) for r in recs]}\n{s.tail()}"
+
+
+def test_no_secret_reaches_the_card_while_the_run_moves_through_its_stages(record_property, runs):
+    """Every stage the card shows passes through scrub() first, so no secret of the run ever shows on it.
+
+    Runs a plan review whose server address (GITHUB_SERVER_URL, which the card's run link is built from, as it is
+    today) holds the run's two secrets: the Claude Code token and the workflow's GitHub token. The card still goes
+    queued, setting up, agent working, checking, then its record, and every one of its stage versions still links to
+    the run's page (/o/r/actions/runs/42), but with each secret shown as [secret removed] and never as itself. A card
+    that skips scrub() shows the secrets; a card that drops the link or the server address shows no [secret removed]."""
+    record_property("proves", "187.5")
+    s = runs["secret"]
+    assert s.run.agent_started(), f"187.5: setup: the agent never started; stopped at '{s.run.failed_step}':\n{s.tail()}"
+    card = the_card(s, "187.5")
+    got = [stage_of(v) for v in card["versions"]]
+    assert got == FULL, f"187.5: the card went {got}, expected {FULL}:\n" + "\n---\n".join(v[:300] for v in card["versions"])
+    for v, stage in zip(card["versions"], got):
+        if stage == "record":
+            continue
+        shown = [x for x in SECRETS if x in v]
+        assert not shown, f"187.5: the card, when it said {stage}, shows the run's secrets {shown}:\n{v[:600]}"
+        links = re.findall(r"\]\((https?://[^)]*/o/r/actions/runs/42[^)]*)\)", v)
+        assert links and all("[secret removed]" in u for u in links), \
+            (f"187.5: the card, when it said {stage}, has no link to the run built from the server address with its "
+             f"secrets scrubbed (expected [secret removed] in it); its links are {re.findall(r"\]\((https?://[^)]*)\)", v)}")
