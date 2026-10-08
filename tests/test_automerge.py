@@ -10,11 +10,15 @@ pull request #60 as GitHub would show it:
 - the files it changes;
 - whether it is merged, and every merge call.
 
-GitHub answers about the pull request through any of: `gh pr view` (any selector, `--json` with every field: number,
+A test can add more open pull requests, each built for another issue of the tree on its own real try/issue-N branch,
+with that issue's history (`gh issue view N`, or GET on repos/o/r/issues/N/comments); comments posted on such a pull
+request are kept on it. Without a selector, a `gh pr` call means #60.
+
+GitHub answers about a pull request through any of: `gh pr view` (a number, URL or branch, `--json` with every field: number,
 headRefName, headRefOid, body, state, mergeable, mergeStateStatus, files, statusCheckRollup, comments, reviews),
-`gh pr list` (open, merged or all), `gh pr checks` (with or without --required; with --json, or as text exiting 1 on a
-failed check and 8 on a pending one), `gh pr diff --name-only`, and the REST API: repos/o/r/pulls/60,
-repos/o/r/pulls/60/files, repos/o/r/commits/SHA/check-runs and repos/o/r/commits/SHA/status (no commit statuses: its
+`gh pr list` (open, merged or all, with --head or --search head:...), `gh pr checks` (with or without --required; with --json, or as text exiting 1 on a
+failed check and 8 on a pending one), `gh pr diff --name-only`, and the REST API: repos/o/r/pulls (with head=),
+repos/o/r/pulls/N, repos/o/r/pulls/N/files, repos/o/r/commits/SHA/check-runs and repos/o/r/commits/SHA/status (no commit statuses: its
 combined state is pending with total_count 0, as GitHub says when a repo uses only check runs). `-q`/`--jq` is
 understood only as a plain `.field`, `.[0].field` or `.[].field`. GraphQL is not answered. The repo has no branch
 protection unless a test says so: like GitHub on such a repo, the fake merges whatever it is asked to merge, red or
@@ -47,6 +51,8 @@ PROTECTED = "At least 1 approving review is required by reviewers with write acc
 PR_GH = r'''
 PR_FILE = os.path.join(d, "pr.json")
 PRS = json.load(open(PR_FILE)) if os.path.exists(PR_FILE) else None
+HIST_FILE = os.path.join(d, "issues.json")
+HIST = json.load(open(HIST_FILE)) if os.path.exists(HIST_FILE) else {}
 def save_pr():
     json.dump(PRS, open(PR_FILE, "w"), indent=1)
 ISSUE_FILE = os.path.join(d, "issue.json")
@@ -54,31 +60,49 @@ if os.path.exists(ISSUE_FILE) and os.path.exists(LABELS_FILE):
     _iss = json.load(open(ISSUE_FILE))
     _iss["labels"] = [{"name": l} for l in LABELS.get(str(_iss["number"]), [])]
     json.dump(_iss, open(ISSUE_FILE, "w"))
-def checks_of(sha):
-    return PRS["checks"].get(sha, [])
-def reveal():
+def num_of(x):
+    """The number a selector names (60, #60, a URL), or None."""
+    m = re.fullmatch(r"#?(\d+)|.*/(?:pull|pulls|issues)/(\d+)/?", str(x or ""))
+    return (m.group(1) or m.group(2)) if m else None
+def pr_by_branch(ref):
+    ref = re.sub(r"^(?:refs/heads/|[^:/]+:)", "", str(ref or ""))
+    return next((n for n, p in PRS.items() if p["branch"] == ref), None)
+def selected(start):
+    """The pull request a `gh pr ...` call names (number, URL or branch); with none, #60."""
+    sel = a[start] if len(a) > start and not a[start].startswith("-") else None
+    if sel is None:
+        return "60"
+    n = num_of(sel)
+    if n is not None:
+        return n if n in PRS else None
+    return pr_by_branch(sel)
+def checks_of(n, sha):
+    return PRS[n]["checks"].get(sha, [])
+def reveal(n):
     """Code has now seen the head or its checks: a commit pushed meanwhile becomes the head, its checks running."""
-    if PRS.get("moves_to") and not PRS.get("moved"):
-        PRS["moved"] = True
-        PRS["head"] = PRS["moves_to"]
+    p = PRS[n]
+    if p.get("moves_to") and not p.get("moved"):
+        p["moved"] = True
+        p["head"] = p["moves_to"]
         save_pr()
-def rollup(sha):
+def rollup(n, sha):
     out = []
-    for c in checks_of(sha):
+    for c in checks_of(n, sha):
         done = c["state"] != "PENDING"
         out.append({"__typename": "CheckRun", "name": c["name"], "workflowName": c["name"],
                     "status": "COMPLETED" if done else "IN_PROGRESS", "conclusion": c["state"] if done else "",
                     "detailsUrl": "https://github.com/o/r/actions/runs/7"})
     return out
-def pr_obj():
-    merged = bool(PRS.get("merged"))
-    return {"number": 60, "url": "https://github.com/o/r/pull/60", "headRefName": "try/issue-57", "baseRefName": "main",
-            "headRefOid": PRS["head"], "body": "Closes #57", "title": "Stuck issue",
+def pr_obj(n):
+    p = PRS[n]
+    merged = bool(p.get("merged"))
+    return {"number": int(n), "url": f"https://github.com/o/r/pull/{n}", "headRefName": p["branch"], "baseRefName": "main",
+            "headRefOid": p["head"], "body": f"Closes #{p['issue']}", "title": f"Issue {p['issue']}",
             "state": "MERGED" if merged else "OPEN", "merged": merged, "mergeable": "UNKNOWN",
             "mergeStateStatus": "UNKNOWN", "isDraft": False,
-            "files": [{"path": f, "additions": 1, "deletions": 0} for f in PRS["files"]],
-            "statusCheckRollup": rollup(PRS["head"]), "comments": comments_on("pr", 60), "reviews": [],
-            "commits": [{"oid": PRS["head"]}], "labels": []}
+            "files": [{"path": f, "additions": 1, "deletions": 0} for f in p["files"]],
+            "statusCheckRollup": rollup(n, p["head"]), "comments": comments_on("pr", n), "reviews": [],
+            "commits": [{"oid": p["head"]}], "labels": [], "closingIssuesReferences": [{"number": p["issue"]}]}
 def jq_pick(obj, q):
     q = (q or "").strip()
     m = re.fullmatch(r"\.\[(?:0)?\]\.([A-Za-z_]+)", q)
@@ -95,39 +119,73 @@ def emit(obj):
     print(jq_pick(obj, q) if q else json.dumps(obj))
 def json_fields():
     return (flag("--json") or "").split(",")
-def merge_now(sha_pin, how):
-    if PRS.get("merged"):
+def merge_now(n, sha_pin, how):
+    p = PRS[n]
+    if p.get("merged"):
         return "Pull Request is not mergeable: it is already merged"
-    if sha_pin and sha_pin != PRS["head"]:
+    if sha_pin and sha_pin != p["head"]:
         return "Head branch was modified. Review and try the merge again."
-    if PRS.get("refuse"):
-        return PRS["refuse"]
-    PRS["merged"] = {"sha": PRS["head"], "how": how}
+    if p.get("refuse"):
+        return p["refuse"]
+    p["merged"] = {"sha": p["head"], "how": how}
     save_pr()
     return None
+def no_pr():
+    sys.stderr.write("no pull requests found\n")
+    sys.exit(1)
+ISSUE_ARG = (a[2] if len(a) > 2 else "") if a[:2] == ["issue", "view"] else ""
+if HIST and num_of(ISSUE_ARG) in HIST:
+    n = num_of(ISSUE_ARG)
+    obj = {"number": int(n), "title": f"Issue {n}", "body": "Fix it.", "state": "OPEN",
+           "labels": [{"name": l} for l in LABELS.get(n, [])], "comments": HIST[n] + comments_on("issue", n)}
+    emit(obj)
+    sys.exit(0)
+C_PATH = next((x for x in a[1:] if re.fullmatch(r"/?repos/o/r/issues/\d+/comments(?:\?.*)?", x)), None) if a[:1] == ["api"] else None
+if PRS is not None and C_PATH:
+    n = re.search(r"issues/(\d+)/comments", C_PATH).group(1)
+    body = api_body()
+    if body is not None or (flag("-X", "--method") or "GET").upper() != "GET":
+        out(shown(create("pr" if n in PRS else "issue", n, body)))
+        sys.exit(0)
+    if n in HIST:
+        old = [{"id": 100 + i, "body": c["body"], "user": {"login": c["author"]["login"]},
+                "author": {"login": c["author"]["login"]}, "created_at": c["createdAt"], "createdAt": c["createdAt"]}
+               for i, c in enumerate(HIST[n])]
+        print(json.dumps(old + [shown(c) for c in load() if c["number"] == int(n)]))
+        sys.exit(0)
 if PRS is not None and a[:2] == ["pr", "view"]:
-    fields = json_fields()
-    if any(f in fields for f in ("headRefOid", "statusCheckRollup", "commits")) or not flag("--json"):
-        obj = pr_obj()
-        reveal()
-    else:
-        obj = pr_obj()
+    n = selected(2)
+    if n is None:
+        no_pr()
+    obj = pr_obj(n)
+    if any(f in json_fields() for f in ("headRefOid", "statusCheckRollup", "commits")) or not flag("--json"):
+        reveal(n)
     emit(obj)
     sys.exit(0)
 if PRS is not None and a[:2] == ["pr", "list"]:
     state = (flag("--state", "-s") or "open").lower()
-    merged = bool(PRS.get("merged"))
-    show = state == "all" or (state == "open" and not merged) or (state in ("merged", "closed") and merged)
-    items = [pr_obj()] if show else []
-    if items and any(f in json_fields() for f in ("headRefOid", "statusCheckRollup")):
-        reveal()
+    head = flag("--head", "-H")
+    search = flag("--search", "-S") or ""
+    m_head = re.search(r"head:(\S+)", search)
+    head = head or (m_head.group(1) if m_head else None)
+    items = []
+    for n, p in sorted(PRS.items(), key=lambda kv: int(kv[0])):
+        merged = bool(p.get("merged"))
+        show = state == "all" or (state == "open" and not merged) or (state in ("merged", "closed") and merged)
+        if show and (head is None or p["branch"] == head):
+            items.append(pr_obj(n))
+            if any(f in json_fields() for f in ("headRefOid", "statusCheckRollup")):
+                reveal(n)
     emit(items)
     sys.exit(0)
 if PRS is not None and a[:2] == ["pr", "checks"]:
-    checks = checks_of(PRS["head"])
-    reveal()
+    n = selected(2)
+    if n is None:
+        no_pr()
+    checks = checks_of(n, PRS[n]["head"])
+    reveal(n)
     if not checks:
-        sys.stderr.write("no checks reported on the 'try/issue-57' branch\n")
+        sys.stderr.write(f"no checks reported on the '{PRS[n]['branch']}' branch\n")
         sys.exit(1)
     bucket = {"SUCCESS": "pass", "FAILURE": "fail", "PENDING": "pending"}
     rows = [{"name": c["name"], "state": "IN_PROGRESS" if c["state"] == "PENDING" else c["state"],
@@ -140,67 +198,100 @@ if PRS is not None and a[:2] == ["pr", "checks"]:
         print(f"{r['name']}\t{r['bucket']}\t1m\t{r['link']}")
     sys.exit(1 if any(r["bucket"] == "fail" for r in rows) else 8 if any(r["bucket"] == "pending" for r in rows) else 0)
 if PRS is not None and a[:2] == ["pr", "diff"]:
-    print("\n".join(PRS["files"]))
+    n = selected(2)
+    if n is None:
+        no_pr()
+    print("\n".join(PRS[n]["files"]))
     sys.exit(0)
 if PRS is not None and a[:2] == ["pr", "merge"]:
-    PRS.setdefault("calls", []).append(a)
+    n = selected(2)
+    if n is None:
+        no_pr()
+    PRS[n].setdefault("calls", []).append(a)
     save_pr()
     if "--admin" in a:
         sys.stderr.write("the bot may not bypass branch protection\n")
         sys.exit(1)
     if "--auto" in a:
-        print("Pull request o/r#60 will be automatically merged when all requirements are met")
+        print(f"Pull request o/r#{n} will be automatically merged when all requirements are met")
         sys.exit(0)
     how = next((x[2:] for x in a if x in ("--merge", "--squash", "--rebase")), None)
     if not how:
         sys.stderr.write("--merge, --rebase, or --squash required when not running interactively\n")
         sys.exit(1)
-    why = merge_now(flag("--match-head-commit"), how)
+    why = merge_now(n, flag("--match-head-commit"), how)
     if why:
-        sys.stderr.write(f"X Pull request o/r#60 was not merged: {why}\n")
+        sys.stderr.write(f"X Pull request o/r#{n} was not merged: {why}\n")
         sys.exit(1)
-    print("Merged pull request o/r#60 (Stuck issue)")
+    print(f"Merged pull request o/r#{n} (Issue {PRS[n]['issue']})")
     sys.exit(0)
 API = next((x for x in a[1:] if x.startswith(("repos/o/r/pulls", "/repos/o/r/pulls", "repos/o/r/commits", "/repos/o/r/commits"))), None) if a[:1] == ["api"] else None
 if PRS is not None and API:
-    path = API.lstrip("/").split("?")[0]
-    if re.fullmatch(r"repos/o/r/pulls/60/merge", path):
-        PRS.setdefault("calls", []).append(a)
+    path, _, query = API.lstrip("/").partition("?")
+    m = re.fullmatch(r"repos/o/r/pulls/(\d+)/merge", path)
+    if m:
+        n = m.group(1)
+        if n not in PRS:
+            sys.stderr.write("HTTP 404: Not Found\n")
+            sys.exit(1)
+        PRS[n].setdefault("calls", []).append(a)
         save_pr()
         sha = (fields("sha") or [None])[0]
         how = (fields("merge_method") or ["merge"])[0]
         if "--input" in a:
             body = json.load(open(flag("--input")))
             sha, how = body.get("sha", sha), body.get("merge_method", how)
-        why = merge_now(sha, how)
+        why = merge_now(n, sha, how)
         if why:
             code = 409 if "Head branch was modified" in why else 405
-            sys.stderr.write(f"HTTP {code}: {why} (https://api.github.com/repos/o/r/pulls/60/merge)\n")
+            sys.stderr.write(f"HTTP {code}: {why} (https://api.github.com/repos/o/r/pulls/{n}/merge)\n")
             sys.exit(1)
         emit({"sha": "m" * 40, "merged": True, "message": "Pull Request successfully merged"})
         sys.exit(0)
-    if re.fullmatch(r"repos/o/r/pulls/60/files", path):
-        emit([{"filename": f, "status": "modified"} for f in PRS["files"]])
+    m = re.fullmatch(r"repos/o/r/pulls/(\d+)/files", path)
+    if m and m.group(1) in PRS:
+        emit([{"filename": f, "status": "modified"} for f in PRS[m.group(1)]["files"]])
         sys.exit(0)
-    if re.fullmatch(r"repos/o/r/pulls/60", path):
-        o = pr_obj()
-        reveal()
-        emit({"number": 60, "state": "closed" if o["merged"] else "open", "merged": o["merged"], "mergeable": None,
-              "mergeable_state": "unknown", "head": {"sha": o["headRefOid"], "ref": "try/issue-57"}, "base": {"ref": "main"},
-              "body": "Closes #57", "html_url": o["url"]})
+    def rest(n):
+        o = pr_obj(n)
+        return {"number": int(n), "state": "closed" if o["merged"] else "open", "merged": o["merged"], "mergeable": None,
+                "mergeable_state": "unknown", "head": {"sha": o["headRefOid"], "ref": PRS[n]["branch"]},
+                "base": {"ref": "main"}, "body": o["body"], "html_url": o["url"]}
+    m = re.fullmatch(r"repos/o/r/pulls/(\d+)", path)
+    if m and m.group(1) in PRS:
+        obj = rest(m.group(1))
+        reveal(m.group(1))
+        emit(obj)
         sys.exit(0)
-    m = re.fullmatch(r"repos/o/r/commits/([^/]+)/check-runs", path)
+    if path == "repos/o/r/pulls":
+        hm = re.search(r"head=([^&]+)", query)
+        head = flag("head") or (hm.group(1) if hm else None)
+        for i, x in enumerate(a):
+            if x in ("-f", "-F", "--field", "--raw-field") and i + 1 < len(a) and a[i + 1].startswith("head="):
+                head = a[i + 1][5:]
+        st = re.search(r"state=(\w+)", query)
+        st = st.group(1) if st else "open"
+        items = [rest(n) for n, p in sorted(PRS.items(), key=lambda kv: int(kv[0]))
+                 if (head is None or pr_by_branch(head) == n) and (st == "all" or (st == "open") != bool(p.get("merged")))]
+        for i in items:
+            reveal(str(i["number"]))
+        emit(items)
+        sys.exit(0)
+    m = re.fullmatch(r"repos/o/r/commits/([^/]+(?:/[^/]+)*?)/(check-runs|status)", path)
     if m:
-        sha = PRS["head"] if m.group(1) in ("try/issue-57", "refs/heads/try/issue-57") else m.group(1)
+        ref, kind = m.group(1), m.group(2)
+        n = pr_by_branch(ref) or next((k for k, p in PRS.items() if ref in p["checks"]), None)
+        sha = PRS[n]["head"] if n and pr_by_branch(ref) else ref
+        if kind == "status":
+            if n:
+                reveal(n)
+            emit({"state": "pending", "total_count": 0, "statuses": [], "sha": sha})
+            sys.exit(0)
         runs = [{"name": c["name"], "head_sha": sha, "status": "in_progress" if c["state"] == "PENDING" else "completed",
-                 "conclusion": None if c["state"] == "PENDING" else c["state"].lower()} for c in checks_of(sha)]
-        reveal()
+                 "conclusion": None if c["state"] == "PENDING" else c["state"].lower()} for c in (checks_of(n, sha) if n else [])]
+        if n:
+            reveal(n)
         emit({"total_count": len(runs), "check_runs": runs})
-        sys.exit(0)
-    m = re.fullmatch(r"repos/o/r/commits/([^/]+)/status", path)
-    if m:
-        reveal()
-        emit({"state": "pending", "total_count": 0, "statuses": [], "sha": m.group(1)})
         sys.exit(0)
 if PRS is not None and a[:2] == ["run", "download"]:
     dest = flag("-D", "--dir") or "."
@@ -211,7 +302,7 @@ if PRS is not None and a[:2] == ["run", "download"]:
 
 
 def fake_gh():
-    """The fake gh of test_start.py taught the issue's labels and pull request #60."""
+    """The fake gh of test_start.py taught the issue tree, its labels, and pull request #60 with any others a test adds."""
     fake = ts.FAKE_GH.replace('if a[:2] == ["issue", "view"]:', TREE_GH + PR_GH + 'if a[:2] == ["issue", "view"]:', 1)
     assert fake != ts.FAKE_GH, "test setup: could not teach the fake GitHub about the pull request"
     return fake.replace("#!/usr/bin/env python3", f"#!{ts.sys.executable}")
@@ -260,16 +351,46 @@ def set_pr(m, checks, workflow_file=False, refuse="", moves=False):
         m.try_sha = sh(src, "git", "rev-parse", "HEAD")
     files = sh(src, "git", "diff", "--name-only", f"main...try/issue-{N}").split()
     later = "b" * 40
-    state = {"head": m.try_sha, "checks": {m.try_sha: checks, later: [{"name": "All tests", "state": "PENDING"}]},
+    state = {"issue": int(N), "branch": f"try/issue-{N}", "head": m.try_sha,
+             "checks": {m.try_sha: checks, later: [{"name": "All tests", "state": "PENDING"}]},
              "files": files, "refuse": refuse, "merged": None}
     if moves:
         state["moves_to"] = later
-    json.dump(state, open(f"{m.tmp}/gh/pr.json", "w"))
+    json.dump({PR: state}, open(f"{m.tmp}/gh/pr.json", "w"))
 
 
-def pr_state(m):
-    """Pull request #60 as the fake GitHub holds it now."""
-    return json.load(open(f"{m.tmp}/gh/pr.json"))
+def history(issue, comments):
+    """Issue #57's history, retold for another issue: its criteria and links name that issue instead."""
+    return json.loads(json.dumps(comments).replace("57.1", f"{issue}.1").replace("issues/57", f"issues/{issue}"))
+
+
+def add_pr(m, number, issue, comments, checks):
+    """Give the fake GitHub another open pull request, built for another issue on its own try branch, and that issue's history.
+
+    The branch try/issue-ISSUE is a real commit off main that adds one file, pushed to the machine's origin; GitHub
+    reports the given checks on it. The issue's comments are the given history, retold for that issue."""
+    src = f"{m.tmp}/src"
+    sh(src, "git", "checkout", "-q", "-B", f"try/issue-{issue}", "main")
+    open(f"{src}/x{issue}.py", "w").write(f'"""Issue {issue}."""\n')
+    sh(src, "git", "add", "-A")
+    sh(src, "git", "commit", "-qm", f"issue {issue}")
+    sh(src, "git", "push", "-q", "origin", f"try/issue-{issue}")
+    sha = sh(src, "git", "rev-parse", "HEAD")
+    sh(src, "git", "checkout", "-q", f"try/issue-{N}")
+    prs = json.load(open(f"{m.tmp}/gh/pr.json"))
+    prs[str(number)] = {"issue": issue, "branch": f"try/issue-{issue}", "head": sha, "checks": {sha: checks},
+                        "files": [f"x{issue}.py"], "refuse": "", "merged": None}
+    json.dump(prs, open(f"{m.tmp}/gh/pr.json", "w"))
+    path = f"{m.tmp}/gh/issues.json"
+    hist = json.load(open(path)) if os.path.exists(path) else {}
+    hist[str(issue)] = history(issue, comments)
+    json.dump(hist, open(path, "w"))
+    return sha
+
+
+def pr_state(m, pr=PR):
+    """A pull request (#60 unless named) as the fake GitHub holds it now."""
+    return json.load(open(f"{m.tmp}/gh/pr.json"))[str(pr)]
 
 
 class Review(Machine):
@@ -313,9 +434,9 @@ class Command(Tree):
         set_pr(self, checks, **pr)
 
 
-def merged(m):
-    """The commit GitHub merged for pull request #60, or None."""
-    return (pr_state(m).get("merged") or {}).get("sha")
+def merged(m, pr=PR):
+    """The commit GitHub merged for a pull request (#60 unless named), or None."""
+    return (pr_state(m, pr).get("merged") or {}).get("sha")
 
 
 def autopilot_lines(m):
@@ -338,8 +459,8 @@ def next_line(body):
 
 
 def no_bypass(m, crit, case):
-    """No merge call tried to bypass branch protection."""
-    for c in pr_state(m).get("calls", []):
+    """No merge call, on any pull request, tried to bypass branch protection."""
+    for c in [c for p in json.load(open(f"{m.tmp}/gh/pr.json")).values() for c in p.get("calls", [])]:
         assert "--admin" not in c, f"{crit} ({case}): the merge tried to bypass branch protection with --admin: {c}"
 
 
@@ -404,6 +525,44 @@ def test_autopilot_start_merges_a_pull_request_already_approved(record_property,
     m.listen("/autopilot start")
     assert merged(m) is None and autopilot_lines(m) == [], \
         f"212.1 (blocked): /autopilot start merged a pull request whose newest code review blocks it"
+
+
+def test_autopilot_start_merges_the_approved_pull_requests_of_the_whole_tree(record_property, tmp_path):
+    """`/autopilot start` merges every already-approved pull request with green checks anywhere under the issue, and nothing outside it.
+
+    Issue #57's tree is #101 and #102 under it, #103 under #101 and #104 under #103; #58 is its sibling. Pull requests
+    wait on each: #60 (#57) and #61 (#101) and #63 (#104, three levels down) approved by the code review with green
+    checks; #62 (#102) whose newest code review blocks; #64 (#103) approved but with a red check; #65 (#58, outside the
+    tree) approved and green. After the code owner's `/autopilot start` on #57, exactly #60, #61 and #63 must be merged,
+    each at its head; issues #57, #101 and #104 must each carry exactly one comment reading `Autopilot: merged PR #N`
+    for their own pull request and no other issue any; #64 must say on itself which check is red and mention the
+    owner; and no planner, worker or reviewer may start."""
+    record_property("proves", "212.1")
+    m = Command(tmp_path / "tree", APPROVED, {}, GREEN)
+    heads = {PR: m.try_sha}
+    waiting = ((61, 101, APPROVED, GREEN), (62, 102, BLOCKED, GREEN), (63, 104, APPROVED, GREEN),
+               (64, 103, APPROVED, RED), (65, 58, APPROVED, GREEN))
+    for number, issue, comments, checks in waiting:
+        heads[str(number)] = add_pr(m, number, issue, comments, checks)
+    called = m.listen("/autopilot start")
+    assert not m.failed, f"212.1 (tree): the listener failed on /autopilot start:\n{m.tail()}"
+    assert not called and m.dispatches() == [], "212.1 (tree): /autopilot start started a stage"
+    done = {pr for pr in heads if merged(m, pr)}
+    assert done == {PR, "61", "63"}, \
+        f"212.1 (tree): /autopilot start on #57 should merge exactly #60, #61 and #63 (approved, green, inside the " \
+        f"tree); it merged {sorted(done, key=int)}:\n{m.tail()}"
+    for pr in done:
+        assert merged(m, pr) == heads[pr], f"212.1 (tree): #{pr} was merged at {merged(m, pr)}, not its head {heads[pr]}"
+    lines = sorted((p["where"][0], p["where"][2], p["body"].strip()) for p in m.posted()
+                   if p["body"].strip().startswith("Autopilot: merged"))
+    want = sorted([("issue", N, MERGED_LINE), ("issue", "101", "Autopilot: merged PR #61"),
+                   ("issue", "104", "Autopilot: merged PR #63")])
+    assert lines == want, f"212.1 (tree): expected one Autopilot line on each of #57, #101 and #104 for its own " \
+        f"pull request, found {lines}"
+    on_64 = [p["body"] for p in m.posted() if p["where"][0] == "pr" and p["where"][2] == "64"]
+    assert any(f"@{OWNER}" in b and RED_NAME.lower() in b.lower() for b in on_64), \
+        f"212.1 (tree): #64, approved with a red check, does not say which check is red and mention the owner: {on_64}"
+    no_bypass(m, "212.1", "tree")
 
 
 def test_without_autopilot_an_approved_pull_request_waits_for_the_owner(record_property, tmp_path):
