@@ -60,8 +60,8 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
    "issues_found": [{"title": "...", "why": "...", "evidence": "..."}],
    "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}]}
 "approve" has no blockers; "block" has at least one; notes are optional, at most three; outside_plan is for the pull
-request only; asks is for the plan only, and is never empty. Every blocker names its fixer: the worker for code, the planner for a test or the plan; code sends a code
-review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
+request only; asks is for the plan only, and is never empty. Every blocker names its fixer: the worker for code, the
+planner for a test or the plan; code sends a code review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
 a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
 round, so you never write them.
 Blocker ids carry over between rounds so a reply can answer one by id. You never ask the owner: you judge from the
