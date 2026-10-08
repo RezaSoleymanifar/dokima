@@ -13,10 +13,12 @@ Issue #179. One helper, dokima/body.py, owns the issue body:
     Refused                     the exception redraw raises, its message saying why
 
 Every code path that redraws the issue body goes through it: the card (dokima/card.py main) and the planner's
-post (dokima/planner.py render). GitHub is faked in every test by a recorder standing in for the `gh` calls.
+post (dokima/planner.py render, saved by planner.main "post"). GitHub is faked in every test by a recorder standing in
+for the `gh` calls; the planner's post runs inside a temp git repo holding the plan's tests, as a real run does.
 """
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -76,6 +78,7 @@ class FakeGitHub:
 
     def __init__(self):
         self.saves, self.comments, self.calls = [], [], []
+        self.body = ""
 
     def __call__(self, *args, **kw):
         args = [str(a) for a in args]
@@ -87,6 +90,8 @@ class FakeGitHub:
             self.comments.append((args, text_of(args, kw)))
         elif is_save:
             self.saves.append(text_of(args, kw))
+        elif "view" in args:
+            return self.body
         return "{}"
 
 
@@ -122,6 +127,45 @@ def run_card(monkeypatch, github, current):
 
 
 REASON = "the owner's part below the marker would change"
+
+PLAN_TESTS = ('def test_card(record_property):\n    """The card shows."""\n'
+              '    record_property("proves", "40.1")\n    assert True\n')
+PLAN = {"kind": "user_story", "user_story": "Owners see a card on every issue.",
+        "acceptance_criteria": [{"text": "The issue shows a card on top.", "source": f"https://github.com/{REPO}/issues/{NUMBER}"}],
+        "non_functional": [], "scope": ["dokima/card.py"], "out_of_scope": [],
+        "tests": {"40.1": ["tests/test_cardshow.py::test_card"]}, "test_changes": {}}
+
+
+def run_planner_post(monkeypatch, tmp_path, github, current):
+    """Run the planner's post, as the planner workflow does, on an issue whose body is `current`.
+
+    Builds a temp git repo whose planner run added one named test, hands back a good plan for issue #40, and runs
+    planner.main "post" against the faked GitHub. Returns what the run raised, or None; GitHub's record holds the rest.
+    """
+    repo, out = tmp_path / "repo", tmp_path / "out"
+    repo.mkdir(parents=True)
+    out.mkdir(parents=True)
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True).stdout
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t")
+    (repo / "README.md").write_text("repo\n")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+    monkeypatch.setenv("PLANNER_BASE", base)
+    monkeypatch.setenv("PLANNER_RUN_BASE", base)
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_cardshow.py").write_text(PLAN_TESTS)
+    (out / "plan.json").write_text(json.dumps(PLAN))
+    monkeypatch.chdir(repo)
+    github.body = current
+    try:
+        planner.main(["x", "post", str(NUMBER), str(out)])
+    except (SystemExit, Exception) as e:
+        return e
+    return None
 
 
 def refuse(monkeypatch, body):
@@ -290,6 +334,30 @@ def test_the_card_refuses_rather_than_change_the_owner_part(record_property, mon
     assert REASON in (github.comments[0][1] or ""), "179.3: the card's comment does not say why it refused"
 
 
+def test_the_planner_refuses_rather_than_change_the_owner_part(record_property, monkeypatch, tmp_path, github):
+    """When the planner writes its plan, it never saves a body that would change the owner's part; it comments why.
+
+    Runs the planner's post, the step that writes a plan into the issue, on an issue where the helper finds the owner's
+    part would change, and checks the body is not written and the issue gets a comment carrying the helper's reason.
+    Beside it, a good post on the same issue saves the plan above the marker with the owner's ask unchanged."""
+    record_property("proves", "179.3")
+    body = helper("179.3")
+    current = body.redraw("My ask.", PLAN_TOP)
+    run_planner_post(monkeypatch, tmp_path / "good", github, current)
+    assert len(github.saves) == 1, f"179.3: a good plan post made {len(github.saves)} saves of the issue body, not one"
+    assert body.ask(github.saves[0]) == "My ask.", "179.3: a good plan post changed the owner's ask"
+    assert "The issue shows a card on top." in github.saves[0].split(body.MARKER, 1)[0], \
+        "179.3: a good plan post did not write the plan above the marker"
+    assert not any(REASON in (t or "") for _, t in github.comments), "179.3: a good plan post posted a refusal"
+    github.saves.clear()
+    github.comments.clear()
+    refuse(monkeypatch, body)
+    run_planner_post(monkeypatch, tmp_path / "bad", github, current)
+    assert github.saves == [], "179.3: the planner saved a body that changes the owner's part"
+    assert any(REASON in (t or "") for _, t in github.comments), \
+        "179.3: the planner refused silently, with no comment on the issue saying why"
+
+
 # 179.4: a fresh ask with no marker gets the marker on its first redraw, the whole body kept below it
 
 def test_a_fresh_ask_gets_the_marker_and_keeps_the_whole_body(record_property):
@@ -367,3 +435,20 @@ def test_the_card_posts_its_refusal_on_the_issue(record_property, monkeypatch, g
     args, text = github.comments[0]
     assert any(a == str(NUMBER) or f"issues/{NUMBER}/" in a for a in args), "179.5: the refusal was posted somewhere other than this issue"
     assert (text or "").strip(), "179.5: the refusal comment is empty"
+
+
+def test_the_planner_posts_its_refusal_on_the_issue(record_property, monkeypatch, tmp_path, github):
+    """When the planner refuses to save its plan, the reason is a comment on the issue, even if the run then fails.
+
+    Runs the planner's post where the save would change the owner's part, and checks that, whatever the run does
+    afterwards, exactly one comment with the reason is posted to this issue and the body is never written."""
+    record_property("proves", "179.5")
+    body = helper("179.5")
+    current = body.redraw("My ask.", PLAN_TOP)
+    refuse(monkeypatch, body)
+    run_planner_post(monkeypatch, tmp_path, github, current)
+    refusals = [(a, t) for a, t in github.comments if REASON in (t or "")]
+    assert len(refusals) == 1, f"179.5: expected one refusal comment on the issue, got {len(refusals)}"
+    args, _ = refusals[0]
+    assert any(a == str(NUMBER) or f"issues/{NUMBER}/" in a for a in args), "179.5: the refusal was posted somewhere other than this issue"
+    assert github.saves == [], "179.5: the body was written although the save was refused"
