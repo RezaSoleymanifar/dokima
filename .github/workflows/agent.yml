@@ -219,8 +219,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$STARTED" = true ]; then
+          if [ "$JOB_STATUS" = cancelled ]; then
+            # Someone cancelled the run: its card says so, mentions no one, and nothing starts after it.
+            mkdir -p "$OUT"
+            python3 -m dokima.agent cancelled "$ROLE" "$STAGE" "$OUT" "${STARTED:-false}" /home/runner/.claude/projects
+          elif [ "$STARTED" = true ]; then
             python3 -m dokima.agent record "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects
           else
             # No agent started: a step with no reason of its own is named by GitHub's record of this run.
@@ -326,7 +331,7 @@ jobs:
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 -m dokima.agent board "$N" "$OUT" || echo "::warning title=Board not moved::the card could not be moved"
       - name: Start the next stage
-        if: always() && startsWith(steps.next.outputs.next, 'start ')
+        if: always() && !cancelled() && startsWith(steps.next.outputs.next, 'start ')
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           NEXT: ${{ steps.next.outputs.next }}
