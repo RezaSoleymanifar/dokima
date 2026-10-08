@@ -243,6 +243,7 @@ class Repo(ts.Machine):
         json.dump({str(n): {"state": "closed", "reason": "completed"} for n in closed}, open(f"{t}/gh/states.json", "w"))
         json.dump(list(seed), open(f"{t}/gh/comments.json", "w"))
         self.seeded = len(seed)
+        self.closed_at_start = {int(n) for n in closed}
         self.runs, self.failures = 0, []
 
     listen = ta.Tree.listen
@@ -348,6 +349,33 @@ class Repo(ts.Machine):
         """How many comments on issue n read exactly the Autopilot line."""
         return sum(1 for b in self.new_comments(n) if b.strip() == LINE)
 
+    def filed_labels(self):
+        """Every issue's labels now, counting the labels each new issue was created with: {number: [names]}."""
+        labels = self.labels()
+        for i, c in enumerate(self.created_issues()):
+            given = [c[j + 1] for j, x in enumerate(c[:-1]) if x in ("--label", "-l")]
+            labels.setdefault(900 + i, [])
+            labels[900 + i] += [l.strip() for v in given for l in v.split(",") if l.strip()]
+        return labels
+
+    def settle(self, n):
+        """Issue n closes, then every issue the workflows closed in turn closes the way GitHub tells of it, until none is left.
+
+        GitHub starts the close workflows again for an issue Dokima's app closes, so a parent closed by code gets its
+        own close event here too, once, whether or not the code already handled it."""
+        told = set()
+        self.close(n)
+        told.add(int(n))
+        for _ in range(10):
+            more = sorted(int(k) for k, v in self._json("states.json").items()
+                          if v.get("state") == "closed" and int(k) not in told and int(k) not in self.closed_at_start)
+            if not more:
+                return
+            for k in more:
+                told.add(k)
+                self.close(k)
+        raise AssertionError("test setup: closes kept cascading for more than ten rounds")
+
     def any_autopilot_line(self):
         """Every new comment anywhere that starts with 'Autopilot:'."""
         return [(c["number"], c["versions"][-1]) for c in self.comments()[self.seeded:] if c["versions"][-1].strip().startswith("Autopilot:")]
@@ -385,12 +413,13 @@ def test_a_close_starts_every_sibling_whose_blockers_have_all_merged(record_prop
 
 
 def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property, tmp_path):
-    """When `/work` files a split on autopilot, each story with nothing to wait for starts planning; one that waits does not.
+    """When `/work` files a split on autopilot, its stories join autopilot and each one with nothing to wait for starts planning.
 
     Runs the listener on the code owner's `/work` on #57, whose approved split has two stories, the second blocked by
-    the first. GitHub numbers them #900 and #901. With #57 on autopilot, #900 must have its planner started once and
-    get one Autopilot line, and #901 neither. Beside it, the same `/work` with #57 not on autopilot starts neither
-    story and posts no Autopilot line."""
+    the first. GitHub numbers them #900 and #901. With #57 on autopilot, both stories must be on autopilot (so the
+    tree keeps going below #57), #900 must have its planner started once and get one Autopilot line, and #901
+    neither. Beside it, the same `/work` with #57 not on autopilot puts neither story on autopilot, starts neither
+    and posts no Autopilot line."""
     record_property("proves", "213.1")
     m = Repo(tmp_path / "on", {}, {57: [LABEL]}, history=ts.SPLIT_APPROVED)
     m.listen("/work")
@@ -398,12 +427,19 @@ def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property
     assert json.load(open(f"{m.tmp}/gh/tree.json")).get("57") == [900, 901], \
         f"213.1 (split on autopilot): /work did not file the two stories as #900 and #901:\n{m.tail()}"
     assert_started_exactly(m, "213.1", "split on autopilot", {900}, {57, 901})
+    filed = m.filed_labels()
+    for n in (900, 901):
+        assert LABEL in filed.get(n, []), (f"213.1 (split on autopilot): story #{n}, filed under #57 on autopilot, is not "
+                                          f"on autopilot itself, so its tree would stop there: labels {filed.get(n, [])}")
 
     m = Repo(tmp_path / "off", {}, {}, history=ts.SPLIT_APPROVED)
     m.listen("/work")
     assert not m.failed, f"213.1 (split off autopilot): the listener failed on /work:\n{m.tail()}"
     assert m.planners_started("213.1") == {}, f"213.1 (split off autopilot): a story started: {m.planners_started('213.1')}"
     assert m.any_autopilot_line() == [], f"213.1 (split off autopilot): an Autopilot line was posted: {m.any_autopilot_line()}"
+    filed = m.filed_labels()
+    assert not any(LABEL in filed.get(n, []) for n in (900, 901)), \
+        f"213.1 (split off autopilot): a story was put on autopilot though #57 is not: {filed}"
 
 
 def test_autopilot_start_on_a_parent_picks_up_the_children_waiting(record_property, tmp_path):
@@ -527,3 +563,77 @@ def test_a_child_planned_running_or_done_is_never_started_again(record_property,
     m.close(108)
     assert not m.failed, f"213.5: a workflow failed when #108 closed: {m.failures}\n{m.tail()}"
     assert_started_exactly(m, "213.5", "second close", {102}, {104, 106, 107})
+
+
+DEEP = {57: [101, 102], 101: [201, 202], 201: [301, 302]}
+
+
+def test_autopilot_start_picks_up_waiting_issues_at_every_level(record_property, tmp_path):
+    """`/autopilot start` on the top issue starts every waiting issue at every level under it, not only its own children.
+
+    #57 has #101 and #102; #101 was split into #201 and #202; #201 was split into #301 and #302. #101 and #201
+    already have plans. #202 is blocked by #201 (open) and #302 by #301 (open); #102 and #301 wait on nothing. After
+    the code owner's `/autopilot start` on #57, #102 (one level down) and #301 (three levels down) must each have
+    their planner started once with one Autopilot line, and #57, #101, #201, #202 and #302 must not."""
+    record_property("proves", "213.1")
+    m = Repo(tmp_path / "deep", DEEP, {}, deps={202: [201], 302: [301]}, seed=[planned(101, 4001), planned(201, 4002)])
+    m.listen("/autopilot start")
+    assert not m.failed, f"213.1 (/autopilot start, every level): the listener failed:\n{m.tail()}"
+    assert_started_exactly(m, "213.1", "/autopilot start, every level", {102, 301}, {57, 101, 201, 202, 302})
+
+
+def test_a_close_deep_in_the_tree_starts_its_waiting_siblings(record_property, tmp_path):
+    """A close two and three levels down starts the siblings it was the last blocker of, the same as one level down.
+
+    The whole tree of #57 (#101 and #102, #101 split into #201 and #202, #201 split into #301 and #302) is on
+    autopilot; #101, #102 and #201 have plans. #302 is blocked by #301, #202 by #201. When #301 closes, #302 must
+    start once with one Autopilot line and #202 (still blocked by #201) must not. Then #302 closes: #201's last
+    sub-issue is done, so #201 closes, and #202, whose only blocker was #201, must start once."""
+    record_property("proves", "213.1")
+    labels = {n: [LABEL] for n in (57, 101, 102, 201, 202, 301, 302)}
+    m = Repo(tmp_path / "deep", DEEP, labels, deps={202: [201], 302: [301]},
+             seed=[planned(101, 4001), planned(102, 4002), planned(201, 4003)])
+    m.settle(301)
+    assert not m.failed, f"213.1 (deep close): a workflow failed when #301 closed: {m.failures}\n{m.tail()}"
+    assert_started_exactly(m, "213.1", "#301 closed, three levels down", {302}, {57, 101, 102, 201, 202, 301})
+    m.settle(302)
+    assert not m.failed, f"213.1 (deep close): a workflow failed when #302 closed: {m.failures}\n{m.tail()}"
+    assert m.state(201) == ("closed", "completed"), \
+        f"213.1 (deep close): #201 is {m.state(201)} after its last sub-issue #302 closed, expected closed as completed\n{m.tail()}"
+    assert_started_exactly(m, "213.1", "#201 done, two levels down", {202, 302}, {57, 101, 102, 201, 301})
+
+
+def test_a_tree_two_levels_deep_closes_level_by_level_and_goes_off_autopilot(record_property, tmp_path):
+    """A done subtree closes its own parent, and when every level is done the top issue closes and the whole tree goes off autopilot.
+
+    #57 has #101, #102 and #103; #101 has #201 and #202. All are on autopilot; #102 has a plan and is blocked by
+    #101; #103 and #201 are closed. When #202 closes, #101 must close as completed with one comment saying its tree is
+    done, and #57 must stay open and on autopilot with no new comment, because #102 is still open. When #102 closes
+    too, #57 must close as completed with one comment saying its tree is done, and none of #57, #101, #102, #103,
+    #201 or #202 may still be on autopilot."""
+    record_property("proves", "213.2")
+    record_property("proves", "213.3")
+    tree = {57: [101, 102, 103], 101: [201, 202]}
+    labels = {n: [LABEL] for n in (57, 101, 102, 103, 201, 202)}
+    m = Repo(tmp_path / "levels", tree, labels, deps={102: [101]}, closed=[103, 201], seed=[planned(102, 4001)])
+    m.settle(202)
+    assert not m.failed, f"213.2 (two levels): a workflow failed when #202 closed: {m.failures}\n{m.tail()}"
+    assert m.state(101) == ("closed", "completed"), \
+        f"213.2 (two levels): #101 is {m.state(101)} after its last sub-issue #202 closed, expected closed as completed\n{m.tail()}"
+    said = m.new_comments(101)
+    assert len(said) == 1 and "tree" in said[0].lower() and "done" in said[0].lower(), \
+        f"213.2 (two levels): #101 should get exactly one comment saying its tree is done: {said}"
+    assert m.state(57)[0] == "open", "213.2 (two levels): #57 closed while #102 is still open"
+    assert m.new_comments(57) == [], f"213.2 (two levels): #57 got comments while #102 is still open: {m.new_comments(57)}"
+    assert {57, 102} <= m.on_autopilot(), \
+        f"213.3 (two levels): #57's tree went off autopilot while #102 is still open: on now {sorted(m.on_autopilot())}"
+    m.settle(102)
+    assert not m.failed, f"213.2 (two levels): a workflow failed when #102 closed: {m.failures}\n{m.tail()}"
+    assert m.state(57) == ("closed", "completed"), \
+        f"213.2 (two levels): #57 is {m.state(57)} after every level under it is done, expected closed as completed\n{m.tail()}"
+    said = m.new_comments(57)
+    assert len(said) == 1 and "tree" in said[0].lower() and "done" in said[0].lower(), \
+        f"213.2 (two levels): #57 should get exactly one comment saying its whole tree is done: {said}"
+    assert len(m.new_comments(101)) == 1, f"213.2 (two levels): #101 got its tree-done comment more than once: {m.new_comments(101)}"
+    left = m.on_autopilot() & {57, 101, 102, 103, 201, 202}
+    assert left == set(), f"213.3 (two levels): the done tree left these issues on autopilot: {sorted(left)}\n{m.tail()}"
