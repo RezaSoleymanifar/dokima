@@ -56,6 +56,17 @@ def legacy(check, monkeypatch):
     return check
 
 
+CHANGED = "tests/test_legacy.py::test_legacy"
+
+
+def change_legacy():
+    """Change the body of the older test_legacy, keeping its name, no docstring, and a pass today: a changed test, not
+    a new one, so neither new-test rule may reject it. Returns the plan with its reason under test_changes."""
+    with open("tests/test_legacy.py", "w") as f:
+        f.write(LEGACY.replace("assert True", "assert 1 == 1"))
+    return dict(STORY, test_changes={CHANGED: "asserts a value instead of True"})
+
+
 # 155.1: a new test needs a docstring whose first line is one plain sentence on one line
 
 @pytest.mark.parametrize("doc", [
@@ -68,24 +79,29 @@ def legacy(check, monkeypatch):
     '"""\n    \n    """',
 ], ids=["no docstring", "empty", "no end mark", "two sentences", "two sentences ending in ?", "wrapped over two lines",
         "blank"])
-def test_a_new_test_without_a_one_sentence_summary_is_rejected_naming_it(record_property, check, doc):
+def test_a_new_test_without_a_one_sentence_summary_is_rejected_naming_it(record_property, legacy, doc):
     """A new test with no docstring, or whose first line is not one sentence on one line, is rejected by name.
 
-    First checks that new tests whose summaries end in '.', '?' or '!' (one with a dot inside, "1.5 s") pass. Then
-    gives test_unique a bad docstring, runs the check, and checks it fails with a reason naming test_unique and not
-    the good test_id.
+    Throughout, an older test is changed (same name, new body) and has no docstring: only new tests are held to the
+    rule, so it must never be rejected or named. First checks that new tests whose summaries end in '.', '?' or '!'
+    (one with a dot inside, "1.5 s") pass beside it. Then gives test_unique a bad docstring, runs the check, and checks
+    it fails with a reason naming test_unique and neither the good test_id nor the changed older test.
     """
     record_property("proves", "155.1")
+    plan = change_legacy()
     for good in ('"""A slow call returns a job id within 1.5 s."""', '"""Does a slow call return a job id?"""',
                  '"""A slow call returns a job id!"""', '"""A slow call returns a job id.\n\n    More words. And more."""'):
         write_jobs(jobs(id_doc=good))
-        rc, why = check({"plan.json": STORY}, "155.1")
-        assert rc == 0 and not why, f"155.1: a new test with the good summary {good!r} was rejected: {why!r}"
+        rc, why = legacy({"plan.json": plan}, "155.1")
+        assert rc == 0 and not why, \
+            f"155.1: new tests with the good summary {good!r}, beside a changed older test with no docstring, were rejected: {why!r}"
     write_jobs(jobs(unique_doc=doc))
-    rc, why = check({"plan.json": STORY}, "155.1")
+    rc, why = legacy({"plan.json": plan}, "155.1")
     assert rc == 1, f"155.1: a new test with the docstring {doc!r} was accepted; it needs a one-sentence first line"
     assert "test_unique" in why, f"155.1: the reason does not name the test test_unique: {why!r}"
     assert "test_id" not in why, f"155.1: the reason also names test_id, whose summary is good: {why!r}"
+    assert "test_legacy" not in why, \
+        f"155.1: the reason names the changed older test test_legacy, which is not new and needs no summary: {why!r}"
 
 
 # 155.2: every new test is run on today's code; one that passes or is skipped is rejected
@@ -95,29 +111,35 @@ def test_a_new_test_without_a_one_sentence_summary_is_rejected_naming_it(record_
     'pytest.skip("not yet")',
     "@skip",
 ], ids=["passes", "skips itself", "marked skip"])
-def test_a_new_test_that_passes_or_skips_today_is_rejected_saying_so(record_property, check, body):
+def test_a_new_test_that_passes_or_skips_today_is_rejected_saying_so(record_property, legacy, body):
     """A new test that passes or is skipped on today's code is rejected, naming it and saying it passes today.
 
-    First checks new tests that fail today pass the check: a failing assert, a name the feature has not defined yet,
-    and a whole file whose import of the missing feature errors. Then makes test_unique pass or skip, runs the check,
-    and checks the reason names test_unique (not test_id, which still fails) and says it passes today.
+    Throughout, an older test is changed (same name, new body) and passes today: only new tests must fail, so it must
+    never be rejected or named. First checks new tests that fail today pass the check beside it: a failing assert, a
+    name the feature has not defined yet, and a whole file whose import of the missing feature errors. Then makes
+    test_unique pass or skip, runs the check, and checks the reason names test_unique (not test_id, which still fails,
+    nor the changed older test) and says it passes today.
     """
     record_property("proves", "155.2")
+    plan = change_legacy()
     for good in (jobs(), jobs(id_body="assert make_job_id()"),
                  jobs(id_body="assert make_job_id()", top="from dokima_jobs_not_built_yet import make_job_id\n\n\n")):
         write_jobs(good)
-        rc, why = check({"plan.json": STORY}, "155.2")
-        assert rc == 0 and not why, f"155.2: new tests that fail today were rejected: {why!r}\n{good}"
+        rc, why = legacy({"plan.json": plan}, "155.2")
+        assert rc == 0 and not why, \
+            f"155.2: new tests that fail today, beside a changed older test that passes today, were rejected: {why!r}\n{good}"
     if body == "@skip":
         text = jobs(top="import pytest\n\n\n").replace("def test_unique", '@pytest.mark.skip("not yet")\ndef test_unique')
     else:
         text = jobs(unique_body=body, top="import pytest\n\n\n")
     write_jobs(text)
-    rc, why = check({"plan.json": STORY}, "155.2")
+    rc, why = legacy({"plan.json": plan}, "155.2")
     assert rc == 1, f"155.2: a new test that {body!r} today was accepted; every new test must fail today"
     assert "test_unique" in why and "passes today" in why, \
         f"155.2: the reason does not name test_unique and say it passes today: {why!r}"
     assert "test_id" not in why, f"155.2: the reason also names test_id, which fails today: {why!r}"
+    assert "test_legacy" not in why, \
+        f"155.2: the reason names the changed older test test_legacy, which is not new and may pass today: {why!r}"
 
 
 def test_every_new_test_that_passes_today_is_named(record_property, check):
@@ -192,7 +214,8 @@ def test_a_new_test_that_hangs_is_stopped_and_rejected_naming_it(record_property
 
     Checks the limit, planner.NEW_TEST_TIMEOUT, is 60 seconds. Then makes test_unique sleep for two minutes and runs
     the check in its own process with the limit set to 2 s (so this test takes seconds, not minutes). The check must
-    finish within 40 s, fail, and name test_unique; if it is still running, it is killed and this test fails.
+    finish within 15 s, so the stop follows the limit, fail, and name test_unique but not test_id, which fails at
+    once; if it is still running, it is killed and this test fails.
     """
     record_property("proves", "155.5")
     assert getattr(planner, "NEW_TEST_TIMEOUT", None) == 60, \
@@ -206,11 +229,12 @@ def test_a_new_test_that_hangs_is_stopped_and_rejected_naming_it(record_property
     proc = subprocess.Popen([sys.executable, "-c", code, os.path.abspath(ROOT), str(out)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
-        rc = proc.wait(timeout=40)
+        rc = proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
-        pytest.fail("155.5: the check was still running 40 s after a new test hung, with a 2 s limit; it was never stopped")
+        pytest.fail("155.5: the check was still running 15 s after a new test hung, with a 2 s limit; it was never stopped")
     rejected = out / "rejected.txt"
     why = rejected.read_text() if rejected.exists() else ""
     assert rc == 1, f"155.5: a new test that hung was accepted after {time.monotonic() - start:.0f} s"
     assert "test_unique" in why, f"155.5: the reason does not name the test that hung, test_unique: {why!r}"
+    assert "test_id" not in why, f"155.5: the reason also names test_id, which failed at once and did not hang: {why!r}"
