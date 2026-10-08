@@ -115,7 +115,7 @@ def test_anything_but_a_story_or_a_feature_is_rejected_saying_the_planner_always
     a plan, a user_story or a feature, with its questions listed inside it.
     """
     record_property("proves", "154.1")
-    for good in (STORY, FEATURE, dict(STORY, questions=["Should ids be numbers? I planned for strings."])):
+    for good in (STORY, FEATURE, dict(STORY, questions=[{"question": "Should ids be numbers?", "assumption": "The plan assumes strings."}])):
         rc, why = check({"plan.json": good}, "154.1")
         assert rc == 0 and not why, f"154.1: a good {good['kind']} was rejected: {why!r}"
     rc, why = check(files, "154.1")
