@@ -183,33 +183,79 @@ def test_the_planner_card_shows_the_plan_or_its_questions_or_the_split_on_top(re
     assert "criterion 9.2 has no test" in bad, f"182.2: a rejected plan's card does not show why:\n{bad}"
 
 
-def result_line(body):
-    """The verdict circle on the line showing the test result in the short part on top, below the opening sentence."""
-    lines = [l for l in top(body).split(agent.MARK, 1)[-1].splitlines() if l.strip()][1:]
-    found = [l for l in lines if re.search(r"\btests?\b", re.sub(r"<[^>]+>", "", l), re.I) and "<img" in l]
-    assert len(found) == 1, f"182.3: expected one test result line with a circle on top of the worker card, found {found}:\n{top(body)}"
-    alt = re.search(r'<img[^>]*alt="([^"]+)"', found[0])
-    return alt.group(1) if alt else None
+PR = "https://github.com/o/r/pull/7"
 
 
-@pytest.mark.parametrize("evidence,state", [
-    ("python3 -m pytest -q: 12 passed in 3.1s", "passed"),
-    ("python3 -m pytest -q: 1 failed, 11 passed in 3.1s", "failed"),
-    ("pytest -q: 11 passed, 2 errors in 3.0s", "failed"),
-    ("I did not get to run them.", "not started"),
-])
-def test_the_worker_card_shows_one_sentence_and_the_test_result(record_property, evidence, state):
-    """The worker's card shows one sentence and the test result, with the issue card's circles for passed, failed or not started.
+def shown(body):
+    """The lines of the short part on top, below the record marker, that hold any words."""
+    return [l for l in top(body).split(agent.MARK, 1)[-1].splitlines() if l.strip()]
 
-    Draws a build's comment for a worker whose own run of the tests passed, failed, errored or never happened, and
-    checks the short part on top holds only the opening sentence and one test result line whose circle is that state."""
+
+def test_the_worker_card_shows_one_sentence_with_its_pull_request_and_no_test_result(record_property):
+    """The worker's card shows on top only one sentence saying what it built, with a link to its pull request.
+
+    Draws a build's comment with its pull request known and checks the short part on top is exactly one line: one
+    sentence that says the worker built, links the pull request and shows no test result (no passed or
+    failed, no test count). The worker's own test run stays only in a fold."""
     record_property("proves", "182.3")
-    body = agent.render(rec("worker", handback=dict(WORK, evidence=evidence)))
-    assert opening(body), f"182.3: the worker card has no opening sentence:\n{body}"
-    shown = [l for l in top(body).split(agent.MARK, 1)[-1].splitlines() if l.strip()]
-    assert len(shown) == 2, f"182.3: the top of the worker card should hold only its sentence and the test result:\n{top(body)}"
-    got = result_line(body)
-    assert got == state, f"182.3: the worker's run said {evidence!r}, so the test result should be {state!r}, but it shows {got!r}"
+    body = agent.render(rec("worker", handback=WORK), pr=PR)
+    lines = shown(body)
+    assert len(lines) == 1, f"182.3: the top of a finished worker card should hold only its one sentence:\n{top(body)}"
+    first = opening(body)
+    assert re.search(r"\bbuilt\b", first, re.I), f"182.3: the worker card's sentence does not say what it built: {first!r}"
+    assert f"]({PR})" in lines[0], f"182.3: the worker card's sentence does not link its pull request {PR}:\n{lines[0]}"
+    words = re.sub(r"<[^>]+>", "", top(body))
+    assert not re.search(r"\b(passed|failed|tests?)\b|\d+ passed", words, re.I), \
+        f"182.3: the worker card shows a test result on top; the criteria and their verdicts belong on the main card:\n{top(body)}"
+    assert "12 passed in 3.1s" in folds(body), f"182.3: the worker's own test run is in no fold:\n{body}"
+
+
+def test_the_worker_card_says_why_it_stopped_when_it_stopped_early(record_property):
+    """When the worker stops early, its card says so in its sentence and shows why, right below it.
+
+    Draws the comment of a worker whose hand-back code rejected, once with no work.json at all and once with a bad
+    one, and checks the sentence says the worker stopped early, never that it built, and that every reason code found
+    is on top. A worker that finished shows no such reason."""
+    record_property("proves", "182.3")
+    for name, handback, why in (
+            ("no hand-back", {"missing": "work.json: [Errno 2] No such file"}, "work.json is missing (/tmp/dokima-out/work.json)"),
+            ("bad hand-back", dict(WORK, evidence=""), "evidence is empty: name the last test command and its result line")):
+        body = agent.render(rec("worker", handback=handback, passed=False, problems=why + "\n"), pr=PR)
+        first = opening(body)
+        assert re.search(r"\bstopped\b", first, re.I), f"182.3 ({name}): the worker card does not say it stopped early: {first!r}"
+        assert not re.search(r"\bbuilt\b", first, re.I), f"182.3 ({name}): a worker that stopped early is said to have built: {first!r}"
+        assert why in top(body), f"182.3 ({name}): the worker card does not show why it stopped on top:\n{top(body)}"
+    done = top(agent.render(rec("worker", handback=WORK), pr=PR))
+    assert "stopped" not in done.lower(), f"182.3: a worker that finished is said to have stopped:\n{done}"
+
+
+def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record_property, tmp_path, monkeypatch):
+    """The worker's card links its pull request even on the first round, when code opens the pull request after the record.
+
+    Writes a worker's record and comment the way the run does, then runs the step that decides what follows
+    (agent next) with GitHub faked to say the open pull request of try/issue-9 is #7, and checks the posted comment's
+    sentence now links that pull request, still ends with the Next line and still reads back as the same record."""
+    record_property("proves", "182.3")
+    r = rec("worker", handback=WORK)
+    (tmp_path / "record.json").write_text(json.dumps(r))
+    (tmp_path / "comment.md").write_text(agent.render(r))
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        return "7\n" if args[:2] == ("pr", "list") and "try/issue-9" in args else "[]"
+    monkeypatch.setattr(agent, "gh", gh)
+    monkeypatch.setattr(agent, "conversation", lambda repo, number: ({}, []))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("OWNERS", "owner")
+    agent.main(["agent", "next", "9", str(tmp_path)])
+    body = (tmp_path / "comment.md").read_text()
+    lines = shown(body)
+    assert lines and f"]({PR})" in lines[0], f"182.3: after the run the worker card's sentence does not link pull request #7:\n{body}"
+    assert body.rstrip().splitlines()[-1].startswith("**Next:**"), f"182.3: the worker card lost its Next line:\n{body}"
+    got = agent.records([{"author": {"login": agent.BOT}, "body": body, "createdAt": "2026-10-08T10:00:00Z"}])
+    assert got == [r], f"182.3: the worker card no longer reads back as its record: {got}"
 
 
 def test_the_worker_card_folds_what_it_built_found_and_raised(record_property):
