@@ -42,7 +42,8 @@ Write the plan the way a product manager writes a story, in these terms:
 - **Acceptance criteria:** the behaviors and features the owner asked for, numbered N.1, N.2 ... (N is the issue number).
   Product voice, third person, never "I". Natural phrasing, never a formula; "When you..." only where it's natural.
   Each one is observable (what the owner sees, a file, an exit code, a number with its unit), never an adjective, and
-  links to where the owner said it: the issue, or a specific comment. A bug fix is an acceptance criterion ("X no
+  links to where the owner said it: the issue, or a specific comment. When they asked for it more than once, its
+  source is the most recent place the owner asked for it. A bug fix is an acceptance criterion ("X no
   longer happens"). Include the empty, error and waiting states the issue implies.
 - **Non-functional requirements:** story-specific engineering (security, reliability, failure paths), one plain line
   each with a short reason. Rules that hold everywhere live once in AGENTS.md as principles; name the principle and use
