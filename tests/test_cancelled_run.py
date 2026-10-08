@@ -14,7 +14,7 @@ import re
 import pytest
 
 import test_start as ts
-from test_start import APPROVE, N, OWNER, PIP_BROKEN, PR, STORY_APPROVED, STORY_PLANNED, Run, owner_comment
+from test_start import APPROVE, N, OWNER, PIP_BROKEN, PR, STORY, STORY_APPROVED, STORY_PLANNED, Run, owner_comment
 
 from dokima import agent
 
@@ -22,7 +22,9 @@ LIVE = "<!-- dokima-live -->"
 MENTION = re.compile(r"(?<![\w/@.`])@[A-Za-z0-9][A-Za-z0-9-]*")
 ICON = re.compile(r"/dokima/icons/([A-Za-z0-9_-]+)\.svg")
 BAD_REVIEW = {"verdict": "maybe"}
+# A blocking review of the one-story plan (only criterion: 57.1), so every ask it lists is matched to 57.1 (#215).
 BLOCK = dict(APPROVE, verdict="block", summary="57.1 has no test that would fail without the work.",
+             asks=[dict(a, criterion="57.1") for a in APPROVE["asks"]],
              blockers=[{"id": "B1", "criterion": "57.1", "problem": "The test only checks a file exists.",
                         "evidence": "tests/test_x.py::test_a", "fix": "Run the thing and check its output.",
                         "test": "tests/test_x.py::test_a", "fixer": "planner"}])
@@ -148,8 +150,11 @@ def test_nothing_starts_by_itself_after_a_cancel_or_a_failure(record_property, r
     Every cancelled run (including one cancelled after its blocking review had passed code's check, which the river
     would otherwise send back to the planner), a review code rejected and a run whose tools failed to install must
     make no call that starts or re-runs a run, and each must still have been seen as cancelled or failed. Beside them,
-    the same blocking review not cancelled must start exactly the planner, so the river itself still flows."""
+    the same blocking review not cancelled must start exactly the planner, so the river itself still flows. That review
+    is a fake of a one-story plan whose only criterion is 57.1: it must match every ask to 57.1 and its hand-back must
+    pass code's check, or the run would stop on a rejection instead of reaching the river (#215)."""
     record_property("proves", "188.3")
+    record_property("proves", "215.1")
     for name in CANCELLED:
         r = runs[name]
         cancelled(r, "188.3", name)
@@ -161,7 +166,13 @@ def test_nothing_starts_by_itself_after_a_cancel_or_a_failure(record_property, r
         r = runs[name]
         assert r.failed, f"188.3 ({name}): setup: the run did not fail:\n{r.tail()}"
         assert start_calls(r) == [], f"188.3 ({name}): after a failure the run started another run by itself: {start_calls(r)}"
+    ids = agent.plan_criteria(STORY, N)
+    wrong = [a for a in BLOCK["asks"] if a.get("criterion") not in ids]
+    assert not wrong, f"215.1: the fake blocking review matches asks to criteria its fake plan does not have ({ids}): {wrong}"
     r = runs["blocked"]
+    recs = agent.records([{"author": {"login": agent.BOT}, "body": p["body"]} for p in r.posted()])
+    assert [(x["role"], x["stage"], x["check"]["passed"]) for x in recs] == [("reviewer", "plan", True)], \
+        f"215.1: code's check rejected the fake blocking review, so it never reached the river: {[x['check'] for x in recs]}"
     calls = start_calls(r)
     assert len(calls) == 1 and "client_payload[role]=planner" in calls[0], \
         f"188.3: a blocking plan review that nobody cancelled no longer starts the planner: {calls}\n{r.tail()}"
