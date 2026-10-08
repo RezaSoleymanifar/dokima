@@ -203,9 +203,24 @@ def build_record(role, stage, out, check_text, passed, meta):
     return rec
 
 
+def not_started(role, stage, why, meta):
+    """The record of a run or command that failed before its agent started: what it tried to start and why it could not."""
+    lines = [l.strip() for l in why.splitlines() if l.strip()] or ["A step before the agent failed; see the run for which."]
+    return {"role": "not-started", "attempt": role or "command", "stage": stage or None, **meta, "handback": {},
+            "check": {"passed": False, "problems": lines}}
+
+
 def render(rec):
     """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
     role, h = rec["role"], rec["handback"]
+    if role == "not-started":
+        a = rec.get("attempt")
+        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker",
+                "split": "Filing the split"}.get(a, "Command")
+        lines = [MARK, f"**{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
+        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
+                  "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
     head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
     lines = [MARK, f"**{head}**" + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
     if not rec["check"]["passed"]:
@@ -635,6 +650,8 @@ def next_step(items, rec, owners, rounds=3):
     review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
     owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
+    if role == "not-started":
+        return ("stop", "Nothing ran, see why above. Fix the cause, then give the command again.")
     if not rec.get("check", {}).get("passed"):
         return ("stop", "The hand-back was rejected by code, see the problems above. Fix the cause, then start the stage again.")
     if role == "planner":
@@ -695,7 +712,7 @@ def board_place(rec, step):
     the owner, and the Needs you pill exactly when the river stops for the owner."""
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
-    return STAGE_COLUMN.get((rec.get("role"), rec.get("stage") or ""), "Plan"), True
+    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), True
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
@@ -724,7 +741,8 @@ def next_line(step, owners):
 
 def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
-    agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md)"""
+    agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
+    agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -746,6 +764,14 @@ def main(argv):
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
         rec = build_record(role, stage, out, text, passed == "true", meta)
+        json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
+    if argv[1] == "not-started":
+        role, stage, out, why_file = argv[2:6]
+        meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
+        rec = not_started(role, stage, open(why_file).read() if os.path.exists(why_file) else "", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
         return 0
@@ -795,8 +821,10 @@ def main(argv):
     if argv[1] == "next":
         number, out = argv[2], argv[3]
         owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
-        _, items = conversation(os.environ["GITHUB_REPOSITORY"], number)
-        step = next_step(items, json.load(open(os.path.join(out, "record.json"))), owners)
+        rec = json.load(open(os.path.join(out, "record.json")))
+        # A run that never started stops for the owner whatever the conversation says, so it is not read.
+        items = [] if rec.get("role") == "not-started" else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
+        step = next_step(items, rec, owners)
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
@@ -827,4 +855,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except subprocess.CalledProcessError as e:
+        # GitHub's own error, so the step that failed can say why.
+        sys.stderr.write((e.stderr or str(e)).strip() + "\n")
+        sys.exit(1)

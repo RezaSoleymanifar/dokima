@@ -7,6 +7,7 @@ run-name: "${{ (inputs.role || github.event.client_payload.role) }}${{ (inputs.r
 # Those comments are the permanent records the cards are built from. Session logs stay on the run page.
 # The river: after posting, code decides what follows (next_step in dokima/agent.py) and, when the next stage is an
 # agent's, the bot sends a dokima-next signal that starts it here. Otherwise the card mentions the owner and stops.
+# Every step before the agent that fails writes why to /tmp/why.txt; when no agent started, the record says that instead.
 on:
   repository_dispatch:
     types: [dokima-next]
@@ -69,7 +70,8 @@ jobs:
           # The river's own signal comes from Dokima's bot; everything else needs a code owner.
           [ "$EVENT" = repository_dispatch ] && [ "$SENDER" = "dokima-runtime[bot]" ] && exit 0
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" \
-            || { echo "::error title=Not started::$SENDER is not a code owner."; exit 1; }
+            || { echo "$SENDER is not a code owner, so they cannot start an agent." > /tmp/why.txt
+                 echo "::error title=Not started::$(cat /tmp/why.txt)"; exit 1; }
       - name: Starting branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,10 +81,12 @@ jobs:
             if [ "$ROLE" = worker ]; then
               git -c user.name=dokima -c user.email=dokima@users.noreply.github.com merge -q --no-edit origin/main
             fi
-          elif [ "$ROLE" = planner ]; then
+          elif [ "$ROLE" = planner ] || [ "$STAGE" = plan ]; then
+            # A plan review needs no branch: a split never makes one, so it reviews from main.
             git checkout -q -B "try/issue-$N" origin/main
           else
-            echo "::error title=Nothing to $ROLE::try/issue-$N does not exist; run the planner first."; exit 1
+            echo "try/issue-$N does not exist; run the planner first." > /tmp/why.txt
+            echo "::error title=Nothing to $ROLE::$(cat /tmp/why.txt)"; exit 1
           fi
           echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           # A plan's tests are everything the issue's branch added since it split off main, over every planning round.
@@ -97,12 +101,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           export OWNERS=$(python3 -m dokima.plan approvers)
-          python3 -m dokima.agent pack "$N" "$ROLE" "$STAGE" "$PACK" \
-            || { echo "::error title=No plan::No passed plan on the issue yet, or (for the worker) no plan review approving the newest plan."; exit 1; }
+          python3 -m dokima.agent pack "$N" "$ROLE" "$STAGE" "$PACK" 2> /tmp/pack-err.txt || {
+            if [ $? = 3 ]; then
+              echo "No passed plan on the issue yet, or (for the worker) no plan review approving the newest plan." > /tmp/why.txt
+            else
+              echo "Building the starting pack failed: $(tail -1 /tmp/pack-err.txt)" > /tmp/why.txt
+            fi
+            cat /tmp/pack-err.txt >&2; echo "::error title=No pack::$(cat /tmp/why.txt)"; exit 1; }
           if [ "$STAGE" = pr ]; then git diff origin/main...HEAD > "$PACK/diff.patch"; fi
           ls -R "$PACK" | head -60
       - name: Install pytest and Claude Code
-        run: pip install pytest && npm install -g @anthropic-ai/claude-code
+        run: |
+          { pip install pytest && npm install -g @anthropic-ai/claude-code; } 2>&1 | tee /tmp/install.txt \
+            || { echo "The step 'Install pytest and Claude Code' failed: $(tail -3 /tmp/install.txt | paste -sd' ')" > /tmp/why.txt; exit 1; }
       - name: All tests, run by code before the reviewer reads the pull request
         if: env.STAGE == 'pr'
         run: |
@@ -111,7 +122,10 @@ jobs:
       - name: Code checks the pack has everything this role needs
         run: |
           python3 -m dokima.agent check-pack "$ROLE" "$STAGE" "$PACK" > /tmp/pack-check.txt \
-            || { echo "::error title=Incomplete pack::$(paste -sd'; ' /tmp/pack-check.txt)"; exit 1; }
+            || { echo "Incomplete pack: $(paste -sd'; ' /tmp/pack-check.txt)" > /tmp/why.txt
+                 echo "::error title=Incomplete pack::$(cat /tmp/why.txt)"; exit 1; }
+      - name: The agent starts now
+        run: echo "STARTED=true" >> "$GITHUB_ENV"
       - name: The agent (Claude Code)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -140,7 +154,7 @@ jobs:
             $CHECK" \
             --model "$MODEL" --dangerously-skip-permissions --max-turns 60 --output-format json > "$OUT/claude.json"
       - name: Code checks the hand-back
-        if: always()
+        if: always() && env.STARTED == 'true'
         run: |
           set +e; bash -c "$CHECK" > "$OUT/check.txt" 2>&1; rc=$?; set -e
           cat "$OUT/check.txt"
@@ -152,8 +166,18 @@ jobs:
           [ -s "$OUT/dropped.txt" ] && echo "::warning title=Dropped by the fence::$(paste -sd, "$OUT/dropped.txt")" || true
       - name: Write this run's record
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -m dokima.agent record "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects
+          if [ "$STARTED" = true ]; then
+            python3 -m dokima.agent record "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects
+          else
+            # No agent started: a step with no reason of its own is named by GitHub's record of this run.
+            mkdir -p "$OUT"
+            [ -s /tmp/why.txt ] || gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+              --jq '.jobs[].steps[] | select(.conclusion == "failure") | "The step \(.name) failed."' > /tmp/why.txt || true
+            python3 -m dokima.agent not-started "$ROLE" "$STAGE" "$OUT" /tmp/why.txt
+          fi
           cat "$OUT/comment.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Remove secrets from the raw session files before they are uploaded
         if: always()
@@ -201,7 +225,7 @@ jobs:
             gh pr create -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --base main --title "$(gh issue view "$N" -R "$GITHUB_REPOSITORY" --json title -q .title)" --body "Closes #$N"
           fi
       - name: Save the conversation for good on the logs branch, secrets removed
-        if: always()
+        if: always() && env.STARTED == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
@@ -258,5 +282,6 @@ jobs:
       - name: Fail closed on a bad hand-back or the wrong model
         if: always()
         run: |
+          [ "$STARTED" = true ] || { echo "::error title=Not started::$(cat /tmp/why.txt 2>/dev/null)"; exit 1; }
           python3 -c "import json,sys; r=json.load(open('$OUT/record.json')); m=r.get('models') or []; bad=[x for x in m if x!='$MODEL']; sys.exit(print('models:', m) or (1 if bad or not m else 0))"
           [ "$PASSED" = true ] || { echo "::error title=Hand-back rejected::$(paste -sd'; ' "$OUT/check.txt")"; exit 1; }

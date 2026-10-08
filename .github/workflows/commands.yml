@@ -4,7 +4,8 @@ run-name: "${{ github.event.comment.body }}"
 # issue or on its pull request, and so does a PR review submitted as a comment or a change request. An Approve never
 # starts anything: it only ever means merge. Everything after the command, and every other comment, review and line
 # note, reaches the agent through its pack. No command, nothing starts; bots never start anything. On an issue
-# /review grades the plan; on a pull request, the work.
+# /review grades the plan; on a pull request, the work. A code owner's command that fails here, before any agent
+# starts, gets one record where it was written with GitHub's error, and the owner is mentioned.
 on:
   issue_comment:
     types: [created]
@@ -26,6 +27,7 @@ jobs:
       role: ${{ steps.r.outputs.role }}
       stage: ${{ steps.r.outputs.stage }}
       issue: ${{ steps.r.outputs.issue }}
+      why: ${{ steps.why.outputs.why }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -39,18 +41,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" || { echo "::notice::$SENDER is not a code owner."; exit 0; }
-          python3 -m dokima.agent route > /tmp/route.txt; cat /tmp/route.txt
+          python3 -m dokima.agent route > /tmp/route.txt 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+          cat /tmp/route.txt
           # /work on an approved split files its stories; no worker runs.
           if grep -qx "role=worker" /tmp/route.txt; then
             N=$(sed -n 's/^issue=//p' /tmp/route.txt)
             [ "$(python3 -m dokima.agent kind "$N")" = feature ] && sed -i 's/^role=worker$/role=split/' /tmp/route.txt
           fi
           cat /tmp/route.txt >> "$GITHUB_OUTPUT"
+      - id: why
+        if: failure()
+        run: echo "why=$(paste -sd' ' /tmp/why.txt)" >> "$GITHUB_OUTPUT"
   split:
     needs: route
     if: needs.route.outputs.role == 'split'
     environment: keys
     runs-on: ubuntu-24.04
+    outputs:
+      why: ${{ steps.why.outputs.why }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -64,7 +72,43 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
-        run: python3 -m dokima.agent split "${{ needs.route.outputs.issue }}"
+        run: |
+          python3 -m dokima.agent split "${{ needs.route.outputs.issue }}" 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+      - id: why
+        if: failure()
+        run: echo "why=$(paste -sd' ' /tmp/why.txt)" >> "$GITHUB_OUTPUT"
+  say-why:
+    needs: [route, split]
+    if: always() && (needs.route.result == 'failure' || needs.split.result == 'failure')
+    environment: keys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Say why the command started nothing, where it was written
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          WHY: ${{ needs.route.outputs.why || needs.split.outputs.why }}
+          ROLE: ${{ needs.route.outputs.role }}
+          STAGE: ${{ needs.route.outputs.stage }}
+          ON_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          export OWNERS=$(python3 -m dokima.plan approvers)
+          mkdir -p /tmp/out && printf '%s\n' "$WHY" > /tmp/why.txt
+          python3 -m dokima.agent not-started "$ROLE" "$STAGE" /tmp/out /tmp/why.txt
+          python3 -m dokima.agent next "$NUMBER" /tmp/out
+          if [ "$ON_PR" = true ]; then
+            gh pr comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/out/comment.md
+          else
+            gh issue comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/out/comment.md
+          fi
   run:
     needs: route
     if: needs.route.outputs.role != '' && needs.route.outputs.role != 'split'
