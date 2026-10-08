@@ -1,10 +1,11 @@
 name: board
-# Keeps the project board's Status and "Waiting on" current at every stage moment.
+# Keeps the project board's Status and "Waiting on" current at every stage moment,
+# and its Priority in step with the blocker, high and parked labels.
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
 # names a board ("org/number").
 on:
   issues:
-    types: [labeled, closed]
+    types: [labeled, unlabeled, closed]
   issue_comment:
     types: [created]
   # pull_request_target runs main's copy of this file, so the keys environment opens;
