@@ -272,11 +272,24 @@ def test_autopilot_start_starts_the_worker_on_a_plan_already_waiting_for_work(re
         assert autopilot_lines(m) == [], f"211.1 ({case}): /autopilot start posted another Autopilot line: {autopilot_lines(m)}"
 
 
+def assert_stories_as_work_files_them(m, case):
+    """The split's stories were filed as `/work` files them on autopilot: each on autopilot, and only the unblocked one planning."""
+    for c in m.created_issues():
+        given = [c[j + 1] for j, x in enumerate(c[:-1]) if x in ("--label", "-l")]
+        assert "autopilot" in [l.strip() for v in given for l in v.split(",")], \
+            f"211.2 ({case}): a story was filed off autopilot, unlike `/work` on autopilot: {c[:6]} labels {given}"
+    planners = sorted(s for s in starts(m) if s[0] == "planner")
+    assert planners == [("planner", "900")], (f"211.2 ({case}): the stories did not start as `/work` on autopilot starts "
+                                              f"them (only #900, which waits on nothing, plans): {planners}")
+
+
 def test_on_autopilot_an_approved_split_files_its_stories_with_one_autopilot_line(record_property, tmp_path, monkeypatch):
     """On autopilot, an approved split files its stories as `/work` would, with one "Autopilot: split approved, filing its stories" line.
 
     Runs the plan review of a split on #57, on autopilot, the reviewer approving: both stories must be filed as issues,
     the issue must get one "Split filed" record and exactly one comment reading the line, and no worker may start.
+    As `/work` on autopilot does on main (#213), both stories must be filed on autopilot and only the first, which
+    waits on nothing (the second is blocked by it), may start its planner; GitHub numbers them #900 and #901.
     Then `/autopilot start` on #57 whose split is approved and not yet filed does the same, and on a split already
     filed it files nothing and posts no line."""
     record_property("proves", "211.2")
@@ -288,6 +301,7 @@ def test_on_autopilot_an_approved_split_files_its_stories_with_one_autopilot_lin
     assert [x["role"] for x in run_records(r)].count("split") == 1, \
         f"211.2: filing the split did not post its one Split filed record: {[x['role'] for x in run_records(r)]}"
     assert [s for s in starts(r) if s[0] == "worker"] == [], f"211.2: a worker started on a split: {starts(r)}"
+    assert_stories_as_work_files_them(r, "the river")
 
     m = Listener(monkeypatch, tmp_path / "waiting", "/autopilot start", ts.SPLIT_APPROVED, {})
     assert not m.failed, f"211.2: the listener failed on /autopilot start:\n{m.tail()}"
@@ -295,6 +309,7 @@ def test_on_autopilot_an_approved_split_files_its_stories_with_one_autopilot_lin
     assert len(lines(m, LINE_SPLIT)) == 1, \
         f"211.2: /autopilot start did not post exactly one {LINE_SPLIT!r}: {[p['body'][:120] for p in m.posted()]}"
     assert [s for s in starts(m) if s[0] == "worker"] == [], f"211.2: /autopilot start started a worker on a split: {starts(m)}"
+    assert_stories_as_work_files_them(m, "/autopilot start")
 
     filed = ts.SPLIT_APPROVED + [ts.record_comment(SPLIT_FILED, "2026-10-07T10:30:00Z")]
     m = Listener(monkeypatch, tmp_path / "filed", "/autopilot start", filed, {})
