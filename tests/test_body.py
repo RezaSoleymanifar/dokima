@@ -1,11 +1,11 @@
-"""The issue body: code's card above one fixed marker, the owner's ask folded below it, never rewritten.
+"""The issue body: code's card above one fixed marker, the owner's ask below it, never rewritten.
 
 Issue #179. One helper, dokima/body.py, owns the issue body:
 
     MARKER                      the fixed marker that splits the body in two
     ask(body)                   the owner's part below the first marker, byte for byte (the whole body when there
                                 is no marker yet)
-    redraw(body, top)           the new body: `top` above the marker, the owner's part folded below it;
+    redraw(body, top)           the new body: `top` above the marker, the owner's part below it (open or folded: #237, tests/test_open_ask.py);
                                 raises Refused(reason) when the owner's part would change
     save(repo, number, current, top)
                                 saves redraw(current, top) on the issue and returns True, or, when refused,
@@ -182,26 +182,7 @@ def refuse(monkeypatch, body):
     monkeypatch.setattr(body, "redraw", refused)
 
 
-# 179.1: two parts split by one fixed marker, the card above, the owner's ask folded below
-
-def test_body_is_the_card_above_one_marker_and_the_ask_folded_below(record_property):
-    """The body is the card, then one marker, then the owner's ask folded exactly as written.
-
-    Redraws an ask with a card on top and checks there is exactly one marker, the card sits above it, and below it is
-    one closed fold holding the owner's words unchanged, read back byte for byte."""
-    record_property("proves", "179.1")
-    body = helper("179.1")
-    top = card.issue_body("<!-- dokima-card -->\n### Plan: add `work` to start\n<!-- /dokima-card -->", "")
-    new = body.redraw("Please keep my words.\n- [ ] Goal: an old goal\n", top)
-    assert new.count(body.MARKER) == 1, "179.1: the body does not have exactly one marker"
-    above, below = new.split(body.MARKER)
-    assert top.strip() in above, "179.1: the card is not above the marker"
-    assert below.strip().startswith("<details") and below.strip().endswith("</details>"), \
-        "179.1: the owner's ask below the marker is not folded"
-    assert " open" not in below.strip().split(">", 1)[0], "179.1: the owner's ask is shown open, not folded"
-    assert "Please keep my words.\n- [ ] Goal: an old goal\n" in below, "179.1: the owner's ask is not below the marker as written"
-    assert body.ask(new) == "Please keep my words.\n- [ ] Goal: an old goal\n", "179.1: the owner's ask does not read back exactly"
-
+# 179.1: two parts split by one fixed marker, the card above, the owner's ask below
 
 def test_the_marker_is_the_same_after_every_redraw(record_property):
     """The marker is one fixed string: every redraw leaves exactly that one marker, never a second.
