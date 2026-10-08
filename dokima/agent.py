@@ -225,11 +225,12 @@ def cancelled(role, stage, started, meta):
 
 
 def live_card(role, stage, state, ahead=None):
-    """The run's card while it is still running: queued (or waiting for the run `ahead` of it), getting ready, then
-    working since the agent started.
+    """The run's card while it is still running: queued (or waiting for the run `ahead` of it), setting up, agent
+    working since the agent started, then checking the hand-back.
 
     It carries its own marker and no JSON fold, so it never reads as a record; at the end of the run code edits this
-    same comment into the run's record. A hand-off's queued card is put up before its run exists, so it links none."""
+    same comment into the run's record. A hand-off's queued card is put up before its run exists, so it links none.
+    While the agent works the card is not edited, so it links the run's live page for detail."""
     head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker",
             "split": "Filing the split"}.get(role, "Command")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -244,11 +245,17 @@ def live_card(role, stage, state, ahead=None):
             what = "Queued: the run starts in a moment. This card says working when the agent starts, then becomes the run's record."
         return "\n".join([LIVE, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
     if state == "working":
-        line = f"{icon(repo, 'running')} **{head}** · working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
-        what = "The agent is working. This card becomes the run's record when it ends."
+        line = f"{icon(repo, 'running')} **{head}** · agent working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
+        what = (f"The agent is working; [watch it live]({run}) on GitHub. This card says checking when the agent ends, "
+                "then becomes the run's record.")
+        return "\n".join([LIVE, line, "", what]) + "\n"
+    if state == "checking":
+        line = f"{icon(repo, 'running')} **{head}** · checking"
+        what = "The agent has ended and code is checking its hand-back. This card becomes the run's record next."
     else:
-        line = f"{icon(repo, 'queued')} **{head}** · getting ready"
-        what = "The machine is getting ready. This card says working when the agent starts, then becomes the run's record."
+        line = f"{icon(repo, 'queued')} **{head}** · setting up"
+        what = ("The machine is setting up: the branch, the starting pack and the tools. This card says working when "
+                "the agent starts, then becomes the run's record.")
     return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
 
 
@@ -984,7 +991,9 @@ def main(argv):
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
         return 0
     if argv[1] == "card":
-        sys.stdout.write(live_card(argv[2], argv[3], argv[4]))
+        # The card is public: every secret the step was given to remove (SCRUB_*) shows as [secret removed].
+        secrets = [v for k, v in os.environ.items() if k.startswith("SCRUB_")]
+        sys.stdout.write(scrub(live_card(argv[2], argv[3], argv[4]), secrets))
         return 0
     if argv[1] == "queue":
         print(queue(argv[2], argv[3], argv[4], argv[5] if len(argv) > 5 else "queued"))

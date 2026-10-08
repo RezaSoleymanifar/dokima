@@ -77,32 +77,54 @@ jobs:
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" \
             || { echo "$SENDER is not a code owner, so they cannot start an agent." > /tmp/why.txt
                  echo "::error title=Not started::$(cat /tmp/why.txt)"; exit 1; }
-      # The run's live card goes up now, with a key made for this one call and revoked at once: no bot key stays live
-      # on this machine while the branch's code, its tests or the agent run. The card is never a record.
+      # The run's card moves through its stages (queued, setting up, agent working, checking, then its record), each
+      # written by this job's own steps, each with a key made for that one call and revoked at once: no bot key stays
+      # live on this machine while the branch's code, its tests, the agent or the hand-back check run. Every stage
+      # passes through scrub() with the run's secrets first. A card that cannot be shown never stops the run.
+      # A card already up (the listener's or the hand-off's) is this run's queued card; otherwise it goes up now.
       - id: card-key
+        if: env.CARD_ID == ''
         continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
           skip-token-revoke: true
-      - name: Put up the run's card, getting ready
+      - name: Put up the run's card, queued
+        if: env.CARD_ID == ''
         env:
           GH_TOKEN: ${{ steps.card-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
         run: |
           # Where the record will go: the PR once there is one, for the worker and the PR reviewer.
           PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number' || true)
           WHERE=$N; if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then WHERE=$PR; fi
-          python3 -m dokima.agent card "$ROLE" "$STAGE" ready > /tmp/card.md
-          if [ -n "$CARD_ID" ]; then
-            # The queued card is this run's: it now says getting ready, no longer waiting.
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
-              || echo "::warning title=Card not updated::the card could not say getting ready"
-          elif ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
+          python3 -m dokima.agent card "$ROLE" "$STAGE" queued > /tmp/card.md
+          if ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
             echo "CARD_ID=$ID" >> "$GITHUB_ENV"
           else
             echo "::warning title=No live card::the card could not be put up; the record is posted at the end"
           fi
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
+      - id: setup-key
+        if: env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says setting up
+        if: env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.setup-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" setting-up > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say setting up"
           gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: Starting branch
         env:
@@ -157,7 +179,7 @@ jobs:
           python3 -m dokima.agent check-pack "$ROLE" "$STAGE" "$PACK" > /tmp/pack-check.txt \
             || { echo "Incomplete pack: $(paste -sd'; ' /tmp/pack-check.txt)" > /tmp/why.txt
                  echo "::error title=Incomplete pack::$(cat /tmp/why.txt)"; exit 1; }
-      # The card says working, with a second key made for this one edit and revoked before the agent starts.
+      # The card says agent working, with a key made for this one edit and revoked before the agent starts.
       - id: working-key
         if: env.CARD_ID != ''
         continue-on-error: true
@@ -170,6 +192,8 @@ jobs:
         if: env.CARD_ID != ''
         env:
           GH_TOKEN: ${{ steps.working-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
         run: |
           python3 -m dokima.agent card "$ROLE" "$STAGE" working > /tmp/card.md
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
@@ -204,6 +228,26 @@ jobs:
           Hand back into $OUT. Before you finish, run this check on your hand-back and fix everything it reports:
             $CHECK" \
             --model "$MODEL" --dangerously-skip-permissions --max-turns 60 --output-format json > "$OUT/claude.json"
+      # The card says checking, with a key made for this one edit and revoked before code checks the hand-back.
+      - id: checking-key
+        if: always() && !cancelled() && env.STARTED == 'true' && env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says checking
+        if: always() && !cancelled() && env.STARTED == 'true' && env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.checking-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" checking > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say checking"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: Code checks the hand-back
         if: always() && env.STARTED == 'true'
         run: |
