@@ -19,11 +19,10 @@ import re
 import subprocess
 import sys
 
+from dokima import body as issue_body
 from dokima.checks import PROVES, TEST_DEF
 from dokima.agent import problems_questions  # noqa: E402
 
-ORIGINAL_START = "<!-- dokima-original -->"
-ORIGINAL_END = "<!-- /dokima-original -->"
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 
 
@@ -332,18 +331,13 @@ def passing_today(added):
     return out
 
 
-def original(body):
-    """The owner's own text: kept from an earlier plan's fold, else the body as it is."""
-    body = body or ""
-    if ORIGINAL_START in body and ORIGINAL_END in body:
-        inner = body.split(ORIGINAL_START, 1)[1].split(ORIGINAL_END, 1)[0]
-        lines = [l for l in inner.splitlines() if l.startswith(">")]
-        return "\n".join(l[2:] if l.startswith("> ") else l[1:] for l in lines)
-    return body.strip()
-
-
 def render(number, body, plan, tags, older=()):
-    """The issue body for a plan, in the format dokima.plan reads, with the owner's text folded below."""
+    """The issue body for a plan, in the format dokima.plan reads, with the owner's part kept below the marker."""
+    return issue_body.redraw(body, plan_text(number, plan, tags, older))
+
+
+def plan_text(number, plan, tags, older=()):
+    """The plan's part of the issue body, written above the marker."""
     lines = [f"- [ ] Objective: {plan['objective'].strip()}"]
     for k, c in enumerate(plan["criteria"], 1):
         tests = sorted(t for t, ks in tags.items() if f"{number}.{k}" in ks)
@@ -359,10 +353,6 @@ def render(number, body, plan, tags, older=()):
         lines.append("")
     lines.append("**Scope:**")
     lines += [f"- `{s.strip()}`" for s in plan["scope"]]
-    text = original(body)
-    lines += ["", "<details><summary>Original issue</summary>", "", ORIGINAL_START]
-    lines += [f"> {l}" if l else ">" for l in text.splitlines()]
-    lines += [ORIGINAL_END, "</details>"]
     return "\n".join(lines) + "\n"
 
 
@@ -429,7 +419,10 @@ def main(argv):
         else:
             older = sorted(t for t in tc["changed"] if not set(tc["changed"][t][0]) <= {f"{number}.{k}" for k in range(1, len(result["criteria"]) + 1)}) + sorted(tc["deleted"])
             body = gh("issue", "view", number, "-R", repo, "--json", "body", "-q", ".body")
-            gh("issue", "edit", number, "-R", repo, "--body-file", "-", input=render(number, body, result, dict(proving(tc), **declared_by_test(result["declared"])), older))
+            body = body[:-1] if body.endswith("\n") else body  # gh ends its output with a newline of its own
+            tags = dict(proving(tc), **declared_by_test(result["declared"]))
+            if not issue_body.save(repo, number, body, plan_text(number, result, tags, older)):
+                return 1
             gh("issue", "comment", number, "-R", repo, "--body",
                f"Plan written above, tests on `work/issue-{number}`. Add `work` to approve it.")
     print(kind)
