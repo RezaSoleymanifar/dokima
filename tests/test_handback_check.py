@@ -23,16 +23,30 @@ SPLIT = {"kind": "feature", "feature": "f", "stories": [
     {"title": "Two", "user_story": "u2", "acceptance_criteria": [{"text": "b", "source": "https://x/9"}],
      "non_functional": [], "depends_on": [0]}]}
 
+# Every ask a plan review lists, matched to the story's 9.1 or a split's S1.1: a plan review must list them, a code
+# review may, so the well-formed samples pass code's check on whatever stage the machine runs (#244).
+ASKS = [{"ask": "Paint the door blue", "source": "https://github.com/o/r/issues/9", "criterion": "9.1"}]
+SPLIT_ASKS = [dict(ASKS[0], criterion="S1.1")]
+STAGES = ("", "plan", "pr")  # the stage a machine may run on: none (CI), a plan review's or a code review's
+
 REVIEW = {"previous_step": {"did": ["Wrote three criteria."], "decided": [], "open": []},
           "verdict": "block", "summary": "One proof is missing.",
           "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No test.", "evidence": "plan.json", "fix": "Add one.",
                         "fixer": "worker"}],
           "notes": [{"text": "A note.", "evidence": "x.py:1"}], "outside_plan": [{"file": "a.py", "change": "c"}],
-          "resolved": ["B0"], "issues_found": [{"title": "t", "why": "w", "evidence": "e"}]}
+          "resolved": ["B0"], "issues_found": [{"title": "t", "why": "w", "evidence": "e"}], "asks": ASKS}
 WORK = {"summary": "Cause and change.", "criteria": {"9.1": "x.py, a()", "9.2": "x.py, b()", "9.3": "x.py, c()"},
         "evidence": "pytest -q: 3 passed", "outside_scope": [{"file": "b.py", "why": "w"}],
         "suspect_tests": [{"test": "tests/test_x.py::test_a", "evidence": "e"}],
         "replies": [{"blocker": "B1", "answer": "fixed", "why": "Added it."}]}
+
+
+def on_stage(monkeypatch, stage):
+    """Make this machine run on `stage`, the way the workflow sets STAGE for a reviewer: none, plan or pr."""
+    if stage:
+        monkeypatch.setenv("STAGE", stage)
+    else:
+        monkeypatch.delenv("STAGE", raising=False)
 
 
 def run(tmp_path, *args):
@@ -62,7 +76,7 @@ def assert_rejected_naming(tmp_path, kind, handback, name, crit, plan=STORY):
     return out
 
 
-def test_well_formed_hand_backs_pass_and_every_malformed_field_is_named(record_property, tmp_path):
+def test_well_formed_hand_backs_pass_and_every_malformed_field_is_named(record_property, tmp_path, monkeypatch):
     """A malformed review.json or work.json is rejected with a reason naming the field, and never crashes the check.
 
     A full, well-formed review and work pass first (exit 0, nothing printed), and with every optional list left out too.
@@ -70,16 +84,36 @@ def test_well_formed_hand_backs_pass_and_every_malformed_field_is_named(record_p
     shape: a bare string where an object belongs, and an object missing any one of its fields (a note without text or
     evidence, an outside_plan or outside_scope item without its change or why, a suspect test without its test or
     evidence, a reply without why, a blocker whose test is a number). Each is rejected, the reason names the field,
-    and there is no traceback."""
+    and there is no traceback.
+
+    The good cases pass on every stage a machine may run on (STAGE unset, plan or pr), since the sample review lists
+    the owner's asks as a plan review must (#244). The rule stays as strong: on a plan review, the same review with
+    its asks left out is rejected naming asks, while a code review or a machine with no stage still passes it."""
     record_property("proves", "157.1")
-    for kind, good in (("review", REVIEW), ("work", WORK)):
-        code, out, err = check(tmp_path, kind, good)
-        assert (code, out.strip()) == (0, ""), f"157.1: a well-formed {kind}.json was rejected: {out}{err[-400:]}"
-    bare_review = {k: REVIEW[k] for k in ("previous_step", "verdict", "summary", "blockers")}
+    record_property("proves", "244.1")
+    record_property("proves", "244.2")
+    # A plan review must list its asks, so on that stage the bare review keeps them; every other list is optional.
+    bare_review = {k: REVIEW[k] for k in ("previous_step", "verdict", "summary", "blockers", "asks")}
     bare_work = {k: WORK[k] for k in ("summary", "criteria", "evidence")}
-    for kind, good in (("review", bare_review), ("work", bare_work)):
-        code, out, err = check(tmp_path, kind, good)
-        assert (code, out.strip()) == (0, ""), f"157.1: a {kind}.json with its optional lists left out was rejected: {out}{err[-400:]}"
+    no_asks = {k: v for k, v in REVIEW.items() if k != "asks"}
+    for stage in STAGES:
+        on_stage(monkeypatch, stage)
+        on = f"with STAGE={stage or 'unset'}"
+        for kind, good in (("review", REVIEW), ("work", WORK)):
+            code, out, err = check(tmp_path, kind, good)
+            assert (code, out.strip()) == (0, ""), \
+                f"157.1, 244.1: a well-formed {kind}.json was rejected {on}: {out}{err[-400:]}"
+        for kind, good in (("review", bare_review), ("work", bare_work)):
+            code, out, err = check(tmp_path, kind, good)
+            assert (code, out.strip()) == (0, ""), \
+                f"157.1, 244.1: a {kind}.json with its optional lists left out was rejected {on}: {out}{err[-400:]}"
+        if stage == "plan":
+            assert_rejected_naming(tmp_path, "review", no_asks, "asks", "244.2: a plan review that lists no asks")
+        else:
+            code, out, err = check(tmp_path, "review", no_asks)
+            assert (code, out.strip()) == (0, ""), \
+                f"244.2: a review with no asks was rejected {on}, where only a plan review must list them: {out}{err[-400:]}"
+    on_stage(monkeypatch, "")
 
     for field in ("previous_step", "verdict", "summary"):
         assert_rejected_naming(tmp_path, "review", {k: v for k, v in REVIEW.items() if k != field}, field, "157.1")
@@ -156,19 +190,31 @@ def blocker(id_, criterion, test=None):
     return {"id": id_, "criterion": criterion, "test": test, "problem": "p", "evidence": "e", "fix": "f", "fixer": "worker"}
 
 
-def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_property, tmp_path):
+def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_property, tmp_path, monkeypatch):
     """A blocker naming no criterion, a criterion the plan lacks, or a test that is not the plan's for it, is rejected naming the blocker.
 
     Against a story plan (9.1 to 9.3): a blocker on 9.1 with no test, an empty test or 9.1's own test passes; one on
     9.3 (non-functional) passes. A blocker with no criterion, on 9.4, on S1.1, with 9.2's test or an unknown test
     for 9.1, or on 9.3 with 9.1's test is rejected, the reason names that blocker, and a good blocker beside it is not named. Against a split of
-    two stories (S1.1, S1.2, S2.1): those pass with no test; S2.2, S3.1, 9.1, or S1.1 with any test are rejected."""
+    two stories (S1.1, S1.2, S2.1): those pass with no test; S2.2, S3.1, 9.1, or S1.1 with any test are rejected.
+    The good blockers pass on every stage a machine may run on (STAGE unset, plan or pr), since the sample review lists
+    the owner's asks matched to the plan's own criteria (#244)."""
     record_property("proves", "157.3")
+    record_property("proves", "244.1")
     good = [blocker("B1", "9.1"), blocker("B1", "9.1", ""), blocker("B1", "9.1", "tests/test_x.py::test_a"),
             blocker("B1", "9.3", "tests/test_x.py::test_c")]
-    for b in good:
-        code, out, err = check(tmp_path, "review", {**REVIEW, "blockers": [b]})
-        assert (code, out.strip()) == (0, ""), f"157.3: a blocker on the plan's own criterion and test was rejected: {b}\n{out}{err[-400:]}"
+    for stage in STAGES:
+        on_stage(monkeypatch, stage)
+        on = f"with STAGE={stage or 'unset'}"
+        for b in good:
+            code, out, err = check(tmp_path, "review", {**REVIEW, "blockers": [b]})
+            assert (code, out.strip()) == (0, ""), \
+                f"157.3, 244.1: a blocker on the plan's own criterion and test was rejected {on}: {b}\n{out}{err[-400:]}"
+        for c in ("S1.1", "S1.2", "S2.1"):
+            code, out, err = check(tmp_path, "review", {**REVIEW, "asks": SPLIT_ASKS, "blockers": [blocker("B1", c)]}, plan=SPLIT)
+            assert (code, out.strip()) == (0, ""), \
+                f"157.3, 244.1: a blocker on {c} of a two-story split was rejected {on}:\n{out}{err[-400:]}"
+    on_stage(monkeypatch, "")
     bad = [blocker("B1", ""), blocker("B1", "9.4"), blocker("B1", "S1.1"),
            blocker("B1", "9.1", "tests/test_x.py::test_b"), blocker("B1", "9.1", "tests/test_x.py::test_zzz"),
            blocker("B1", "9.3", "tests/test_x.py::test_a")]
@@ -176,9 +222,6 @@ def test_every_blocker_is_about_one_of_the_plans_criteria_and_its_tests(record_p
         out = assert_rejected_naming(tmp_path, "review", {**REVIEW, "blockers": [b, blocker("B2", "9.2")]}, "B1", "157.3")
         assert "B2" not in out, f"157.3: blocker B2 is on 9.2 with no test, yet a reason names it:\n{out}"
 
-    for c in ("S1.1", "S1.2", "S2.1"):
-        code, out, err = check(tmp_path, "review", {**REVIEW, "blockers": [blocker("B1", c)]}, plan=SPLIT)
-        assert (code, out.strip()) == (0, ""), f"157.3: a blocker on {c} of a two-story split was rejected:\n{out}{err[-400:]}"
     for b in (blocker("B1", "S2.2"), blocker("B1", "S3.1"), blocker("B1", "9.1"), blocker("B1", "S1.1", "tests/test_x.py::test_a")):
         assert_rejected_naming(tmp_path, "review", {**REVIEW, "blockers": [b]}, "B1", "157.3", plan=SPLIT)
 
