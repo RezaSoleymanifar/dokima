@@ -6,7 +6,9 @@ run-name: "${{ github.event.comment.body }}"
 # note, reaches the agent through its pack. No command, nothing starts; bots never start anything. On an issue
 # /review grades the plan; on a pull request, the work. A code owner's command that fails here, before any agent
 # starts, gets one record where it was written with GitHub's error, and the owner is mentioned. Every code owner's
-# command first puts up one card for its run, which becomes that run's record.
+# command first puts up one card for its run, which becomes that run's record. A code owner's `/autopilot start` or
+# `/autopilot stop` starts no stage: it switches the issue's whole tree (or the tree of the issue a pull request was
+# built for) on or off autopilot, the `autopilot` label, and says which issues it switched where it was written.
 on:
   issue_comment:
     types: [created]
@@ -28,6 +30,7 @@ jobs:
       role: ${{ steps.r.outputs.role }}
       stage: ${{ steps.r.outputs.stage }}
       issue: ${{ steps.r.outputs.issue }}
+      autopilot: ${{ steps.r.outputs.autopilot }}
       why: ${{ steps.why.outputs.why }}
     steps:
       - uses: actions/checkout@v5
@@ -111,9 +114,42 @@ jobs:
       - id: why
         if: failure()
         run: echo "why=$(paste -sd' ' /tmp/why.txt)" >> "$GITHUB_OUTPUT"
+  autopilot:
+    needs: route
+    if: needs.route.outputs.autopilot != ''
+    environment: keys
+    runs-on: ubuntu-24.04
+    outputs:
+      why: ${{ steps.why.outputs.why }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Switch the issue tree on or off autopilot, and say which issues, where it was written
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SWITCH: ${{ needs.route.outputs.autopilot }}
+          N: ${{ needs.route.outputs.issue }}
+          ON_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          python3 -m dokima.agent autopilot "$SWITCH" "$N" > /tmp/autopilot.md 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+          if [ "$ON_PR" = true ]; then
+            gh pr comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
+          else
+            gh issue comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
+          fi
+      - id: why
+        if: failure()
+        run: echo "why=$(paste -sd' ' /tmp/why.txt)" >> "$GITHUB_OUTPUT"
   say-why:
-    needs: [route, queue, split]
-    if: always() && (needs.route.result == 'failure' || needs.split.result == 'failure')
+    needs: [route, queue, split, autopilot]
+    if: always() && (needs.route.result == 'failure' || needs.split.result == 'failure' || needs.autopilot.result == 'failure')
     environment: keys
     runs-on: ubuntu-24.04
     steps:
@@ -128,7 +164,7 @@ jobs:
       - name: Say why the command started nothing, where it was written
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          WHY: ${{ needs.route.outputs.why || needs.split.outputs.why }}
+          WHY: ${{ needs.route.outputs.why || needs.split.outputs.why || needs.autopilot.outputs.why }}
           ROLE: ${{ needs.route.outputs.role }}
           STAGE: ${{ needs.route.outputs.stage }}
           ON_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
