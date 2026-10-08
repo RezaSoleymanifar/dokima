@@ -36,10 +36,15 @@ if a[:2] == ["api", "graphql"]:
         data = {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
             {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
             {"id": "A", "name": "Action", "options": [{"id": "needs", "name": "Needs you"}]}]}}}}
+    elif q.startswith("query") and "node(" in q:
+        # The card's current pill, read since #210: none, as GitHub answers for a card without one.
+        data = {"node": {"fieldValueByName": None, "fieldValues": {"nodes": []}}}
     elif q.startswith("query"):
         kind = "issue" if "issue(" in q else "pullRequest"
-        iid = f"{kind}-{v['n']}"
-        data = {"repository": {kind: {"id": iid, "projectItems": {"nodes": [{"id": iid, "project": {"id": "P"}}]}}}}
+        iid = f"{kind}-{v.get('n')}"
+        # Labels and open pull requests, read since #210: none, so nothing here is on autopilot.
+        data = {"repository": {kind: {"id": iid, "projectItems": {"nodes": [{"id": iid, "project": {"id": "P"}}]},
+                                      "labels": {"nodes": []}}, "pullRequests": {"nodes": []}}}
     else:
         name = "set" if "updateProjectV2ItemFieldValue" in q else "clear" if "clearProjectV2ItemFieldValue" in q else "other"
         open(os.path.join(d, "board.jsonl"), "a").write(json.dumps({"op": name, **v}) + "\n")
@@ -58,7 +63,8 @@ BLOCK = {"previous_step": {"did": ["Planned one criterion."], "decided": [], "op
          "stage": "plan", "round": 1, "verdict": "block", "summary": "One test proves nothing.",
          "blockers": [{"id": "B1", "criterion": "57.1", "test": "tests/test_x.py::test_a", "problem": "It asserts nothing.",
                        "evidence": "test_a has no assert.", "fix": "Assert the value.", "fixer": "planner"}],
-         "notes": [], "outside_plan": [], "resolved": []}
+         "notes": [], "outside_plan": [], "resolved": [],
+         "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": "57.1"}]}
 
 
 def board_state(path):

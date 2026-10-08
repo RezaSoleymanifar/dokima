@@ -1,6 +1,7 @@
 """An agent's hand-back is checked by code before anyone else sees it: well formed passes, every malformation is named."""
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -312,7 +313,8 @@ def test_an_approved_split_is_filed_as_sub_issues_with_their_order(record_proper
     body = [c[c.index("--body") + 1] for c in calls if c[:2] == ("issue", "create")][1]
     assert "Part of:** #139 Parent" in body and "u2" in body and "[source](https://x/2)" in body
     card = agent.render(r)
-    assert "#202 Second (blocked by #201)" in card and "no model" in card
+    words = re.sub(r"<img [^>]*>\s*", "", card)  # the field icons code draws (issue #234) are not words
+    assert "#202 Second (blocked by #201)" in words and "no model" in words
     calls.clear()
     again = agent.file_split("o/r", 139, recs + [r])
     assert again == r and not [c for c in calls if c[:2] == ("issue", "create")], "filing twice filed new issues"
@@ -412,7 +414,7 @@ def test_a_replan_is_judged_only_on_what_the_planner_changed_in_its_run(record_p
     from dokima import planner
     out = tmp_path / "out"
     out.mkdir()
-    plan = {"kind": "user_story", "user_story": "s", "acceptance_criteria": [{"text": "a", "source": "https://github.com/o/r/issues/9"}],
+    plan = {"kind": "user_story", "summary": "s", "user_story": "s", "acceptance_criteria": [{"text": "a", "source": "https://github.com/o/r/issues/9"}],
             "non_functional": [], "scope": ["dokima/x.py"], "out_of_scope": [], "tests": {"9.1": ["tests/test_x.py::test_a"]}}
     (out / "plan.json").write_text(json.dumps(plan))
     since = {"SPLIT": ["dokima/x.py", "tests/test_x.py"], "RUN": ["tests/test_x.py"]}

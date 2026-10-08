@@ -12,6 +12,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+
+from dokima import card
+from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
 FIXERS = {"worker", "planner"}
@@ -24,6 +28,7 @@ def gh(*args):
 
 
 MARK = "<!-- dokima-record -->"
+LIVE = "<!-- dokima-live -->"
 BOT = os.environ.get("DOKIMA_BOT", "dokima-runtime")
 HANDBACK = {"planner": "plan.json", "reviewer": "review.json", "worker": "work.json"}
 
@@ -161,8 +166,9 @@ def story_body(parent, i, story, parent_title):
     return "\n".join(lines + ["", "</details>"]) + "\n"
 
 
-def file_split(repo, parent, recs):
-    """File the stories of the newest approved split as sub-issues of the parent, in order, with their blocked-by links.
+def file_split(repo, parent, recs, labels=()):
+    """File the stories of the newest approved split as sub-issues of the parent, in order, with their blocked-by links,
+    each created with the given labels.
 
     Returns the record of what was filed. Filing twice files nothing new: the newest split record is returned instead."""
     done = latest(recs, "split", passed=True)
@@ -172,7 +178,8 @@ def file_split(repo, parent, recs):
     title = json.loads(gh("issue", "view", str(parent), "-R", repo, "--json", "title"))["title"]
     filed = []
     for i, st in enumerate(plan["stories"], 1):
-        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title)).strip()
+        extra = [x for label in labels for x in ("--label", label)]
+        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title), *extra).strip()
         number = int(url.rstrip("/").split("/")[-1])
         node = json.loads(gh("api", f"repos/{repo}/issues/{number}"))["id"]
         gh("api", "-X", "POST", f"repos/{repo}/issues/{parent}/sub_issues", "-F", f"sub_issue_id={node}")
@@ -210,53 +217,261 @@ def not_started(role, stage, why, meta):
             "check": {"passed": False, "problems": lines}}
 
 
-def render(rec):
-    """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
+def cancelled(role, stage, started, meta):
+    """The record of a run someone cancelled: what it was and whether its agent had started. Nothing it handed back
+    is used, and the river starts nothing after it."""
+    return {"role": "cancelled", "attempt": role, "stage": stage or None, "agent_started": started, **meta,
+            "handback": {}, "check": {"passed": False, "problems": []}}
+
+
+def live_card(role, stage, state, ahead=None):
+    """The run's card while it is still running: queued (or waiting for the run `ahead` of it), setting up, agent
+    working since the agent started, then checking the hand-back.
+
+    It carries its own marker and no JSON fold, so it never reads as a record; at the end of the run code edits this
+    same comment into the run's record. A hand-off's queued card is put up before its run exists, so it links none.
+    While the agent works the card is not edited, so it links the run's live page for detail."""
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker",
+            "split": "Filing the split"}.get(role, "Command")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    head = role_icon(repo, role, stage) + f"**{head}**"
+    if state in ("queued", "handoff"):
+        if ahead:
+            line = f"{icon(repo, 'queued')} {head} · waiting for [this run]({ahead})"
+            what = (f"Queued, and waiting for [this run]({ahead}) on the same issue to end; this run starts after it. "
+                    "This card says working when the agent starts, then becomes the run's record.")
+        else:
+            line = f"{icon(repo, 'queued')} {head} · queued"
+            what = "Queued: the run starts in a moment. This card says working when the agent starts, then becomes the run's record."
+        return "\n".join([LIVE, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
+    if state == "working":
+        line = f"{icon(repo, 'running')} {head} · agent working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
+        what = (f"The agent is working; [watch it live]({run}) on GitHub. This card says checking when the agent ends, "
+                "then becomes the run's record.")
+        return "\n".join([LIVE, line, "", what]) + "\n"
+    if state == "checking":
+        line = f"{icon(repo, 'running')} {head} · checking"
+        what = "The agent has ended and code is checking its hand-back. This card becomes the run's record next."
+    else:
+        line = f"{icon(repo, 'queued')} {head} · setting up"
+        what = ("The machine is setting up: the branch, the starting pack and the tools. This card says working when "
+                "the agent starts, then becomes the run's record.")
+    return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
+
+
+GOING = {"queued", "in_progress", "waiting", "requested", "pending"}
+
+
+def where_card(repo, number, role, stage):
+    """Where a run's card and record go: the open pull request for the worker and the code review, else the issue."""
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+            "-q", ".[0].number").strip()
+    return pr if pr and (role == "worker" or stage == "pr") else str(number)
+
+
+def run_ahead(repo, number):
+    """The link of another run still going on the issue or its pull request, found from GitHub's records: a live card
+    the bot put up there, which links its run, and GitHub's word that the run has not completed. None when there is none."""
+    own = os.environ.get("GITHUB_RUN_ID", "")
+    places = {str(number), where_card(repo, number, "worker", "")}
+    for n in sorted(places):
+        for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/comments", "--paginate") or "[]"):
+            body = c.get("body") or ""
+            if (c.get("user") or {}).get("login") not in (BOT, f"{BOT}[bot]") or LIVE not in body or MARK in body:
+                continue
+            for rid in dict.fromkeys(re.findall(r"/actions/runs/(\d+)", body)):
+                if rid == own:
+                    continue
+                if gh("api", f"repos/{repo}/actions/runs/{rid}", "--jq", ".status").strip() in GOING:
+                    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{rid}"
+    return None
+
+
+def queue(role, stage, number, state):
+    """Put up a run's queued card where its record will go, saying so when it waits for another run; returns its id."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    try:
+        ahead = run_ahead(repo, number)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        ahead = None
+    body = live_card(role, stage, state, ahead)
+    return gh("api", "-X", "POST", f"repos/{repo}/issues/{where_card(repo, number, role, stage)}/comments",
+              "-f", f"body={body}", "--jq", ".id").strip()
+
+
+def role_icon(repo, role, stage):
+    """The icon of the role a run is for, then a space; nothing for a run that is no agent's (a split or a command)."""
+    field = {"planner": "planner", "worker": "worker"}.get(role) or (
+        {"plan": "plan review", "pr": "code review"}.get(stage) if role == "reviewer" else None)
+    return f"{field_icon(repo, field)} " if field else ""
+
+
+HEADS = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker", "split": "Code"}
+
+
+def sentences(text):
+    """Text cut into its sentences: a sentence ends at a full stop, question or exclamation mark followed by a space."""
+    return [x for x in re.split(r"(?<=[.?!])\s+", text.strip() if isinstance(text, str) else "") if x]
+
+
+def change_sentence(summary):
+    """The worker's own words on what it changed: its summary after the cause sentence, or all of it when it is one."""
+    said = sentences(summary)
+    return " ".join(said[1:] if len(said) > 1 else said)
+
+
+def bullets(items, show):
+    """One line per item, drawn by `show`; non-dict items, and a malformed field that is no list, are shown as they are."""
+    items = items if isinstance(items, list) else [items] if items not in (None, "", {}) else []
+    return [f"- {show(x) if isinstance(x, dict) else x}" for x in items]
+
+
+def pairs(d):
+    """One line per key and value of a field that should be a dict; nothing when it is not."""
+    return [f"- {k}: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in d.items()] if isinstance(d, dict) else []
+
+
+def details(rec):
+    """The long parts of a run's record, each in its own fold, drawn by the issue card's fold code."""
     role, h = rec["role"], rec["handback"]
+    mark = lambda field: field_icon(os.environ.get("GITHUB_REPOSITORY", ""), field)
+    if not isinstance(h, dict):
+        return []
+    parts = []
+    if role == "planner":
+        parts += [("Non-functional requirements", bullets(h.get("non_functional"), lambda n: f"{n.get('text', '')} "
+                                                           f"({n.get('why', '')}; {n.get('principle', '')})")),
+                  ("Scope", bullets(h.get("scope"), str)), ("Out of scope", bullets(h.get("out_of_scope"), str)),
+                  ("Tests", pairs(h.get("tests"))),
+                  ("Test changes", pairs(h.get("test_changes"))),
+                  ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
+                  ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
+    elif role == "worker":
+        cause = sentences(h.get("summary"))
+        parts += [("What it built", ([f"- {cause[0]}"] if len(cause) > 1 else [])
+                   + pairs(h.get("criteria"))
+                   + ([f"- Its own test run: {h['evidence']}"] if h.get("evidence") else [])),
+                  ("What it found", bullets(h.get("outside_scope"), lambda o: f"{mark('outside the plan')} Outside the plan: {o.get('file', '')}: {o.get('why', '')}")),
+                  ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
+                   + bullets(h.get("replies"), lambda r: f"{r.get('blocker', '')} {r.get('answer', '')}: {r.get('why', '')}"))]
+    elif role == "reviewer":
+        parts += [("Details", ([f"- {h['summary']}"] if h.get("summary") and h.get("verdict") != "escalate" else [])
+                   + bullets(h.get("blockers"), lambda b: f"{b.get('id')} on {b.get('criterion')}: {b.get('problem', '')} "
+                                                          f"Evidence: {b.get('evidence', '')} Fix: {b.get('fix', '')}")
+                   + bullets(h.get("resolved"), lambda r: f"Resolved: {json.dumps(r)}")),
+                  (f"{mark('note')} Notes", bullets(h.get("notes"), lambda n: f"{n.get('text', '')} ({n.get('evidence', '')})")),
+                  (f"{mark('outside the plan')} Outside the plan", bullets(h.get("outside_plan"), lambda o: f"{o.get('file', '')}: {o.get('change', '')}")),
+                  ("The owner's asks", bullets(h.get("asks"), lambda a: f"{a.get('ask', '')} ({a.get('criterion', '')}, {a.get('source', '')})"))]
+    prev = h.get("previous_step")
+    if isinstance(prev, dict):
+        parts.append(("What the previous step did", [f"- {mark('still open') + ' ' if k == 'open' else ''}**{label}:**{x[1:]}" for k, label in
+                                                     (("did", "Did"), ("decided", "Decided"), ("open", "Still open"))
+                                                     for x in bullets(prev.get(k), str)]))
+    out = []
+    for title, lines in parts:
+        if lines:
+            out += [""] + card.fold(title, lines)
+    return out
+
+
+def opening(rec):
+    """The one plain sentence a run comment opens with: what the run did."""
+    role, h, passed = rec["role"], rec["handback"], rec["check"]["passed"]
+    if not passed and role == "worker":
+        return "The worker stopped early with its hand-back rejected by code."
+    if not passed:
+        return f"{HEADS[role]}'s run ended with its hand-back rejected by code."
+    if role == "planner" and h.get("kind") == "feature":
+        n = len(h.get("stories") or [])
+        return f"The planner proposes a split into {n} stories" + (" and asks you questions." if h.get("questions") else ".")
+    if role == "planner":
+        q = len(h.get("questions") or [])
+        return f"The planner planned this issue and asks you {q} question{'s' if q > 1 else ''}." if q else "The planner planned this issue."
+    if role == "reviewer":
+        what = "the plan" if rec.get("stage") == "plan" else "the work"
+        n = len({b.get("criterion") for b in h.get("blockers") or [] if isinstance(b, dict)})
+        return {"approve": f"The reviewer passed {what}.",
+                "block": f"The reviewer blocked {what} on {n} criteri{'a' if n != 1 else 'on'}.",
+                "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
+    if role == "split":
+        return f"Code filed the split as {len(h.get('stories') or [])} stories."
+    return change_sentence(h.get("summary"))
+
+
+def record_fold(rec):
+    """The full JSON record, always the last fold of a run comment: later packs are built from it."""
+    return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
+
+
+def render(rec, pr=None):
+    """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
+    needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
+    worker's pull request, once it exists."""
+    role, h = rec["role"], rec["handback"]
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
         a = rec.get("attempt")
-        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker",
-                "split": "Filing the split"}.get(a, "Command")
-        lines = [MARK, f"**{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
-        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
-                  "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker",
+               "split": "Filing the split"}.get(a, "The command")
+        lines = [MARK, f"{icon(repo, 'failed')} {role_icon(repo, a, rec.get('stage'))}{who} stopped before any agent started.", ""] + [f"- {p}" for p in rec["check"]["problems"]]
+        lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
-    head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
-    lines = [MARK, f"**{head}**" + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
-    if not rec["check"]["passed"]:
+    if role == "cancelled":
+        a = rec.get("attempt")
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker"}.get(a, "The command")
+        what = (f"{who} run was cancelled after its agent started, and nothing it handed back is used." if rec.get("agent_started")
+                else f"{who} run was cancelled before its agent started.")
+        lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
+        lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    passed = rec["check"]["passed"]
+    first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
+    if role == "worker" and pr:
+        first += f" ([pull request #{pr.rstrip('/').rsplit('/', 1)[-1]}]({pr}))"
+    lines = [MARK, first]
+    if not passed:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
     elif role == "planner" and h.get("kind") == "feature":
-        lines += ["", f"Proposes a split: {h.get('feature', '')}", ""]
+        lines += ["", f"**Feature:** {h.get('feature', '')}", ""]
         lines += [f"{i}. {st.get('title', '')}" for i, st in enumerate(h.get("stories", []), 1)]
     elif role == "planner":
-        lines += ["", h.get("user_story") or h.get("question") or ""]
+        lines += ["", f"**User story:** {h.get('user_story') or h.get('question') or ''}"]
+        criteria = [c.get("text", "") if isinstance(c, dict) else c for c in h.get("acceptance_criteria") or []]
+        if criteria:
+            lines += ["", f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria:**", ""] + [f"{i}. {c}" for i, c in enumerate(criteria, 1)]
     elif role == "reviewer":
-        lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
+        if h.get("verdict") == "escalate" and h.get("summary"):
+            lines += ["", h["summary"]]
         fixes = lambda b: f", the {b['fixer']} fixes it" if b.get("fixer") in FIXERS else ""
-        lines += [f"- **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers", [])]
+        blocks = [f"- {field_icon(repo, 'blocker')} **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers") or []]
+        if blocks:
+            lines += [""] + blocks
+        judged = [a for a in h.get("assumptions") or [] if isinstance(a, dict)]
+        if judged:
+            lines += ["", "**The plan's assumptions:**"]
+            lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
+                      if a.get("accepted") is True else f"- {a.get('question', '')} Not accepted: {a.get('why', '')}"
+                      for a in judged]
         if h.get("issues_found"):
-            lines += ["", "**Issues found outside this one** (proposals until you file them):"]
+            lines += ["", f"{field_icon(repo, 'issue found')} **Issues found outside this one** (proposals until you file them):"]
             lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
     elif role == "split":
         num = {f["story"]: f["issue"] for f in h.get("stories", [])}
-        lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" (blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
+        lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
                          for f in h.get("stories", [])]
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
-    else:
-        lines += ["", h.get("summary", "")]
-    if role == "planner" and h.get("questions"):
-        lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
+    if passed and role == "planner" and h.get("questions"):
+        lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
-    prev = h.get("previous_step") if isinstance(h, dict) else None
-    if isinstance(prev, dict) and any(prev.get(k) for k in ("did", "decided", "open")):
-        lines += ["", "<details><summary>What the previous step did</summary>", ""]
-        for k, label in (("did", "Did"), ("decided", "Decided"), ("open", "Still open")):
-            lines += [f"- **{label}:** {x}" for x in prev.get(k) or []]
-        lines += ["", "</details>"]
-    lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
-              "", footnote(rec)]
+    lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
+
+
+def escape_line(text):
+    """One sentence kept on one line, so the comment opens with it whole."""
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 def jsonl_files(root):
@@ -312,8 +527,9 @@ def run_report(path):
 def footnote(rec):
     """One line under every card: model, time, turns, tokens and cost, and the link to the full conversation."""
     r = rec.get("report") or {}
+    stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
     if rec.get("role") == "split":
-        return f"<sub>Filed by code, no model · [run]({rec.get('run', '')})</sub>"
+        return f"<sub>{stats} Filed by code, no model · [run]({rec.get('run', '')})</sub>"
     pretty = lambda m: (lambda x: f"{x.group(1).title()} {x.group(2)}.{x.group(3)}" if x else m)(re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m))
     parts = [", ".join(pretty(m) for m in rec.get("models") or []) or "model unknown"]
     if r.get("duration_ms"):
@@ -325,7 +541,7 @@ def footnote(rec):
     if r.get("cost_usd") is not None:
         parts.append(f"${r['cost_usd']:.2f} at API prices")
     links = " · ".join(x for x in (f"[conversation]({rec['log']})" if rec.get("log") else "", f"[run]({rec['run']})" if rec.get("run") else "") if x)
-    return "<sub>" + " · ".join(parts) + (" · " + links if links else "") + "</sub>"
+    return f"<sub>{stats} " + " · ".join(parts) + (" · " + links if links else "") + "</sub>"
 
 
 def models_used(log_dir):
@@ -425,6 +641,79 @@ def problems_review(r):
             bad.append(f"issue found {i} needs a title, why and evidence")
     if "questions" in r:
         bad.append("the reviewer never asks the owner; escalate on round three instead")
+    return bad
+
+
+def problems_asks(r, ids):
+    """Everything wrong with a plan review's asks list: every ask the owner made, in their words, with a link to where
+    they said it and the plan's criterion (one of ids) that keeps it, or "missing"; an approve keeps every ask."""
+    asks = r.get("asks")
+    if not isinstance(asks, list) or not asks:
+        return ["asks must list every ask in the owner's issue and comments, each {\"ask\": \"the owner's words\", "
+                "\"source\": \"a link to where they said it\", \"criterion\": \"N.k\" or \"missing\"}"]
+    bad = problems_items(r, "asks", ("ask", "source", "criterion"), name="ask")
+    good = [a for a in asks if isinstance(a, dict) and all(filled(a.get(k)) for k in ("ask", "source", "criterion"))]
+    for a in good:
+        c = a["criterion"].strip()
+        if c != "missing" and c not in ids:
+            bad.append(f"the ask \"{a['ask']}\" is matched to {c}, which is not a criterion of the plan "
+                       f"({', '.join(ids) or 'none'})")
+    gone = [a["ask"] for a in good if a["criterion"].strip() == "missing"]
+    if r.get("verdict") == "approve" and gone:
+        bad.append("an approve keeps every ask, but these are marked missing: " + "; ".join(f'"{g}"' for g in gone))
+    return bad
+
+
+ASSUMPTION_SHAPE = ('{"question": "the plan\'s question", "accepted": true | false, "changes": true | false, '
+                    '"matched": "the owner\'s words", "source": "where they said them"} (or "why" when not accepted)')
+
+
+def issue_url(number):
+    """The link of the issue on GitHub."""
+    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/issues/{number}"
+
+
+def owner_source(source, number):
+    """True when a source names the owner's words Dokima can check: the issue's own text, one of its comments, or AGENTS.md."""
+    return source == "AGENTS.md" or bool(re.fullmatch(re.escape(issue_url(number)) + r"(#issuecomment-\d+)?", source))
+
+
+def problems_assumptions(r, plan, number):
+    """Everything wrong with a plan review's judgements of the plan's questions: every question judged once, each
+    saying whether its assumption is accepted and whether it changes how the system works or what it costs; one
+    accepted never changes them and names the owner's words and where they said them; one not accepted says why."""
+    qs = [q.get("question") for q in plan.get("questions") or [] if isinstance(q, dict)]
+    judged = r.get("assumptions", [])
+    if not isinstance(judged, list):
+        return [f"assumptions must be a list, one per question of the plan, each {ASSUMPTION_SHAPE}"]
+    bad, seen = [], []
+    for i, a in enumerate(judged, 1):
+        if not isinstance(a, dict):
+            bad.append(f"assumptions item {i} must be an object, {ASSUMPTION_SHAPE}")
+            continue
+        q = a.get("question")
+        label = f"the assumption of \"{q}\""
+        if q not in qs:
+            bad.append(f"assumptions item {i} judges \"{q}\", which is not a question of the plan")
+            continue
+        seen.append(q)
+        if not isinstance(a.get("accepted"), bool):
+            bad.append(f"{label} needs accepted: true or false")
+        if not isinstance(a.get("changes"), bool):
+            bad.append(f"{label} needs changes: true or false, whether it changes how the system works or what it costs")
+        if a.get("accepted") is True:
+            if a.get("changes") is True:
+                bad.append(f"{label} is accepted though it changes how the system works or what it costs (changes is "
+                           "true): only the owner accepts such an assumption")
+            if not filled(a.get("matched")):
+                bad.append(f"{label} is accepted with no matched words: quote the owner's words it matches")
+            if not filled(a.get("source")) or not owner_source(a["source"].strip(), number):
+                bad.append(f"{label} needs a source: {issue_url(number)}, one of its comments' links, or AGENTS.md")
+        elif a.get("accepted") is False and not filled(a.get("why")):
+            bad.append(f"{label} is not accepted and needs why")
+    for q in qs:
+        if seen.count(q) != 1:
+            bad.append(f"the assumption of \"{q}\" must be judged exactly once in assumptions, {ASSUMPTION_SHAPE}")
     return bad
 
 
@@ -575,6 +864,9 @@ def check(kind, path, plan_path=None, number=None):
             bad.append(f"the issue number {number!r} is not a number: the hand-back can't be checked against the plan")
         else:
             bad += problems_plan(kind, data, plan, number)
+            if kind == "review" and os.environ.get("STAGE") == "plan":
+                bad += problems_asks(data, plan_criteria(plan, number))
+                bad += problems_assumptions(data, plan, number)
     for b in bad:
         print(b)
     return 1 if bad else 0
@@ -647,45 +939,374 @@ def issue_of_pr(head, body):
     return m.group(1) if m else None
 
 
+def autopilot_of(body):
+    """"start" or "stop" when a comment's first line begins `/autopilot start` or `/autopilot stop`; otherwise None."""
+    first = (body or "").strip().splitlines()[0].split() if (body or "").strip() else []
+    if len(first) >= 2 and first[0].lower() == "/autopilot" and first[1].lower() in ("start", "stop"):
+        return first[1].lower()
+    return None
+
+
 def route(body, on_pr, number, head="", pr_body=""):
     """What a code owner's comment starts: {role, stage, issue}, or None when it starts nothing.
 
-    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue."""
-    role = command_of(body)
-    if not role:
+    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue.
+    `/autopilot start|stop` starts no stage: it routes to {autopilot, issue}, the issue whose tree it switches."""
+    role, switch = command_of(body), autopilot_of(body)
+    if not role and not switch:
         return None
     issue = issue_of_pr(head, pr_body) if on_pr else str(number)
     if not issue:
         return None
+    if switch:
+        return {"autopilot": switch, "issue": issue}
     stage = ("pr" if on_pr else "plan") if role == "reviewer" else ""
     return {"role": role, "stage": stage, "issue": issue}
 
 
-def next_step(items, rec, owners, rounds=3):
+AUTOPILOT = "autopilot"
+
+
+def issue_tree(repo, number):
+    """The issue and every sub-issue under it, at every level, from GitHub's native sub-issues; parents first."""
+    tree, todo = [], [int(number)]
+    while todo:
+        n = todo.pop(0)
+        if n in tree:
+            continue
+        tree.append(n)
+        # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+        todo += [c["number"] for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/sub_issues?per_page=100") or "[]")]
+    return tree
+
+
+def switch_autopilot(repo, number, switch):
+    """Put the issue's tree on autopilot ("start") or take it off ("stop"), touching no other label; returns the
+    issues switched: those whose `autopilot` label was added or removed."""
+    switched = []
+    for n in issue_tree(repo, number):
+        labels = {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("labels", [])}
+        if switch == "start" and AUTOPILOT not in labels:
+            # Adding a label GitHub does not have yet creates it.
+            gh("api", "-X", "POST", f"repos/{repo}/issues/{n}/labels", "-f", f"labels[]={AUTOPILOT}")
+            switched.append(n)
+        elif switch == "stop" and AUTOPILOT in labels:
+            gh("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/{AUTOPILOT}")
+            switched.append(n)
+    return switched
+
+
+def autopilot_comment(number, switch, switched, started=(), picked=""):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched, every issue whose
+    planner it started, and what of the issue's own waiting work it picked up."""
+    names = ", ".join(f"#{n}" for n in switched)
+    if switch == "start":
+        said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
+    else:
+        said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
+    if started:
+        said += f" Planning started for {', '.join(f'#{n}' for n in started)}, which wait on nothing open."
+    if picked:
+        said += f" {picked}"
+    return said + ("\n" if started or picked else " No stage was started.\n")
+
+
+AUTOPILOT_LINE = "Autopilot: blockers merged, starting plan"
+AUTOPILOT_START_LINE = "Autopilot: switched on, starting plan"
+
+
+def sub_issues(repo, number):
+    """The issue's own sub-issues, one level down, each with its state."""
+    # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+    return json.loads(gh("api", f"repos/{repo}/issues/{number}/sub_issues?per_page=100") or "[]")
+
+
+def blocked_by(repo, number):
+    """The issues blocking this one, from GitHub's native blocked-by links, each with its state."""
+    return json.loads(gh("api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate") or "[]")
+
+
+def started_before(repo, number):
+    """True when GitHub's records show something already started on the issue: a record, a live card or an Autopilot
+    line the bot posted there. A planned, running or finished issue is never started again."""
+    d = json.loads(gh("issue", "view", str(number), "-R", repo, "--json", "comments"))
+    for c in d.get("comments") or []:
+        body = c.get("body") or ""
+        if (c.get("author") or {}).get("login") in (BOT, f"{BOT}[bot]") and (
+                MARK in body or LIVE in body or body.strip() in (AUTOPILOT_LINE, AUTOPILOT_START_LINE)):
+            return True
+    return False
+
+
+def start_planner(repo, number, line=AUTOPILOT_LINE):
+    """Start the issue's planner with the river's own signal, after one Autopilot line where the owner would have said /plan.
+
+    The line goes first: it is the record that this issue was started, so no later close starts it again."""
+    gh("issue", "comment", str(number), "-R", repo, "--body", line)
+    gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=dokima-next", "-f", "client_payload[role]=planner",
+       "-f", "client_payload[stage]=plan", "-f", f"client_payload[issue]={number}")
+
+
+def start_waiting(repo, numbers, need_blocker=False, line=AUTOPILOT_LINE):
+    """Start the planner of every open issue among `numbers` with no sub-issues, nothing open blocking it and nothing
+    started on it yet; with need_blocker, only those blocked by at least one issue (all now closed). Returns those started."""
+    started = []
+    for n in numbers:
+        if json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("state") != "open" or sub_issues(repo, n):
+            continue
+        blockers = blocked_by(repo, n)
+        if (need_blocker and not blockers) or any(b.get("state") != "closed" for b in blockers):
+            continue
+        if started_before(repo, n):
+            continue
+        start_planner(repo, n, line)
+        started.append(n)
+    return started
+
+
+def tree_done_comment(number):
+    """The comment a parent closes with when its last sub-issue closed on autopilot."""
+    return f"Every issue under #{number} is closed, so its whole tree is done and it closes.\n"
+
+
+def autopilot_closed(repo):
+    """What autopilot does when an issue closes, worked out from GitHub's state of every issue on autopilot, so a close
+    whose own run never went is still handled by the next one. Returns what it did, as lines.
+
+    Every open parent on autopilot whose sub-issues are all closed closes as completed, saying its tree is done, and
+    counts as a close one level up in turn. Every closed issue on autopilot with no parent on autopilot is the top of a
+    done tree: the tree goes off autopilot. Then every open issue left on autopilot that was blocked and whose blockers
+    have all closed starts its planner, unless something already started on it."""
+    did = []
+    while True:
+        issues = {i["number"]: i for i in json.loads(gh(
+            "api", f"repos/{repo}/issues?labels={AUTOPILOT}&state=all&per_page=100", "--paginate") or "[]")
+            if "pull_request" not in i}
+        subs = {n: sub_issues(repo, n) for n in sorted(issues)}
+        done = [p for p, cs in subs.items() if cs and issues[p]["state"] == "open" and all(c["state"] == "closed" for c in cs)]
+        if not done:
+            break
+        for p in done:
+            gh("issue", "close", str(p), "-R", repo, "--reason", "completed", "--comment", tree_done_comment(p))
+            did.append(f"closed #{p}: its whole tree is done")
+    under = {c["number"] for cs in subs.values() for c in cs}
+    off = set()
+    for n in sorted(issues):
+        if issues[n]["state"] == "closed" and n not in under:
+            switched = switch_autopilot(repo, n, "stop")
+            off |= set(switched)
+            if switched:
+                did.append("autopilot off for " + ", ".join(f"#{m}" for m in switched))
+    waiting = [n for n in sorted(issues) if n not in off and issues[n]["state"] == "open" and not subs[n]]
+    did += [f"started the planner for #{n}" for n in start_waiting(repo, waiting, need_blocker=True)]
+    return did
+
+
+AUTOPILOT_LINES = {"worker": "Autopilot: plan approved, starting work", "split": "Autopilot: split approved, filing its stories"}
+UNREAD = "Autopilot could not be read from GitHub, so nothing starts by itself."
+
+
+def on_autopilot(repo, number):
+    """True or False from the issue's own labels on GitHub; None when GitHub cannot say."""
+    try:
+        labels = json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("labels")
+    except (subprocess.CalledProcessError, json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(labels, list):
+        return None
+    return any((l.get("name") if isinstance(l, dict) else l) == AUTOPILOT for l in labels)
+
+
+WORKFLOWS = ".github/workflows/"
+PASSING = {"success", "neutral", "skipped"}
+
+
+def approves_work(rec):
+    """True when a record is a code review, passed by code, that approves the pull request."""
+    return (rec.get("role") == "reviewer" and (rec.get("stage") or "") == "pr" and bool(rec.get("check", {}).get("passed"))
+            and (rec.get("handback") or {}).get("verdict") == "approve")
+
+
+def work_approved(recs):
+    """True when the issue's newest planner, worker or reviewer record is a code review approving the pull request."""
+    newest = next((r for r in reversed(recs) if r.get("role") in HANDBACK), None)
+    return bool(newest) and approves_work(newest)
+
+
+def pages(text):
+    """Every JSON page `gh api --paginate` printed back to back."""
+    out, at, dec = [], 0, json.JSONDecoder()
+    while text[at:].strip():
+        at += len(text[at:]) - len(text[at:].lstrip())
+        page, at = dec.raw_decode(text, at)
+        out.append(page)
+    return out
+
+
+def unproven(repo, sha):
+    """Why the commit is not proven by every check on it, check runs and commit statuses alike, or None when every
+    check on it has passed."""
+    runs = [r for p in pages(gh("api", f"repos/{repo}/commits/{sha}/check-runs?per_page=100", "--paginate"))
+            for r in p.get("check_runs", [])]
+    statuses = [s for p in pages(gh("api", f"repos/{repo}/commits/{sha}/status?per_page=100", "--paginate"))
+                for s in p.get("statuses") or []]
+    if not runs and not statuses:
+        return f"there are no checks on its head commit {sha[:7]}"
+    red = [f"{r['name']} ({r.get('conclusion')})" for r in runs if r.get("status") == "completed" and r.get("conclusion") not in PASSING]
+    red += [f"{s.get('context')} ({s.get('state')})" for s in statuses if s.get("state") not in ("success", "pending")]
+    running = [r["name"] for r in runs if r.get("status") != "completed"]
+    running += [s.get("context") for s in statuses if s.get("state") == "pending"]
+    if red:
+        return f"not every check passed on its head commit {sha[:7]}: {', '.join(red)}"
+    if running:
+        return f"a check is still running on its head commit {sha[:7]}: {', '.join(running)}"
+    return None
+
+
+def try_merge(repo, pr):
+    """Merge the pull request at the head whose checks were read, only when it changes no workflow file and every
+    check on that head has passed. Returns (True, the merged head) or (False, why not, in GitHub's words when GitHub
+    refused)."""
+    try:
+        files = [f["filename"] for p in pages(gh("api", f"repos/{repo}/pulls/{pr}/files?per_page=100", "--paginate")) for f in p]
+        flows = [f for f in files if f.startswith(WORKFLOWS)]
+        if flows:
+            return False, f"it changes a workflow file ({', '.join(flows)}), and only the owner merges those"
+        head = gh("pr", "view", str(pr), "-R", repo, "--json", "headRefOid", "-q", ".headRefOid").strip()
+        if not head:
+            return False, "GitHub did not say which commit is its head"
+        why = unproven(repo, head)
+        if why:
+            return False, why
+        # Pinned to the head whose checks passed: a commit pushed since makes GitHub refuse.
+        gh("pr", "merge", str(pr), "-R", repo, "--squash", "--match-head-commit", head)
+        return True, head
+    except subprocess.CalledProcessError as e:
+        return False, " ".join((e.stderr or str(e)).split())
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError) as e:
+        return False, f"GitHub's answer could not be read: {e}"
+
+
+def open_pr(repo, number):
+    """The number of the open pull request built for the issue, or ''."""
+    return gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+              "-q", ".[0].number").strip()
+
+
+def automerge(repo, number):
+    """On autopilot, merge the open pull request built for the issue; when it merges, the issue gets one Autopilot
+    line. Returns (pull request or '', merged, why)."""
+    try:
+        pr = open_pr(repo, number)
+    except subprocess.CalledProcessError as e:
+        return "", False, " ".join((e.stderr or str(e)).split())
+    if not pr:
+        return "", False, "there is no open pull request built for it"
+    merged, why = try_merge(repo, pr)
+    if merged:
+        gh("issue", "comment", str(number), "-R", repo, "--body", f"Autopilot: merged PR #{pr}")
+    return pr, merged, why
+
+
+def merge_tree(repo, number, owners):
+    """`/autopilot start`: merge every open pull request in the issue's tree whose newest record is its code review's
+    approval. One that cannot merge says why on itself and mentions the owner. Returns what merged, as (issue, pr)."""
+    done, mention = [], " ".join(f"@{o}" for o in owners)
+    for n in issue_tree(repo, number):
+        if not open_pr(repo, n) or not work_approved(records(conversation(repo, n)[1])):
+            continue
+        pr, merged, why = automerge(repo, n)
+        if merged:
+            done.append((n, pr))
+        elif pr:
+            gh("pr", "comment", pr, "-R", repo, "--body",
+               f"Autopilot did not merge this pull request: {why}. {mention} It waits for you to merge it.".replace("  ", " "))
+    return done
+
+
+def agents_text():
+    """AGENTS.md as the runtime has it, from main; empty when there is none."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "AGENTS.md")
+    try:
+        return open(path).read()
+    except OSError:
+        return ""
+
+
+def said_there(words, source, items, body, owners, number):
+    """True when the words appear word for word where the source says: the issue's own text, a code owner's comment on
+    this issue, or AGENTS.md. Anything else, a comment by anyone else (the bot included) or one not found, is False."""
+    flat = lambda t: " ".join((t or "").split())
+    words, source = flat(words), (source or "").strip()
+    if not words or not owner_source(source, number):
+        return False
+    if source == "AGENTS.md":
+        return words in flat(agents_text())
+    if source == issue_url(number):
+        from dokima.body import ask
+        return words in flat(ask(body))
+    return any(c.get("url") == source and (c.get("author") or {}).get("login") in owners and words in flat(c.get("body"))
+               for c in items)
+
+
+def not_accepted(items, h, owners, body, number):
+    """The questions of the reviewed plan whose assumption the review did not accept on the owner's real words."""
+    plan = latest(records(items), "planner")
+    qs = [q.get("question") for q in ((plan or {}).get("handback") or {}).get("questions") or [] if isinstance(q, dict)]
+    ok = {a.get("question") for a in h.get("assumptions") or [] if isinstance(a, dict) and a.get("accepted") is True
+          and a.get("changes") is False and said_there(a.get("matched"), a.get("source"), items, body, owners, number)}
+    return [q for q in qs if q not in ok]
+
+
+def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number=""):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
-    A planner hands to the reviewer unless it has questions for the owner. A worker hands to the reviewer. A blocking
-    review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
-    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner."""
+    A planner hands to the reviewer unless it has questions for the owner and the issue is not on autopilot. A worker
+    hands to the reviewer. A blocking review sends the work back, until three blocks in a row at that stage since the
+    owner last spoke; then it is the owner's call. On autopilot (`autopilot()` says, None when GitHub cannot), an
+    approved plan goes to the worker and an approved split is filed, each ("start", role, stage, "autopilot"), once
+    the plan reviewer accepted every question's assumption on the owner's real words; a question not accepted stops.
+    Otherwise an approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
+    cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
+    if role == "cancelled":
+        return ("cancelled", "Nothing starts by itself after a cancel. Give the command again to start this stage.")
     if role == "not-started":
         return ("stop", "Nothing ran, see why above. Fix the cause, then give the command again.")
     if not rec.get("check", {}).get("passed"):
         return ("stop", "The hand-back was rejected by code, see the problems above. Fix the cause, then start the stage again.")
     if role == "planner":
         if h.get("questions"):
-            return ("stop", "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions.")
+            asked = "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions."
+            on = autopilot()
+            if on is None:
+                return ("stop", f"{UNREAD} {asked}")
+            return ("start", "reviewer", "plan") if on else ("stop", asked)
         return ("start", "reviewer", "plan")
     if role == "worker":
         return ("start", "reviewer", "pr")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
+    plan = (latest(records(items), "planner") or {}).get("handback") or {}
+    if stage == "plan" and verdict in ("approve", "block") and plan.get("questions"):
+        on = autopilot()
+        if on is None:
+            return ("stop", f"{UNREAD} The plan has questions for you. Answer with `/plan` and your words.")
+        left = not_accepted(items, h, owners, body, number) if on else []
+        if left:
+            return ("stop", "The reviewer did not accept the plan's assumption for: " + " ".join(f"\"{q}\"" for q in left)
+                    + " Answer with `/plan` and your words" + (", or say `/work` to build it on its assumptions." if verdict == "approve" else "."))
     if verdict == "approve" and stage == "plan" and test_fix(items, owners):
         return ("start", "worker", "")
+    if verdict == "approve" and stage == "plan":
+        on = autopilot()
+        if on:
+            return ("start", "split" if plan.get("kind") == "feature" else "worker", "", "autopilot")
+        why = "The plan is approved. Say `/work` to build it, or `/plan` with changes."
+        return ("stop", f"{UNREAD} {why}" if on is None else why)
     if verdict == "approve":
-        return ("stop", "The plan is approved. Say `/work` to build it, or `/plan` with changes." if stage == "plan" else
-                "The work is approved. Merge the pull request, or review it with a command to send it back.")
+        return ("stop", "The work is approved. Merge the pull request, or review it with a command to send it back.")
     if verdict == "escalate":
         return ("stop", "The reviewer escalated this to you, see why above.")
     last_owner = max([i for i, c in enumerate(items) if (c.get("author") or {}).get("login") in owners], default=-1)
@@ -695,6 +1316,26 @@ def next_step(items, rec, owners, rounds=3):
         return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
     to_planner = stage == "plan" or any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", []))
     return ("start", "planner" if to_planner else "worker", "")
+
+
+def waiting(items, owners, body, number):
+    """What `/autopilot start` picks up on the issue: "worker" for an approved plan waiting for `/work`, "split" for an
+    approved split not yet filed, else None, decided by the river as if the approval came on autopilot. Nothing is
+    picked up twice: not after the owner's `/work`, an Autopilot line, or a worker or split record since the approval."""
+    if not approved(records(items)):
+        return None
+    at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
+    for c in items[at + 1:]:
+        who = (c.get("author") or {}).get("login")
+        if (who in owners and command_of(c.get("body")) == "worker") or (who == BOT and (c.get("body") or "").strip().startswith("Autopilot:")) \
+                or is_record(c, "worker") or is_record(c, "split"):
+            return None
+    step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
+    if step[0] != "start" or step[3:] != ("autopilot",):
+        return None
+    if step[1] == "split" and latest(records(items), "split"):
+        return None
+    return step[1]
 
 
 def criteria_texts(plan):
@@ -727,32 +1368,43 @@ STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker"
 
 def board_place(rec, step):
     """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
-    the owner, and the Needs you pill exactly when the river stops for the owner."""
+    the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
+    if step[0] == "start" and step[1] == "split":
+        # Filing a split puts the parent in Work, as `/work` does.
+        return "Work", False
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
-    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), True
+    if step[0] == "merged":
+        return "Done", False
+    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
-    """Put the issue and its open pull request in that column, with or without the Needs you pill."""
+    """Put the issue and its open pull request in that column, with the Needs you pill when the river stops for the
+    owner, else the Autopilot pill while the issue is on autopilot."""
     from dokima import board
     b = board.Board(spec, repo, q or board.gql)
     targets = [("issue", int(number))]
     pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
     if pr:
         targets.append(("pr", int(pr)))
+    pill = "Needs you" if needs_you else "Autopilot" if b.autopilot("issue", int(number)) else None
     for kind, n in targets:
         iid = b.item(kind, n)
         b.set(iid, "Status", column)
-        b.set(iid, "Action", "Needs you" if needs_you else None)
+        b.set(iid, "Action", pill)
     return targets
 
 
 def next_line(step, owners):
     """The last line of a card: what happens next, mentioning the owner when it is their turn."""
+    if step[0] == "start" and step[1] == "split":
+        return "**Next:** The split's stories are filed now."
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
+    if step[0] in ("cancelled", "merged"):
+        return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
 
@@ -760,7 +1412,13 @@ def next_line(step, owners):
 def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
-    agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started)"""
+    agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
+    agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
+    agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
+    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
+    agent autopilot start|stop N [OUT]  (switches N's issue tree on or off autopilot, prints the comment naming what
+    switched; with OUT, `start` writes what it picks up to OUT/next.txt and its Autopilot line to OUT/autopilot.md) |
+    agent closed N  (what autopilot does now that issue N closed, for every tree on autopilot)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -797,6 +1455,25 @@ def main(argv):
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
         return 0
+    if argv[1] == "cancelled":
+        role, stage, out, started, log_dir = argv[2:7]
+        meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
+        if started == "true":
+            meta.update({"models": models_used(log_dir), "report": run_report(os.path.join(out, "claude.json")),
+                         "log": os.environ.get("LOG_URL")})
+        rec = cancelled(role, stage, started == "true", meta)
+        json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
+    if argv[1] == "card":
+        # The card is public: every secret the step was given to remove (SCRUB_*) shows as [secret removed].
+        secrets = [v for k, v in os.environ.items() if k.startswith("SCRUB_")]
+        sys.stdout.write(scrub(live_card(argv[2], argv[3], argv[4]), secrets))
+        return 0
+    if argv[1] == "queue":
+        print(queue(argv[2], argv[3], argv[4], argv[5] if len(argv) > 5 else "queued"))
+        return 0
     if argv[1] == "check-round":
         try:
             h = json.load(open(argv[3]))
@@ -818,9 +1495,14 @@ def main(argv):
         if not approved(recs) or latest(recs, "planner")["handback"].get("kind") != "feature":
             print("The newest plan is not an approved split.")
             return 1
-        rec = file_split(repo, parent, recs)
+        on = AUTOPILOT in {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{parent}")).get("labels", [])}
+        rec = file_split(repo, parent, recs, [AUTOPILOT] if on else [])
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
-        if not any(r.get("role") == "split" for r in recs):
+        card = os.environ.get("CARD_ID", "")
+        if card:
+            # The command's queued card becomes the Split filed record, edited in place.
+            gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{card}", "-f", f"body={render(rec)}", "--silent")
+        elif not any(r.get("role") == "split" for r in recs):
             gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
         if spec:
@@ -829,10 +1511,13 @@ def main(argv):
             for f in rec["handback"]["stories"]:
                 iid = b.item("issue", f["issue"])
                 b.set(iid, "Status", "Backlog")
-                b.set(iid, "Action", None)
+                b.set(iid, "Action", "Autopilot" if on else None)
             iid = b.item("issue", int(parent))
             b.set(iid, "Status", "Work")
-            b.set(iid, "Action", None)
+            b.set(iid, "Action", "Autopilot" if on else None)
+        if on:
+            # On autopilot the stories go on too, and each one with nothing to wait for starts planning.
+            start_waiting(repo, [f["issue"] for f in rec["handback"]["stories"] if not f["blocked_by"]])
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
@@ -844,14 +1529,46 @@ def main(argv):
         number, out = argv[2], argv[3]
         owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
         rec = json.load(open(os.path.join(out, "record.json")))
-        # A run that never started stops for the owner whatever the conversation says, so it is not read.
-        items = [] if rec.get("role") == "not-started" else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
-        step = next_step(items, rec, owners)
+        repo = os.environ["GITHUB_REPOSITORY"]
+        # A run that never started stops for the owner, and a cancelled one stops, whatever the conversation says,
+        # so it is not read.
+        d, items = ({}, []) if rec.get("role") in ("not-started", "cancelled") else conversation(repo, number)
+        read = []
+
+        def autopilot():
+            # Read once, and only when the river's decision turns on it.
+            if not read:
+                read.append(on_autopilot(repo, number))
+            return read[0]
+        step = next_step(items, rec, owners, autopilot=autopilot, body=d.get("body") or "", number=number)
+        if approves_work(rec):
+            # On autopilot the code review's approval stands in for the owner's: the pull request merges by itself.
+            on = autopilot()
+            if on is None:
+                step = ("stop", f"{UNREAD} {step[1]}")
+            elif on:
+                pr, merged, why = automerge(repo, number)
+                step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
+                    ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
+                             "with a command to send it back.")
+        if rec.get("role") == "worker":
+            # The pull request is opened after the record is written, so the worker's sentence links it only now.
+            try:
+                pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+                        "-q", ".[0].number").strip()
+            except subprocess.CalledProcessError:
+                pr = ""
+            if pr.isdigit():
+                url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}"
+                open(os.path.join(out, "comment.md"), "w").write(render(rec, url))
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
+        if step[3:] == ("autopilot",):
+            # The line the owner would have typed `/work` in place of; the workflow posts it on the issue.
+            open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
         open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
-        print(" ".join(step) if step[0] == "start" else "stop")
+        print(" ".join(step[:3]) if step[0] == "start" else "stop")
         return 0
     if argv[1] == "board":
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
@@ -870,6 +1587,37 @@ def main(argv):
             needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+        return 0
+    if argv[1] == "autopilot":
+        switch, number = argv[2], argv[3]
+        repo = os.environ["GITHUB_REPOSITORY"]
+        switched = switch_autopilot(repo, number, switch)
+        pick = None
+        if switch == "start" and len(argv) > 4:
+            # What is already waiting for the owner's `/work` is picked up: written to OUT for the workflow to start.
+            owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+            d, items = conversation(repo, number)
+            pick = waiting(items, owners, d.get("body") or "", number)
+            os.makedirs(argv[4], exist_ok=True)
+            if pick:
+                open(os.path.join(argv[4], "autopilot.md"), "w").write(AUTOPILOT_LINES[pick] + "\n")
+                open(os.path.join(argv[4], "next.txt"), "w").write(pick + "\n")
+        picked = {"worker": f"#{number}'s approved plan goes to the worker now.",
+                  "split": f"#{number}'s approved split files its stories now."}.get(pick, "")
+        started = []
+        if switch == "start":
+            # The issue itself starts its planner when it waits on nothing open and nothing started on it yet.
+            started = start_waiting(repo, [int(number)], line=AUTOPILOT_START_LINE)
+            # `/autopilot start` picks up every issue under the issue, at every level, that waits on nothing open.
+            started += start_waiting(repo, issue_tree(repo, number)[1:])
+        sys.stdout.write(autopilot_comment(number, switch, switched, started, picked))
+        if switch == "start":
+            # What its code review already approved anywhere in the tree merges now, as on autopilot.
+            merge_tree(repo, number, [o for o in os.environ.get("OWNERS", "").split(",") if o])
+        return 0
+    if argv[1] == "closed":
+        for line in autopilot_closed(os.environ["GITHUB_REPOSITORY"]) or [f"#{argv[2]} closed: nothing on autopilot to do."]:
+            print(line)
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

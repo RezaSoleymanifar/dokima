@@ -33,6 +33,7 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 - **Everything lives on GitHub.** One permanent history per issue, across every agent and device: plans, attempts, failures, reviews.
 - **Fail closed.** Missing proof, a missing reviewer or a broken check blocks; nothing is waved through, and a failure always says why on the issue.
 - **Agent-neutral and language-neutral.** No hard-coded people, vendors or languages. Approvers come from CODEOWNERS; each agent plugs in through a small adapter; instructions (including how many sub-agents to use) live in prompts, not code.
+- **Match the output to the human brain bottleneck.** The owner's attention is the scarcest thing in the river: whatever the JSON holds, a card shows only what the owner needs at a glance, and the rest goes in folds.
 - **Small and lean.** One issue, one PR. Fold related things together. Extras (the board, merge queue) are optional and never required.
 
 ## Roles
@@ -50,7 +51,9 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 3. **Plan review.** A block sends it back to the planner by itself. An approval stops for the owner.
 4. **`/work`.** The owner's approval. An approved split files its stories as sub-issues with blocked-by links; each story then goes through the flow on its own. Otherwise the worker builds on a fresh machine and opens the PR.
 5. **Code review.** The reviewer starts by itself when the worker finishes. Every blocker names who fixes it: the worker for code, the planner for a test shown too weak. A block sends it back to the worker by itself, or to the planner when any blocker is the planner's; that test fix goes planner, plan review, worker, code review, and an approved re-plan whose criteria are unchanged goes straight to the worker, while one that changes any criterion, or comes after the owner spoke, waits for `/work`. An approval stops for the owner.
-6. **Merge.** The owner approves and merges.
+6. **Merge.** The owner approves and merges. On autopilot, the reviewer's approval with every check green on the pull request's head merges it by itself, and the issue gets one line, `Autopilot: merged PR #N`; a pull request that changes a workflow file, or a merge that cannot happen, stops for the owner and says why on the pull request.
+
+On autopilot, the river runs a whole issue tree end to end and stops for the owner only where the owner must decide (planned, story 2 of #205); `/autopilot start` and `/autopilot stop` switch it on and off. On an issue on autopilot (its own `autopilot` label), an approved plan starts the worker and an approved split files its stories by themselves, each with one line on the issue where the owner would have typed `/work` (`Autopilot: plan approved, starting work`, `Autopilot: split approved, filing its stories`). A plan with questions goes to the plan reviewer, which judges each question's assumption: it goes on only when the assumption changes neither how the system works nor what it costs and matches the owner's own words, word for word, in the issue, a code owner's comment on it or AGENTS.md; any other question stops for the owner. When GitHub cannot say whether the issue is on autopilot, the river stops and says so. When an issue closes, every issue on autopilot whose blocked-by issues have now all closed starts its planner, with one line `Autopilot: blockers merged, starting plan` where the owner would have said `/plan`; a parent whose last sub-issue closes closes too, saying its whole tree is done, which counts as a close one level up; and when the top issue closes, its whole tree goes off autopilot. Closes are handled one at a time, in one queue for the repo (autopilot.yml), and an issue already planned, running or started is never started again.
 
 Agents work things out between themselves. The river stops and mentions the owner only on questions, approvals, an escalation, a hand-back code rejected, or three blocking reviews in a row at one stage since the owner last spoke. Every card ends with a **Next** line saying what happens next or what is the owner's to do.
 
@@ -59,27 +62,30 @@ Agents work things out between themselves. The river stops and mentions the owne
 A command is the first word of an owner's comment on the issue or its PR, or of a PR review's summary submitted as a comment or a change request. Everything after it, and every other comment, review and line note, reaches the agent.
 
 - `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
+- `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It leaves one comment where it was said naming every issue it switched. `/autopilot start` picks up what is waiting: an approved plan of that issue still waiting for `/work` starts the worker, and an approved split not yet filed is filed, as on autopilot; the issue itself, with no sub-issues, no plan and nothing open to wait for, starts its planner with one line `Autopilot: switched on, starting plan` where the owner would have said `/plan`; every issue under it, at every level, with no sub-issues, no plan and nothing open to wait for starts its planner; and every pull request in the tree its code review approved merges as in step 6. A split filed by `/work` on autopilot puts its stories on autopilot and starts the ones with nothing to wait for.
 - `/issue`: file the reviewer's proposed issues (planned).
 - No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
 - Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.
 
 ## Questions
 
-Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation.
+Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation. On autopilot the plan reviewer judges each question's assumption against the owner's words (see the flow).
 
 ## The board
 
 - Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
 - "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes.
-- The river moves each card to the stage now running. Priority (Blocker) is a field, not a label.
+- "Autopilot" is a pill in the same place, on every card of an issue on autopilot and of its open pull request, set and cleared with the `autopilot` label; Needs you takes its place while the river stops for the owner, so a card never shows both. A pull request built for an issue on autopilot carries the label too.
+- One Autopilot view, a table filtered to `label:autopilot`, lists everything on autopilot. Code adds it the first time a tree goes on autopilot, from the board run of the tree's top issue only, and a refused view fails that run naming it. The Autopilot option of the Action field is a one-time step on the board, like Needs you; code never edits the field's options.
+- The river moves each card to the stage now running. Priority is a field (Blocker, High, Parked) that follows the issue's blocker, high or parked label; with two, the higher wins.
 
 ## The issue body
 
-The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses and says why (planned).
+The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, open, exactly as written; only a split's sub-issue, whose text code quotes from the parent's approved plan, keeps it folded under Original issue. An ask folded before this opens on its next redraw. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses, leaves the body as it was and says why in a comment on the issue. A fresh ask gets the marker on its first redraw, with its whole body kept below it. The card and the planner both save through `dokima/body.py`.
 
 ## Agent records and cards
 
-Every agent run posts one comment, written by code: a readable card on top in plain product words, the full JSON record folded below, and a footnote with the model, time, turns, tokens, API-equivalent cost and a one-click link to the run's whole conversation. Those comments are the permanent records; only comments the bot posted count as records. The card on top of the issue is drawn from them (planned). Each run also gets one live card from queued to done (planned, #164).
+Every agent run posts one comment, written by code: one plain sentence on top saying what the run did, the short version the owner needs (the plan, its questions or the split; the worker's own words on what it changed, linking its pull request, or why it stopped; the criteria a review blocks on and its proposed issues), the long parts in folds drawn by the same code as the issue card, the full JSON record in the last fold, and a footnote with the model, time, turns, tokens, API-equivalent cost and a one-click link to the run's whole conversation. Those comments are the permanent records; only comments the bot posted count as records. The card on top of the issue is drawn from them (planned). Each run also gets one live card from queued to done (planned, #164).
 
 ## Splitting and the graph
 

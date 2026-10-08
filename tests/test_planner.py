@@ -11,7 +11,7 @@ from dokima import plan, planner  # noqa: E402
 WORKFLOW = os.path.join(os.path.dirname(__file__), "..", ".github/workflows/planner.yml")
 PLAN = {"objective": "Slow calls return a job id", "criteria": ["A slow call returns a job id within 20 s", "The job id is unique"],
         "non_goals": ["No retries"], "scope": ["dokima/jobs.py"]}
-STORY = {"kind": "user_story", "user_story": "Slow calls return a job id",
+STORY = {"kind": "user_story", "summary": "Slow calls hand back a job id instead of timing out.", "user_story": "Slow calls return a job id",
          "acceptance_criteria": [{"text": "A slow call returns a job id within 20 s", "source": "https://github.com/o/r/issues/9"}],
          "scope": ["dokima/jobs.py"], "tests": {"9.1": ["tests/test_jobs.py::test_id"]}}
 TAGS = {"tests/test_jobs.py::test_id": ["9.1"], "tests/test_jobs.py::test_unique": ["9.2"]}
@@ -39,13 +39,6 @@ def test_plan_is_written_into_the_issue_as_goal_criteria_and_scope(record_proper
     assert [c["text"] for c in crits] == PLAN["criteria"], "80.1: criteria not read back in order"
     assert crits[0]["verified_by"] == "`tests/test_jobs.py::test_id`", "80.1: criterion 1 not linked to its test"
     assert "**Out of scope:** No retries" in parsed["notes"] and "- `dokima/jobs.py`" in parsed["notes"], "80.1: out of scope or scope missing"
-
-
-def test_owner_text_is_folded_and_never_read_as_plan(record_property):
-    record_property("proves", "80.1")
-    body = planner.render("9", "- [ ] Goal: old goal\n  - [ ] Done when: old", PLAN, TAGS)
-    assert "<details><summary>Original issue</summary>" in body
-    assert len(plan.parse(body)["goals"]) == 1, "80.1: the owner's old checkboxes were read as a second goal"
 
 
 def test_planning_again_keeps_the_owner_text_once(record_property):

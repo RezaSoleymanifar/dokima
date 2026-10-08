@@ -1,0 +1,53 @@
+{
+ "kind": "user_story",
+ "summary": "A failed agent run always lands its card in its stage's column with the Needs you pill.",
+ "user_story": "When an agent run fails, its card always lands in its stage's column with the Needs you pill, so the owner can tell a broken run from one still working, even when the run's own last steps fail too.",
+ "acceptance_criteria": [
+  {
+   "text": "When a planner, plan review, worker or code review run fails (its agent crashed, or code rejected its hand-back), the issue's card, and its open pull request's, stays in that stage's column (Plan, Plan, Work, Review) and shows Needs you. That still holds when the run's own \"Decide what follows\" step fails as well, for example because GitHub answers 502. A run that hands on to the next agent still leaves the pill cleared.",
+   "source": "https://github.com/dokima-dev/dokima/issues/132"
+  }
+ ],
+ "non_functional": [
+  {
+   "text": "A run that left no record and no decision behind still puts its card in the column of the stage it was started for, with Needs you, and the board step exits 0.",
+   "why": "A failure the run could not even write down must not leave the card looking fine; the run's own failure, not the board step, is what the owner reads.",
+   "principle": "Fail closed"
+  }
+ ],
+ "scope": [
+  "dokima/agent.py",
+  "tests/test_failed_run_card.py"
+ ],
+ "out_of_scope": [
+  "Posting a failure comment on the issue; failed runs already post their record.",
+  "Retrying the run.",
+  "Adding the missing Next line to the record when deciding what follows fails.",
+  "Commands that fail in the listener (commands.yml) before any agent run starts; see the concern.",
+  "dokima/board.py and .github/workflows/board.yml: since #162 the river moves cards from agent.py, not from board events."
+ ],
+ "tests": {
+  "132.1": [
+   "tests/test_failed_run_card.py::test_a_failed_run_lands_in_its_stage_column_with_needs_you",
+   "tests/test_failed_run_card.py::test_a_failed_code_review_marks_the_issue_and_its_pr_even_when_deciding_failed"
+  ],
+  "132.2": [
+   "tests/test_failed_run_card.py::test_a_run_that_left_nothing_behind_still_marks_its_card"
+  ]
+ },
+ "test_changes": {},
+ "concerns": [
+  {
+   "text": "Most of this ask already holds on main: a failed planner, worker or code review run already ends in its stage's column with Needs you, through the always-run \"Move the card on the board\" step. The gap left is when \"Decide what follows\" fails: board.txt is never written, `agent board` crashes on the missing file, and the card stays where it was without the pill. This plan covers only that gap, and its 132.1 tests also guard the cases that already work.",
+   "evidence": "dokima/agent.py board_place() and main() 'board' (reads board.txt with no fallback); .github/workflows/agent.yml steps 'Decide what follows' (`|| NEXT=stop`) and 'Move the card on the board'; tests/test_start.py 176.3 already checks Needs you after start failures."
+  },
+  {
+   "text": "The issue's own scope (dokima/board.py, .github/workflows/board.yml, tests/test_board.py) comes from the old label flow. Run results now move cards from agent.py, so this plan changes agent.py instead and touches no workflow file.",
+   "evidence": "commit 77c5b21 (#162) added board_place/move_card in dokima/agent.py; board.py's decide() only reacts to labels, PR events and done-whens."
+  },
+  {
+   "text": "A command that fails in the listener before any agent starts (route failure, split filing refused) posts a failed record that mentions the owner, but never touches the board. That breaks AGENTS.md's rule that Needs you is set exactly when the river stops for the owner. Fixing it means changing commands.yml, so it is left out here; it is recommended as its own issue.",
+   "evidence": ".github/workflows/commands.yml job say-why has no board step; tests/test_start.py test 176.4 passes board=False."
+  }
+ ]
+}

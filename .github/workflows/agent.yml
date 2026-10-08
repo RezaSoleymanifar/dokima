@@ -3,10 +3,12 @@ run-name: "${{ (inputs.role || github.event.client_payload.role) }}${{ (inputs.r
 # Runs one agent on a fresh GitHub machine. Started by hand here, or by commands.yml when a code owner's comment
 # starts with /plan, /work or /review. Code gathers everything the agent needs: the issue and its PR as one
 # conversation (comments, reviews, line notes) and every earlier agent record. The agent runs its own check before it
-# finishes; code runs it again, then posts this run's record as a comment: a card on top, the full JSON folded below.
+# finishes; code runs it again, then edits this run's live card (up since the code-owner gate) into its record: a card
+# on top, the full JSON folded below.
 # Those comments are the permanent records the cards are built from. Session logs stay on the run page.
 # The river: after posting, code decides what follows (next_step in dokima/agent.py) and, when the next stage is an
-# agent's, the bot sends a dokima-next signal that starts it here. Otherwise the card mentions the owner and stops.
+# agent's, the bot sends a dokima-next signal that starts it here. On autopilot an approved plan starts the worker and
+# an approved split is filed here, each with one Autopilot line on the issue. Otherwise the card mentions the owner and stops.
 # Every step before the agent that fails writes why to /tmp/why.txt; when no agent started, the record says that instead.
 on:
   repository_dispatch:
@@ -16,6 +18,8 @@ on:
       role: {type: string, required: true}
       stage: {type: string, default: plan}
       issue: {type: string, required: true}
+      # The id of the run's queued card, put up by the listener; the run updates it instead of putting up its own.
+      card: {type: string, default: ''}
   workflow_dispatch:
     inputs:
       role:
@@ -52,6 +56,8 @@ jobs:
       PYTHONSAFEPATH: "1"
       OUT: /tmp/dokima-out
       MODEL: claude-opus-5-5
+      # A card already up for this run: queued by the listener, or by the hand-off that started it.
+      CARD_ID: ${{ (inputs.card || github.event.client_payload.card) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -61,7 +67,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Copy the runtime from main before touching any branch
-        run: mkdir -p /tmp/runtime && cp -r dokima /tmp/runtime/dokima
+        # AGENTS.md comes too: the river checks the owner's words a plan reviewer quotes from it.
+        run: mkdir -p /tmp/runtime && cp -r dokima /tmp/runtime/dokima && { cp AGENTS.md /tmp/runtime/ 2>/dev/null || true; }
       - name: Only a code owner starts an agent
         env:
           SENDER: ${{ github.actor }}
@@ -72,6 +79,55 @@ jobs:
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" \
             || { echo "$SENDER is not a code owner, so they cannot start an agent." > /tmp/why.txt
                  echo "::error title=Not started::$(cat /tmp/why.txt)"; exit 1; }
+      # The run's card moves through its stages (queued, setting up, agent working, checking, then its record), each
+      # written by this job's own steps, each with a key made for that one call and revoked at once: no bot key stays
+      # live on this machine while the branch's code, its tests, the agent or the hand-back check run. Every stage
+      # passes through scrub() with the run's secrets first. A card that cannot be shown never stops the run.
+      # A card already up (the listener's or the hand-off's) is this run's queued card; otherwise it goes up now.
+      - id: card-key
+        if: env.CARD_ID == ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: Put up the run's card, queued
+        if: env.CARD_ID == ''
+        env:
+          GH_TOKEN: ${{ steps.card-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          # Where the record will go: the PR once there is one, for the worker and the PR reviewer.
+          PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number' || true)
+          WHERE=$N; if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then WHERE=$PR; fi
+          python3 -m dokima.agent card "$ROLE" "$STAGE" queued > /tmp/card.md
+          if ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
+            echo "CARD_ID=$ID" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=No live card::the card could not be put up; the record is posted at the end"
+          fi
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
+      - id: setup-key
+        if: env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says setting up
+        if: env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.setup-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" setting-up > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say setting up"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: Starting branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,6 +181,26 @@ jobs:
           python3 -m dokima.agent check-pack "$ROLE" "$STAGE" "$PACK" > /tmp/pack-check.txt \
             || { echo "Incomplete pack: $(paste -sd'; ' /tmp/pack-check.txt)" > /tmp/why.txt
                  echo "::error title=Incomplete pack::$(cat /tmp/why.txt)"; exit 1; }
+      # The card says agent working, with a key made for this one edit and revoked before the agent starts.
+      - id: working-key
+        if: env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says working
+        if: env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.working-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" working > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say working"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: The agent starts now
         run: echo "STARTED=true" >> "$GITHUB_ENV"
       - name: The agent (Claude Code)
@@ -154,6 +230,26 @@ jobs:
           Hand back into $OUT. Before you finish, run this check on your hand-back and fix everything it reports:
             $CHECK" \
             --model "$MODEL" --dangerously-skip-permissions --max-turns 60 --output-format json > "$OUT/claude.json"
+      # The card says checking, with a key made for this one edit and revoked before code checks the hand-back.
+      - id: checking-key
+        if: always() && !cancelled() && env.STARTED == 'true' && env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says checking
+        if: always() && !cancelled() && env.STARTED == 'true' && env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.checking-key.outputs.token }}
+          SCRUB_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SCRUB_GITHUB: ${{ github.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" checking > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say checking"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: Code checks the hand-back
         if: always() && env.STARTED == 'true'
         run: |
@@ -169,8 +265,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$STARTED" = true ]; then
+          if [ "$JOB_STATUS" = cancelled ]; then
+            # Someone cancelled the run: its card says so, mentions no one, and nothing starts after it.
+            mkdir -p "$OUT"
+            python3 -m dokima.agent cancelled "$ROLE" "$STAGE" "$OUT" "${STARTED:-false}" /home/runner/.claude/projects
+          elif [ "$STARTED" = true ]; then
             python3 -m dokima.agent record "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects
           else
             # No agent started: a step with no reason of its own is named by GitHub's record of this run.
@@ -202,7 +303,7 @@ jobs:
             /home/runner/.claude/projects/
           if-no-files-found: warn
           retention-days: 90
-      # The app's token is minted only now, after the agent has finished.
+      # The app's token for the result is minted only now, after the agent has finished.
       - id: app
         if: always()
         uses: actions/create-github-app-token@v2
@@ -219,9 +320,12 @@ jobs:
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           if [ "$ROLE" = planner ]; then git add tests; else git add -A; fi
-          git diff --cached --quiet && { echo "Nothing to push."; exit 0; }
-          git commit -qm "$ROLE for #$N (run ${{ github.run_id }})"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:try/issue-$N"
+          if git diff --cached --quiet; then echo "Nothing to push."
+          else
+            git commit -qm "$ROLE for #$N (run ${{ github.run_id }})"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:try/issue-$N"
+          fi
+          # A finished worker opens its pull request whether or not it pushed anything (the planner may have pushed it all).
           if [ "$ROLE" = worker ] && [ -z "$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[].number')" ]; then
             gh pr create -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --base main --title "$(gh issue view "$N" -R "$GITHUB_REPOSITORY" --json title -q .title)" --body "Closes #$N"
           fi
@@ -244,11 +348,13 @@ jobs:
           git -C "$W" -c user.name="${SLUG}[bot]" -c user.email="${BOT_ID}+${SLUG}[bot]@users.noreply.github.com" add -A
           git -C "$W" -c user.name="${SLUG}[bot]" -c user.email="${BOT_ID}+${SLUG}[bot]@users.noreply.github.com" commit -qm "Conversation of run ${{ github.run_id }}"
           for i in 1 2 3; do git -C "$W" push -q origin HEAD:logs && break; git -C "$W" pull -q --rebase origin logs || true; done
-      - name: Decide what follows, and say it on the card
+      # On autopilot, a code review's approval with every check green merges the pull request here, so this step
+      # holds the app's key (minted after the agent finished).
+      - name: Decide what follows, merge on autopilot, and say it on the card
         id: next
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           export OWNERS=$(python3 -m dokima.plan approvers)
           NEXT=$(python3 -m dokima.agent next "$N" "$OUT") || NEXT=stop
@@ -258,6 +364,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
+          # The run's card becomes its record, edited in place; a card that cannot be edited never loses the record.
+          if [ -n "$CARD_ID" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@"$OUT/comment.md" --silent && exit 0
+            echo "::warning title=Card not edited::the record is posted as a new comment"
+          fi
           PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number')
           if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then
             gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file "$OUT/comment.md"
@@ -271,14 +382,34 @@ jobs:
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 -m dokima.agent board "$N" "$OUT" || echo "::warning title=Board not moved::the card could not be moved"
       - name: Start the next stage
-        if: always() && startsWith(steps.next.outputs.next, 'start ')
+        if: always() && !cancelled() && startsWith(steps.next.outputs.next, 'start ')
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           NEXT: ${{ steps.next.outputs.next }}
+          DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: |
           set -- $NEXT
+          # On autopilot, one line on the issue where the owner would have typed `/work`.
+          if [ -s "$OUT/autopilot.md" ]; then gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file "$OUT/autopilot.md"; fi
+          if [ "$2" = split ]; then
+            # An approved split is filed by code, as `/work` files it; its Split filed record is a comment of its own.
+            if ! CARD_ID= python3 -m dokima.agent split "$N" 2> /tmp/split-why.txt; then
+              # Filing failed: one comment on the issue says why and mentions the owner.
+              OWNERS=$(python3 -m dokima.plan approvers | tr ',' '\n' | sed 's/^/@/' | paste -sd' ')
+              printf '%s\n' "**Filing the split failed:** $(tail -1 /tmp/split-why.txt)" "" \
+                "**Next:** $OWNERS Say \`/work\` to file it again." > /tmp/split-why.md
+              gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file /tmp/split-why.md
+              exit 1
+            fi
+            echo "Filed the split of #$N"; exit 0
+          fi
+          # The next run's queued card goes up now, where its record will go, and its id travels with the signal.
+          NEXT_STAGE=$([ "$2" = reviewer ] && echo "${3:-plan}" || true)
+          NEXT_CARD=$(python3 -m dokima.agent queue "$2" "$NEXT_STAGE" "$N" handoff) \
+            || { NEXT_CARD=; echo "::warning title=No queued card::the next run puts up its own"; }
           gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=dokima-next \
-            -f "client_payload[role]=$2" -f "client_payload[stage]=${3:-plan}" -f "client_payload[issue]=$N"
+            -f "client_payload[role]=$2" -f "client_payload[stage]=${3:-plan}" -f "client_payload[issue]=$N" \
+            -f "client_payload[card]=$NEXT_CARD"
           echo "Started the $2${3:+ ($3)} for #$N"
       - name: Fail closed on a bad hand-back or the wrong model
         if: always()
