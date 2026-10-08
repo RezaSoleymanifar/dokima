@@ -1,0 +1,31 @@
+name: uptodate
+# After every merge to main, calls GitHub's Update branch for each open PR that fell behind,
+# with the Dokima app's token so the PR's checks run again. Rules live in dokima/uptodate.py.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: uptodate
+  cancel-in-progress: false
+jobs:
+  update:
+    environment: keys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Update open PRs behind main
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.uptodate
