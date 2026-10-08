@@ -3,7 +3,8 @@ run-name: "${{ (inputs.role || github.event.client_payload.role) }}${{ (inputs.r
 # Runs one agent on a fresh GitHub machine. Started by hand here, or by commands.yml when a code owner's comment
 # starts with /plan, /work or /review. Code gathers everything the agent needs: the issue and its PR as one
 # conversation (comments, reviews, line notes) and every earlier agent record. The agent runs its own check before it
-# finishes; code runs it again, then posts this run's record as a comment: a card on top, the full JSON folded below.
+# finishes; code runs it again, then edits this run's live card (up since the code-owner gate) into its record: a card
+# on top, the full JSON folded below.
 # Those comments are the permanent records the cards are built from. Session logs stay on the run page.
 # The river: after posting, code decides what follows (next_step in dokima/agent.py) and, when the next stage is an
 # agent's, the bot sends a dokima-next signal that starts it here. Otherwise the card mentions the owner and stops.
@@ -72,6 +73,29 @@ jobs:
           python3 -m dokima.plan approvers | tr ',' '\n' | grep -qx "$SENDER" \
             || { echo "$SENDER is not a code owner, so they cannot start an agent." > /tmp/why.txt
                  echo "::error title=Not started::$(cat /tmp/why.txt)"; exit 1; }
+      # The run's live card goes up now, with a key made for this one call and revoked at once: no bot key stays live
+      # on this machine while the branch's code, its tests or the agent run. The card is never a record.
+      - id: card-key
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: Put up the run's card, getting ready
+        env:
+          GH_TOKEN: ${{ steps.card-key.outputs.token }}
+        run: |
+          # Where the record will go: the PR once there is one, for the worker and the PR reviewer.
+          PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number' || true)
+          WHERE=$N; if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then WHERE=$PR; fi
+          python3 -m dokima.agent card "$ROLE" "$STAGE" queued > /tmp/card.md
+          if ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
+            echo "CARD_ID=$ID" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=No live card::the card could not be put up; the record is posted at the end"
+          fi
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: Starting branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,6 +149,24 @@ jobs:
           python3 -m dokima.agent check-pack "$ROLE" "$STAGE" "$PACK" > /tmp/pack-check.txt \
             || { echo "Incomplete pack: $(paste -sd'; ' /tmp/pack-check.txt)" > /tmp/why.txt
                  echo "::error title=Incomplete pack::$(cat /tmp/why.txt)"; exit 1; }
+      # The card says working, with a second key made for this one edit and revoked before the agent starts.
+      - id: working-key
+        if: env.CARD_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: The card says working
+        if: env.CARD_ID != ''
+        env:
+          GH_TOKEN: ${{ steps.working-key.outputs.token }}
+        run: |
+          python3 -m dokima.agent card "$ROLE" "$STAGE" working > /tmp/card.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+            || echo "::warning title=Card not updated::the card could not say working"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the card's key could not be revoked"
       - name: The agent starts now
         run: echo "STARTED=true" >> "$GITHUB_ENV"
       - name: The agent (Claude Code)
@@ -202,7 +244,7 @@ jobs:
             /home/runner/.claude/projects/
           if-no-files-found: warn
           retention-days: 90
-      # The app's token is minted only now, after the agent has finished.
+      # The app's token for the result is minted only now, after the agent has finished.
       - id: app
         if: always()
         uses: actions/create-github-app-token@v2
@@ -258,6 +300,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
+          # The run's card becomes its record, edited in place; a card that cannot be edited never loses the record.
+          if [ -n "$CARD_ID" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@"$OUT/comment.md" --silent && exit 0
+            echo "::warning title=Card not edited::the record is posted as a new comment"
+          fi
           PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number')
           if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then
             gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file "$OUT/comment.md"
