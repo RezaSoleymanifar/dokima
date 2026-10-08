@@ -195,6 +195,91 @@ def file_split(repo, parent, recs, labels=()):
     return {"role": "split", "stage": None, "handback": {"stories": filed}, "check": {"passed": True, "problems": []}}
 
 
+FILED_LABEL = "filed-by-dokima"
+PARKED = "parked"
+
+
+def same_title(title):
+    """A finding's title as compared for repeats: letter case and spacing ignored."""
+    return " ".join(str(title or "").split()).casefold()
+
+
+def why_refused(e):
+    """GitHub's own reason for a call it refused: the last line gh printed."""
+    lines = [l.strip() for l in (getattr(e, "stderr", "") or str(e)).splitlines() if l.strip()]
+    return lines[-1] if lines else str(e)
+
+
+def found_body(f, role, stage, number, pr, link):
+    """A filed issue's body: where and by which agent it was found, its why and evidence, and the run's record."""
+    doing = {"planner": "planning", "worker": "building"}.get(role, "grading the plan" if stage == "plan" else "grading the work")
+    where = f"#{number}" + (f" (pull request #{pr})" if pr else "")
+    return "\n".join([f"Found by the {role} while {doing} on {where}, outside that issue.", "",
+                      f"**Why:** {f.get('why', '')}", "", f"**Evidence:** {f.get('evidence', '')}", "",
+                      f"**Found in the run recorded here:** {link}", "",
+                      "Filed by Dokima and parked: nothing starts on it until the owner picks it up."]) + "\n"
+
+
+def record_link(repo, number, pr, body):
+    """The address of the comment that carries this run's record: the run's card, or, with no card up, the record
+    posted now (where the workflow would post it), its id handed to the workflow's next steps to edit in place."""
+    card_id = os.environ.get("CARD_ID", "")
+    try:
+        if card_id:
+            return json.loads(gh("api", f"repos/{repo}/issues/comments/{card_id}"))["html_url"]
+        c = json.loads(gh("api", "-X", "POST", f"repos/{repo}/issues/{pr or number}/comments", "-f", f"body={body}"))
+        if os.environ.get("GITHUB_ENV"):
+            with open(os.environ["GITHUB_ENV"], "a") as f:
+                f.write(f"CARD_ID={c['id']}\n")
+        return c["html_url"]
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError):
+        # The record has no address yet: the run that holds it is linked instead.
+        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+
+
+def file_found(repo, rec, number, pr, link):
+    """File each issue a passed hand-back lists in issues_found as its own parked issue labeled filed-by-dokima,
+    skipping a title Dokima already filed (open or closed, case and spacing ignored) or that repeats in the list.
+
+    Returns one entry per finding filed or refused: {title, issue} or {title, refused: GitHub's reason}."""
+    found = [f for f in rec["handback"].get("issues_found") or [] if isinstance(f, dict)]
+    if not found:
+        return []
+    try:
+        seen = {same_title(i.get("title")): i.get("number") for i in json.loads(gh(
+            "issue", "list", "-R", repo, "--label", FILED_LABEL, "--state", "all", "--json", "number,title", "--limit", "1000"))}
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        # Without what was filed before, nothing is filed: a repeat must never be filed twice.
+        why = f"the issues Dokima filed before could not be read: {why_refused(e)}"
+        return [{"title": f.get("title"), "refused": why} for f in found]
+    for label in (PARKED, FILED_LABEL):
+        try:
+            gh("api", f"repos/{repo}/labels/{label}")
+        except subprocess.CalledProcessError:
+            try:
+                gh("api", "-X", "POST", f"repos/{repo}/labels", "-f", f"name={label}")
+            except subprocess.CalledProcessError:
+                pass  # creating the issue says why when the label is still missing
+    out = []
+    for f in found:
+        title = str(f.get("title", "")).strip()
+        if same_title(title) in seen:
+            # Filed before, by an earlier run: named, not filed again. A repeat within this list is just dropped.
+            n = seen[same_title(title)]
+            if n not in [x.get("issue") for x in out]:
+                out.append({"title": title, "issue": n, "before": True})
+            continue
+        try:
+            n = gh("api", "-X", "POST", f"repos/{repo}/issues", "-f", f"title={title}",
+                   "-f", f"body={found_body(f, rec['role'], rec.get('stage'), number, pr, link)}",
+                   "-f", f"labels[]={PARKED}", "-f", f"labels[]={FILED_LABEL}", "--jq", ".number").strip()
+            out.append({"title": title, "issue": int(n)})
+            seen[same_title(title)] = int(n)
+        except (subprocess.CalledProcessError, ValueError) as e:
+            out.append({"title": title, "refused": why_refused(e)})
+    return out
+
+
 def build_record(role, stage, out, check_text, passed, meta):
     """This run's record: its hand-back, the code check's verdict and where it came from. Written by code, never the agent."""
     hb = os.path.join(out, HANDBACK[role])
@@ -444,9 +529,6 @@ def render(rec, pr=None):
             lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
                       if a.get("accepted") is True else f"- {a.get('question', '')} Not accepted: {a.get('why', '')}"
                       for a in judged]
-        if h.get("issues_found"):
-            lines += ["", "**Issues found outside this one** (proposals until you file them):"]
-            lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
     elif role == "split":
         num = {f["story"]: f["issue"] for f in h.get("stories", [])}
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" (blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
@@ -456,6 +538,14 @@ def render(rec, pr=None):
         lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
+    if passed and role in HANDBACK and "filed" in rec:
+        if rec["filed"]:
+            lines += ["", "**Issues found outside this one**, filed and parked:"]
+            lines += [f"- #{f['issue']} {f.get('title')}" + (" (filed before)" if f.get("before") else "") if "issue" in f else
+                      f"- Not filed: {f.get('title')}. GitHub said: {f.get('refused')}" for f in rec["filed"]]
+    elif passed and role in HANDBACK and isinstance(h.get("issues_found"), list) and h["issues_found"]:
+        lines += ["", "**Issues found outside this one:**"]
+        lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1) if isinstance(f, dict)]
     lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
 
@@ -787,6 +877,7 @@ def problems_shape(kind, h):
     bad += problems_items(h, "outside_scope", ("file", "why"))
     bad += problems_items(h, "suspect_tests", ("test", "evidence"))
     bad += problems_items(h, "replies", ("blocker", "answer", "why"), name="blocker")
+    bad += problems_items(h, "issues_found", ("title", "why", "evidence"))
     for i, r in enumerate(h.get("replies") if isinstance(h.get("replies"), list) else [], 1):
         if isinstance(r, dict) and filled(r.get("answer")) and r["answer"] not in ANSWERS:
             bad.append(f"replies item {i}: answer must be fixed or disagree")
@@ -1537,16 +1628,24 @@ def main(argv):
                 step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
                     ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
                              "with a command to send it back.")
-        if rec.get("role") == "worker":
+        on_pr = rec.get("role") == "worker" or (rec.get("role") == "reviewer" and rec.get("stage") == "pr")
+        pr = ""
+        if on_pr:
             # The pull request is opened after the record is written, so the worker's sentence links it only now.
             try:
                 pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
                         "-q", ".[0].number").strip()
             except subprocess.CalledProcessError:
                 pr = ""
-            if pr.isdigit():
-                url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}"
-                open(os.path.join(out, "comment.md"), "w").write(render(rec, url))
+            pr = pr if pr.isdigit() else ""
+        url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}" if pr else None
+        if rec.get("role") in HANDBACK and rec["check"]["passed"] and rec["handback"].get("issues_found"):
+            # Issues the agent found outside this one are filed now, with the key made after its hand-back passed,
+            # each linking the comment that carries this run's record.
+            rec["filed"] = file_found(repo, rec, number, pr, record_link(repo, number, pr, render(rec, url)))
+            json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        if url or "filed" in rec:
+            open(os.path.join(out, "comment.md"), "w").write(render(rec, url))
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
         if step[3:] == ("autopilot",):

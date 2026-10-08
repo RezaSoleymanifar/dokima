@@ -41,7 +41,7 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 - **Owner:** decides. Approves plans and results, routes proposals. Only a code owner's commands count.
 - **Planner:** turns a rough issue into a plan: an objective, acceptance criteria, scope, and a test for every criterion written before any code. It judges the ask first and raises a concern only with evidence. It may change or delete an older test when the plan makes it wrong, with a reason the owner sees. It proposes splits; it never writes code.
 - **Worker:** builds what the approved plan says, on a fresh machine, within scope, until its tests pass. It never changes the plan's tests.
-- **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and ends with a list of proposed issues.
+- **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and ends with the issues it found outside this one.
 - **Code:** everything that must be exact (see the principles).
 
 ## The flow (the river)
@@ -63,7 +63,7 @@ A command is the first word of an owner's comment on the issue or its PR, or of 
 
 - `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
 - `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It leaves one comment where it was said naming every issue it switched. `/autopilot start` picks up what is waiting: an approved plan of that issue still waiting for `/work` starts the worker, and an approved split not yet filed is filed, as on autopilot; the issue itself, with no sub-issues, no plan and nothing open to wait for, starts its planner with one line `Autopilot: switched on, starting plan` where the owner would have said `/plan`; every issue under it, at every level, with no sub-issues, no plan and nothing open to wait for starts its planner; and every pull request in the tree its code review approved merges as in step 6. A split filed by `/work` on autopilot puts its stories on autopilot and starts the ones with nothing to wait for.
-- `/issue`: file the reviewer's proposed issues (planned).
+- No command files what an agent finds: every issue the planner, the worker or the reviewer finds outside its own issue is filed by code once its run's hand-back passes the check, as its own issue labeled parked and filed-by-dokima, saying where and by which agent it was found and linking that run's record. It gets no links, no autopilot and no run; a title Dokima already filed, open or closed, ignoring letter case and spacing, is never filed again.
 - No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
 - Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.
 
@@ -85,7 +85,7 @@ The body has two parts split by a fixed marker. Above it, the current-state card
 
 ## Agent records and cards
 
-Every agent run posts one comment, written by code: one plain sentence on top saying what the run did, the short version the owner needs (the plan, its questions or the split; the worker's own words on what it changed, linking its pull request, or why it stopped; the criteria a review blocks on and its proposed issues), the long parts in folds drawn by the same code as the issue card, the full JSON record in the last fold, and a footnote with the model, time, turns, tokens, API-equivalent cost and a one-click link to the run's whole conversation. Those comments are the permanent records; only comments the bot posted count as records. The card on top of the issue is drawn from them (planned). Each run also gets one live card from queued to done (planned, #164).
+Every agent run posts one comment, written by code: one plain sentence on top saying what the run did, the short version the owner needs (the plan, its questions or the split; the worker's own words on what it changed, linking its pull request, or why it stopped; the criteria a review blocks on; the issues the run found, each filed by number or with GitHub's reason it was not), the long parts in folds drawn by the same code as the issue card, the full JSON record in the last fold, and a footnote with the model, time, turns, tokens, API-equivalent cost and a one-click link to the run's whole conversation. Those comments are the permanent records; only comments the bot posted count as records. The card on top of the issue is drawn from them (planned). Each run also gets one live card from queued to done (planned, #164).
 
 ## Splitting and the graph
 

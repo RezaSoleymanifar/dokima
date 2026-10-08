@@ -121,6 +121,9 @@ Exactly one kind: user_story or feature.
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
 Every kind carries "summary": one plain sentence saying what the issue is about; the card opens with it.
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
+Any kind may add "issues_found": [{"title": "...", "why": "...", "evidence": "a file, line or issue number"}]: real
+problems you came across that lie outside this issue, each worth its own issue. Once your plan passes its check, code
+files each one as its own issue, parked and labeled filed-by-dokima, and never files the same title twice.
 A plan may also carry "questions": [{"question": "...?", "assumption": "..."}, ...], each a question for the owner and the
 reading the plan assumed, nothing else, as many as you need. Ask only where the owner's words allow two readings or an
 ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best reading, and put that reading in

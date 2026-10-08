@@ -73,7 +73,8 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
 request only; asks is for the plan only, and is never empty; assumptions is for a plan with questions only,
 with matched and source when accepted and why when not. Every blocker names its fixer: the worker for code, the
 planner for a test or the plan; code sends a code review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
-a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
-round, so you never write them.
+a title, why it matters and the evidence. Once your hand-back passes its check, code files each one as its own issue,
+parked and labeled filed-by-dokima, and never files the same title twice. Code fills in the stage and round, so you
+never write them.
 Blocker ids carry over between rounds so a reply can answer one by id. You never ask the owner: you judge from the
 records, and a disagreement that survives three rounds reaches the owner as an escalation.
