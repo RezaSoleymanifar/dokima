@@ -45,3 +45,18 @@ def check(texts, cap, what="opens with"):
         listed += [warn] if warn else []
         rejected += [bad] if bad else []
     return listed, rejected
+
+
+SUMMARY_CAP = 25  # words in the one-sentence summary every planner, worker and reviewer hands back
+
+
+def summary_caps(text, cap=SUMMARY_CAP):
+    """(listed, rejected) for a hand-back's summary: one sentence, held to its cap.
+
+    A second sentence is rejected however short the summary is; its words follow the TOLERANCE rule.
+    """
+    text = text.strip() if isinstance(text, str) else ""
+    if first_sentence(text) != text:
+        return [], ["summary holds more than one sentence: make it one sentence of at most "
+                    f"{cap} words saying what the run did"]
+    return check([("summary", text)], cap, "holds")
