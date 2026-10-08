@@ -28,7 +28,7 @@ ISSUE = {"number": N, "url": f"https://github.com/o/r/issues/{N}"}
 SRC = f"https://github.com/o/r/issues/{N}"
 LINKS = {"blocked_by": [12, 13], "blocks": [15], "relates_to": [18]}
 NONE = {"blocked_by": [], "blocks": [], "relates_to": []}
-# kind of link -> (its field in card.FIELD_ICONS, its label on the line)
+# kind of link -> (its field, its label on the line)
 KINDS = {"blocked_by": ("blocked by", "Blocked by"), "blocks": ("blocks", "Blocks"), "relates_to": ("related", "Relates to")}
 STORY = {"kind": "user_story", "summary": "Slow calls hand back a job id.", "user_story": "Callers get a job id.",
          "acceptance_criteria": [{"text": "First thing works", "source": SRC}], "non_functional": [],
@@ -41,11 +41,16 @@ SPLIT = {"kind": "feature", "summary": "Jobs, in two stories.", "feature": "Jobs
      "depends_on": [0]}]}
 PR = {"number": 5, "merged": False, "state": "open", "body": f"Closes #{N}"}
 FOLD = re.compile(r"<details>.*?</details>", re.S)
+# Each kind's own icon file in dokima/icons, fixed here so a changed icon map cannot move the test with it.
+LINK_ICON = {"blocked by": "blocked-by", "blocks": "blocks", "related": "related"}
+# The verdict and run icons, which no link line may carry.
+VERDICT_ICONS = {"passed", "failed", "queued", "running", "cancelled", "none", *card.ICON_FILE.values()}
+ICON_URL = re.compile(r"/dokima/icons/([\w-]+)\.svg")
 
 
 def img(field):
-    """The field's fixed icon exactly as the card draws it."""
-    return card.icon(REPO, card.FIELD_ICONS[field], alt=field)
+    """The link kind's own icon exactly as the card draws it."""
+    return card.icon(REPO, LINK_ICON[field], alt=field)
 
 
 def with_links(plan, links):
@@ -96,6 +101,14 @@ def env(monkeypatch):
     monkeypatch.setenv("GITHUB_RUN_ID", "1")
 
 
+def without_link_lines(text):
+    """`text` without its link lines and with blank runs collapsed.
+
+    Used to compare a card that has links with one that has none."""
+    keep = [l for l in text.splitlines() if l not in link_lines(text)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
+
+
 def check_lines(text, links, k, where):
     """Fail naming criterion k unless `text` shows one right line per kind with links."""
     lines = link_lines(text)
@@ -110,6 +123,10 @@ def check_lines(text, links, k, where):
         line = mine[0]
         others = [img(f) for kk, (f, _) in KINDS.items() if kk != kind]
         assert not any(o in line for o in others), f"{k}: {where}'s {label} line carries another kind's icon: {line}"
+        files = ICON_URL.findall(line)
+        assert files == [LINK_ICON[field]], \
+            f"{k}: {where}'s {label} line draws the icons {files}, not only {LINK_ICON[field]}.svg: {line}"
+        assert not VERDICT_ICONS & set(files), f"{k}: {where}'s {label} line carries a verdict or run icon: {line}"
         numbers = sorted(int(x) for x in re.findall(r"#(\d+)\b", line))
         assert numbers == sorted(links[kind]), \
             f"{k}: {where}'s {label} line shows issues {numbers}, not exactly {sorted(links[kind])}: {line}"
@@ -120,10 +137,12 @@ def test_the_issue_card_shows_each_kind_of_link_on_its_own_line_with_its_own_ico
 
     Proves 251.1. Draws the card from a plan blocked by #12 and #13, blocking #15 and relating to #18, on the issue and on the pull
     request, for a plan and for a split: each kind is one line, its fixed icon right in front of its label, holding
-    exactly its own issue numbers and no other kind's icon; and the three icons are three different files."""
+    exactly its own issue numbers and no other kind's icon; each kind draws exactly its own file (blocked-by.svg,
+    blocks.svg, related.svg), never a verdict or run icon such as passed, failed, queued, running or cancelled."""
     record_property("proves", "251.1")
-    files = {card.FIELD_ICONS[f] for f, _ in KINDS.values()}
-    assert len(files) == 3, f"251.1: the three kinds of link share icons: {files}"
+    for field, name in LINK_ICON.items():
+        assert os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "dokima", "icons", f"{name}.svg")), \
+            f"251.1: the {field} icon dokima/icons/{name}.svg is missing"
     for plan in (STORY, SPLIT):
         for page in ("issue", "pr"):
             check_lines(draw([with_links(plan, LINKS)], page), LINKS, "251.1", f"the {page} card of a {plan['kind']}")
@@ -134,7 +153,8 @@ def test_the_issue_card_shows_no_line_for_a_kind_with_no_links(record_property):
 
     Proves 251.1. Draws the card from a plan that only blocks #15 (only the Blocks line), only relates to #18 (only Relates to) and
     is only blocked by #12 (only Blocked by); then from three empty lists and from a plan with no links field: neither
-    shows a link line or label, both still show the plan, and they are drawn exactly alike."""
+    shows a link line or label, both still show the plan, and they are drawn exactly alike; and the card of a plan with
+    links, its link lines taken out, is exactly the card of the plan with no links field, so nothing else is added."""
     record_property("proves", "251.1")
     for kind, n in (("blocks", 15), ("relates_to", 18), ("blocked_by", 12)):
         links = dict(NONE, **{kind: [n]})
@@ -148,6 +168,10 @@ def test_the_issue_card_shows_no_line_for_a_kind_with_no_links(record_property):
             for label in ("Blocked by", "Relates to"):
                 assert label not in text, f"251.1: the {page} card of a plan with {name} says {label}:\n{text}"
         assert empty == old, f"251.1: on the {page} card a plan with no links field draws unlike one with no links"
+        full = draw([with_links(STORY, LINKS)], page)
+        assert link_lines(full) and without_link_lines(full) == without_link_lines(old), \
+            (f"251.1: on the {page} card the link lines are not the only difference from a plan with no links field:\n"
+             f"{without_link_lines(full)}\n---\n{without_link_lines(old)}")
 
 
 def test_the_issue_card_shows_the_links_of_the_newest_plan(record_property):
