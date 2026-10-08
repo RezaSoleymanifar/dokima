@@ -93,7 +93,7 @@ def test_the_card_shows_each_question_with_its_assumption_and_nothing_else(recor
     out.mkdir()
 
     def rec(qs):
-        (out / "plan.json").write_text(json.dumps({"kind": kind, "user_story": "Slow calls return a job id.",
+        (out / "plan.json").write_text(json.dumps({"kind": kind, "summary": "Slow calls hand back a job id.", "user_story": "Slow calls return a job id.",
                                                    "feature": "Slow calls run as jobs.", "stories": [], "questions": qs}))
         return agent.build_record("planner", "", str(out), "", True, {"run_id": "1", "run": "https://x/run/1"})
 

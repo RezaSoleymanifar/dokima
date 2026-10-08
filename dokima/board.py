@@ -1,4 +1,4 @@
-"""Keep the project board's Status, Action ("Needs you") and Priority current, from GitHub events.
+"""Keep the project board's Status, Action ("Needs you" or "Autopilot") and Priority current, from GitHub events.
 
     python3 -m dokima.board     # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number")
 
@@ -13,6 +13,7 @@ import sys
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
+AUTOPILOT = "autopilot"
 
 
 def linked(body):
@@ -65,10 +66,20 @@ def gql(query, **variables):
     return json.loads(subprocess.run(args, check=True, capture_output=True, text=True).stdout)["data"]
 
 
+def api(method, path, **fields):
+    """One REST call; raises subprocess.CalledProcessError when GitHub refuses it."""
+    args = ["gh", "api", "-X", method, path]
+    for k, v in fields.items():
+        args += ["-F" if isinstance(v, int) else "-f", f"{k}={v}"]
+    out = subprocess.run(args, check=True, capture_output=True, text=True).stdout
+    return json.loads(out) if out.strip() else {}
+
+
 class Board:
-    def __init__(self, spec, repo, q=gql):
-        self.q = q
+    def __init__(self, spec, repo, q=gql, rest=api):
+        self.q, self.rest = q, rest
         owner, number = spec.split("/")
+        self.owner, self.number = owner, int(number)
         self.repo_owner, self.repo_name = repo.split("/")
         p = q('query($o:String!,$n:Int!){organization(login:$o){projectV2(number:$n){id fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}', o=owner, n=int(number))["organization"]["projectV2"]
         self.id = p["id"]
@@ -94,19 +105,105 @@ class Board:
         elif option in options:
             self.q('mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}', p=self.id, i=iid, f=fid, o=options[option])
 
+    def value(self, iid, field):
+        """The card's current option of that field, or None."""
+        node = self.q('query($i:ID!,$f:String!){node(id:$i){... on ProjectV2Item{fieldValueByName(name:$f){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}', i=iid, f=field)["node"]
+        return ((node or {}).get("fieldValueByName") or {}).get("name")
 
-def sync(event, payload, spec, repo, q=gql):
+    def autopilot(self, kind, number):
+        """Whether the issue or PR carries the autopilot label."""
+        field = "issue" if kind == "issue" else "pullRequest"
+        node = self.q(f'query($o:String!,$r:String!,$n:Int!){{repository(owner:$o,name:$r){{{field}(number:$n){{labels(first:100){{nodes{{name}}}}}}}}}}', o=self.repo_owner, r=self.repo_name, n=int(number))["repository"][field]
+        return AUTOPILOT in {label["name"] for label in node["labels"]["nodes"]}
+
+    def open_pr(self, number):
+        """The open pull request built for the issue (from its try branch), or None."""
+        nodes = self.q('query($o:String!,$r:String!,$h:String!){repository(owner:$o,name:$r){pullRequests(headRefName:$h,states:[OPEN],first:1){nodes{number}}}}', o=self.repo_owner, r=self.repo_name, h=f"try/issue-{number}")["repository"]["pullRequests"]["nodes"]
+        return nodes[0]["number"] if nodes else None
+
+    def parent(self, number):
+        """The issue's parent issue, or None."""
+        up = self.q('query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){parent{number}}}}', o=self.repo_owner, r=self.repo_name, n=int(number))["repository"]["issue"].get("parent")
+        return up["number"] if up else None
+
+    def label(self, kind, number, on):
+        """Put the autopilot label on or off the issue or PR, leaving its other labels alone."""
+        path = f"repos/{self.repo_owner}/{self.repo_name}/issues/{number}/labels"
+        if on:
+            self.rest("POST", path, **{"labels[]": AUTOPILOT})
+        else:
+            self.rest("DELETE", f"{path}/{AUTOPILOT}")
+
+    def views(self):
+        p = self.q('query($o:String!,$n:Int!){organization(login:$o){projectV2(number:$n){views(first:50){nodes{name}}}}}', o=self.owner, n=self.number)["organization"]["projectV2"]
+        return [v["name"] for v in p["views"]["nodes"]]
+
+    def add_view(self, name, layout, filter):
+        self.rest("POST", f"orgs/{self.owner}/projectsV2/{self.number}/views", name=name, layout=layout, filter=filter)
+
+
+def action(board, kind, number, needs_you):
+    """The Action pill: Needs you when the river stops for the owner, else Autopilot while on autopilot, else none."""
+    return "Needs you" if needs_you else "Autopilot" if board.autopilot(kind, number) else None
+
+
+def switched(event, p):
+    """The issue number when its autopilot label was added or removed, else None."""
+    if event == "issues" and p["action"] in ("labeled", "unlabeled") and p["label"]["name"] == AUTOPILOT:
+        return p["issue"]["number"]
+    return None
+
+
+def opened(event, p):
+    """(PR number, linked issues) when a pull request opened or reopened, else None."""
+    if event in ("pull_request", "pull_request_target") and p["action"] in ("opened", "reopened"):
+        return p["pull_request"]["number"], linked(p["pull_request"].get("body"))
+    return None
+
+
+def switch(board, number):
+    """Follow the issue's autopilot label on its card, its open PR's card and the PR's label, never touching Needs you;
+    then, at the top of what was switched on, add the Autopilot view if the board has none."""
+    on = board.autopilot("issue", number)
+    pr = board.open_pr(number)
+    for kind, n in [("issue", number)] + ([("pr", pr)] if pr else []):
+        iid = board.item(kind, n)
+        current = board.value(iid, "Action")
+        if current != "Needs you" and current != ("Autopilot" if on else None):
+            board.set(iid, "Action", "Autopilot" if on else None)
+    if pr and board.autopilot("pr", pr) != on:
+        board.label("pr", pr, on)
+    if not on:
+        return
+    # Only the top of a tree switched on adds the view: its sub-issues' board runs may overlap it and read no view yet.
+    up = board.parent(number)
+    if up and board.autopilot("issue", up):
+        return
+    try:
+        if "Autopilot" not in board.views():
+            board.add_view("Autopilot", "table", f"label:{AUTOPILOT}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Could not add the Autopilot view to the board: {(e.stderr or str(e)).strip()}") from e
+
+
+def sync(event, payload, spec, repo, q=gql, rest=api):
     changes, pill = decide(event, payload), priority(event, payload)
-    if not spec or not (changes or pill):
+    on_off, pr = switched(event, payload), opened(event, payload)
+    if not spec or not (changes or pill or on_off):
         return []
-    board = Board(spec, repo, q)
+    board = Board(spec, repo, q, rest)
+    if pr and any(board.autopilot("issue", n) for n in pr[1]) and not board.autopilot("pr", pr[0]):
+        # A pull request built for an issue on autopilot carries the label too, so the Autopilot view lists it.
+        board.label("pr", pr[0], True)
     for kind, number, status, needs_you in changes:
         iid = board.item(kind, number)
         board.set(iid, "Status", status)
-        board.set(iid, "Action", "Needs you" if needs_you else None)
+        board.set(iid, "Action", action(board, kind, number, needs_you))
     if pill and "Priority" in board.fields:
         number, option = pill
         board.set(board.item("issue", number), "Priority", option)
+    if on_off:
+        switch(board, on_off)
     return changes
 
 
@@ -116,7 +213,12 @@ def main():
         print("No DOKIMA_BOARD set; nothing to sync.")
         return 0
     payload = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
-    for change in sync(os.environ["GITHUB_EVENT_NAME"], payload, spec, os.environ["GITHUB_REPOSITORY"]):
+    try:
+        changes = sync(os.environ["GITHUB_EVENT_NAME"], payload, spec, os.environ["GITHUB_REPOSITORY"])
+    except RuntimeError as e:
+        print(f"::error::{e}")
+        return 1
+    for change in changes:
         print("board:", *change)
     return 0
 

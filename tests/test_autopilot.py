@@ -56,6 +56,9 @@ m_sub = re.fullmatch(r"/?repos/o/r/issues/(\d+)/sub_issues(?:\?.*)?", API_PATH o
 m_lab = re.fullmatch(r"/?repos/o/r/issues/(\d+)/labels(?:\?.*)?", API_PATH or "")
 m_one = re.fullmatch(r"/?repos/o/r/issues/(\d+)/labels/([^?]+)", API_PATH or "")
 m_iss = re.fullmatch(r"/?repos/o/r/issues/(\d+)(?:\?.*)?", API_PATH or "")
+if a[:1] == ["api"] and any(re.fullmatch(r"/?repos/o/r/issues/\d+/dependencies/blocked_by", x) for x in a[1:]):
+    print("[]")
+    sys.exit(0)
 if m_sub and method() == "GET":
     print(json.dumps([issue_obj(c) for c in TREE.get(m_sub.group(1), [])]))
     sys.exit(0)
@@ -211,11 +214,12 @@ def test_autopilot_stop_takes_the_same_tree_off_autopilot(record_property, tmp_p
 
 
 def test_autopilot_starts_no_stage_and_says_which_issues_it_switched(record_property, tmp_path):
-    """`/autopilot start` and `/autopilot stop` start no planner, worker or reviewer, and leave one comment naming every issue switched.
+    """`/autopilot start` and `/autopilot stop` start no stage on the issue they were said about, and leave one comment there naming every issue switched.
 
     Runs the listener on the code owner's `/autopilot start` and `/autopilot stop`, each on issue #57 and on pull
-    request #60. None may call the agent workflow, send a start signal or run an agent. Each must leave exactly one
-    new comment, where the command was written (#57, or #60 for the pull request), that names every issue it
+    request #60. None may call the agent workflow or run an agent; `/autopilot stop` sends no start signal at all and
+    `/autopilot start` none for #57 itself (it may start #57's waiting children, #213). Each must leave exactly one
+    new comment where the command was written (#57, or #60 for the pull request), that names every issue it
     switched (#57, #101, #102, #103, #104 on start; #57, #101, #103, #104 on stop, #102 having never been on) and
     neither #50 nor #58."""
     record_property("proves", "209.3")
@@ -227,11 +231,17 @@ def test_autopilot_starts_no_stage_and_says_which_issues_it_switched(record_prop
         m = Tree(tmp_path / case, labels)
         called = m.listen(body, on_pr=on_pr)
         assert not m.failed, f"209.3 ({case}): the listener failed on {body}:\n{m.tail()}"
-        assert_started_nothing(m, called, "209.3", case)
-        posts = m.posted()
-        assert len(posts) == 1, \
-            f"209.3 ({case}): {body} left {len(posts)} comments, expected exactly one: {[p['body'][:200] for p in posts]}"
+        if body == "/autopilot stop":
+            assert_started_nothing(m, called, "209.3", case)
+        else:
+            assert not called, f"209.3 ({case}): the command started the agent workflow"
+            assert not m.agent_started(), f"209.3 ({case}): an agent ran"
+            own = [d for d in m.dispatches() if any(x in (f"client_payload[issue]={N}", f"client_payload[issue]={PR}") for x in d)]
+            assert own == [], f"209.3 ({case}): {body} started a stage on #{N} itself: {own}"
         where = PR if on_pr else N
+        posts = [p for p in m.posted() if p["where"][2] == where]
+        assert len(posts) == 1, \
+            f"209.3 ({case}): {body} left {len(posts)} comments on #{where}, expected exactly one: {[p['body'][:200] for p in posts]}"
         assert posts[0]["where"] == ["pr" if on_pr else "issue", "comment", where], \
             f"209.3 ({case}): the comment went to {posts[0]['where']}, not where {body} was said (#{where})"
         named = mentioned(posts[0]["body"])

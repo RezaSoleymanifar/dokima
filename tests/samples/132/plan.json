@@ -1,5 +1,6 @@
 {
  "kind": "user_story",
+ "summary": "A failed agent run always lands its card in its stage's column with the Needs you pill.",
  "user_story": "When an agent run fails, its card always lands in its stage's column with the Needs you pill, so the owner can tell a broken run from one still working, even when the run's own last steps fail too.",
  "acceptance_criteria": [
   {

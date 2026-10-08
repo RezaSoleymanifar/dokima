@@ -106,6 +106,7 @@ nothing is taken from your prose or guessed from your test code. Anything malfor
 Exactly one kind: user_story or feature.
 - A user story:
   {"kind": "user_story",
+   "summary": "...",
    "user_story": "...",
    "acceptance_criteria": [{"text": "...", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
    "non_functional": [{"text": "...", "why": "...", "principle": "..."}, ...],
@@ -116,8 +117,9 @@ Exactly one kind: user_story or feature.
   Criterion k is N.k: the acceptance criteria first, then the non-functional requirements. Every criterion needs at
   least one test in "tests", and each of those tests also names its criterion with record_property("proves", "N.k").
   Change no file outside the tests. Every older test you change, rename or delete needs a reason in "test_changes".
-- A feature: {"kind": "feature", "feature": "...", "stories": [{"title": "...", "user_story": "...",
+- A feature: {"kind": "feature", "summary": "...", "feature": "...", "stories": [{"title": "...", "user_story": "...",
   "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
+Every kind carries "summary": one plain sentence saying what the issue is about; the card opens with it.
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
 A plan may also carry "questions": [{"question": "...?", "assumption": "..."}, ...], each a question for the owner and the
 reading the plan assumed, nothing else, as many as you need. Ask only where the owner's words allow two readings or an
