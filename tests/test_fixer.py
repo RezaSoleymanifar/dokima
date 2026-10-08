@@ -134,7 +134,8 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
 
     Builds the starting packs from a faked issue whose code review blocked with B1 for the planner and B2 for the
     worker. The planner's open_blockers.json holds exactly B1. After the planner re-plans and the plan review approves,
-    the worker's open_blockers.json holds exactly B2. The planner's round check then rejects a hand-back that skips B1."""
+    the worker's open_blockers.json holds exactly B2. The planner no longer replies to B1 by id (#241): the plan
+    reviewer resolves or keeps it."""
     record_property("proves", "166.3")
     pr_block = rec("reviewer", "pr", review(blocker("B1", "planner"), blocker("B2", "worker", "9.2")))
     base = [PLAN, PLAN_OK, rec("worker", handback={"summary": "s"}), pr_block]
@@ -142,8 +143,6 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     agent.pack("o/r", 9, "planner", "", str(tmp_path / "p"))
     got = [b.get("id") for b in json.load(open(tmp_path / "p" / "open_blockers.json"))]
     assert got == ["B1"], f"166.3: the planner was handed blockers {got}, not exactly the test blocker B1"
-    assert agent.problems_round("planner", {"replies": []}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
-        "166.3: the planner's hand-back may skip the code review's test blocker B1"
     fake_github(monkeypatch, base + [rec("planner", handback=STORY), PLAN_OK])
     agent.pack("o/r", 9, "worker", "", str(tmp_path / "w"))
     got = [b.get("id") for b in json.load(open(tmp_path / "w" / "open_blockers.json"))]
