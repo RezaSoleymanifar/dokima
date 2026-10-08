@@ -7,10 +7,12 @@
 The planner holds no GitHub key. It ends by writing one plan.json to OUT, of kind user_story or feature (see
 dokima/roles/planner.md), with its questions for the owner listed inside it, plus its tests in tests/. Every
 criterion's source is issue N or one of its comments; every test it names is in the repo, filed under one of the
-plan's criteria. Every older test it changes or deletes needs a reason in test_changes.
+plan's criteria. Every older test it changes, renames or deletes needs a reason in test_changes. Every new test has a
+one-sentence summary and fails on today's code.
 Nothing is posted unless `check` passes.
 """
 
+import ast
 import json
 import os
 import re
@@ -22,6 +24,7 @@ from dokima.agent import problems_questions  # noqa: E402
 
 ORIGINAL_START = "<!-- dokima-original -->"
 ORIGINAL_END = "<!-- /dokima-original -->"
+NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 
 
 class Garbled(Exception):
@@ -194,8 +197,9 @@ def declared_labels(tc, declared):
     """Use the criteria the plan declares for each test, never labels guessed from the test's text."""
     by_test = declared_by_test(declared)
     added = {t: by_test.get(t, []) for t in tc["added"]}
-    changed = {t: (old, by_test.get(t, old)) for t, (old, _) in tc["changed"].items()}
-    return {"added": added, "changed": changed, "deleted": tc["deleted"]}
+    renamed = tc.get("renamed", {})
+    changed = {t: (old, by_test.get(renamed.get(t, t), old)) for t, (old, _) in tc["changed"].items()}
+    return dict(tc, added=added, changed=changed)
 
 
 def test_functions(text):
@@ -216,19 +220,29 @@ def test_functions(text):
 
 
 def test_changes(paths, before, after):
-    """Tests the planner touched, by path::name: added, changed (with their old keys) and deleted."""
-    added, changed, deleted = {}, {}, {}
+    """Tests the planner touched, by path::name: added, changed (with their old keys) and deleted.
+
+    A test whose source is unchanged apart from its name is a rename: a change, filed under its old name, with its
+    new name under renamed (old -> new), a key that is there only when something was renamed.
+    """
+    added, changed, deleted, renamed = {}, {}, {}, {}
     for path in paths:
         old, new = test_functions(before(path)), test_functions(after(path))
+        gone = [name for name in old if name not in new]
         for name, (src, keys) in new.items():
             if name not in old:
-                added[f"{path}::{name}"] = keys
+                was = next((o for o in gone if old[o][0].replace(f"def {o}(", f"def {name}(", 1) == src), None)
+                if was:
+                    gone.remove(was)
+                    changed[f"{path}::{was}"] = (old[was][1], keys)
+                    renamed[f"{path}::{was}"] = f"{path}::{name}"
+                else:
+                    added[f"{path}::{name}"] = keys
             elif old[name][0] != src:
                 changed[f"{path}::{name}"] = (old[name][1], keys)
-        for name, (_, keys) in old.items():
-            if name not in new:
-                deleted[f"{path}::{name}"] = keys
-    return {"added": added, "changed": changed, "deleted": deleted}
+        for name in gone:
+            deleted[f"{path}::{name}"] = old[name][1]
+    return dict({"added": added, "changed": changed, "deleted": deleted}, **({"renamed": renamed} if renamed else {}))
 
 
 def proving(tc):
@@ -265,6 +279,56 @@ def problems(number, plan, files, tc, declared=None):
     older = [t for t in tc["changed"] if not set(tc["changed"][t][0]) <= keys] + list(tc["deleted"])
     out += [f"{t} is an older test the planner changed or deleted, with no reason in test_changes"
             for t in older if t not in plan["test_changes"]]
+    return out
+
+
+def unreadable(paths):
+    """Each test file that cannot be read as Python, with why."""
+    out = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                ast.parse(f.read(), path)
+        except (SyntaxError, ValueError) as e:
+            out.append(f"{path} cannot be read as Python ({type(e).__name__}: {e})")
+    return out
+
+
+def one_sentence(line):
+    """True when the line is one sentence ending in '.', '?' or '!', with no other sentence end inside it."""
+    return bool(line) and line[-1] in ".?!" and not re.search(r"[.?!]\s", line)
+
+
+def unsummarized(added):
+    """The new tests (path::name) whose docstring's first line is not one sentence on one line."""
+    out = []
+    for path in sorted({t.partition("::")[0] for t in added}):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        for node in tree.body:
+            t = f"{path}::{getattr(node, 'name', '')}"
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and t in added:
+                doc = ast.get_docstring(node, clean=False) or ""
+                if not one_sentence(doc.split("\n")[0].strip()):
+                    out.append(f"{t} is a new test with no one-sentence summary: the first line of its docstring must "
+                               f"be one sentence on one line, ending in '.', '?' or '!'")
+    return out
+
+
+def passing_today(added):
+    """Run each new test (path::name) on today's code; the ones that pass or are skipped, or run past the limit."""
+    out = []
+    for t in sorted(added):
+        try:
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", t],
+                               capture_output=True, text=True, timeout=NEW_TEST_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            out.append(f"{t} is a new test still running after {NEW_TEST_TIMEOUT} s on today's code; it was stopped")
+            continue
+        if r.returncode in (0, 5):  # 0: passed or skipped, 5: nothing ran
+            out.append(f"{t} is a new test that passes today (or is skipped); every new test must fail on today's code")
     return out
 
 
@@ -338,7 +402,11 @@ def main(argv):
         if kind == "plan":
             base = os.environ.get("PLANNER_BASE", "HEAD")
             files = changed_files(base)
-            tc = test_changes([p for p in files if p.startswith("tests/") and p.endswith(".py")], read_at(base), read_now)
+            paths = [p for p in files if p.startswith("tests/") and p.endswith(".py")]
+            bad = unreadable(paths)
+            if bad:
+                raise Garbled("; ".join(bad))
+            tc = test_changes(paths, read_at(base), read_now)
             if "declared" in result:
                 tc = declared_labels(tc, result["declared"])
             # Only what the planner changed in this run counts against "tests only": on a re-plan the branch may
@@ -347,6 +415,7 @@ def main(argv):
             own = changed_files(run_base) if run_base else files
             bad = problems(number, result, own, tc, result.get("declared"))
             bad += problems_questions(result["raw"].get("questions", []))
+            bad += unsummarized(tc["added"]) + passing_today(tc["added"])
             if bad:
                 raise Garbled("; ".join(bad))
     except Garbled as e:
