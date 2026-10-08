@@ -14,6 +14,7 @@ CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
 AUTOPILOT = "autopilot"
+VIEW_FILTER = f"label:{AUTOPILOT} is:open"  # merged and closed items keep their label, so the view shows only open ones
 
 
 def linked(body):
@@ -135,8 +136,15 @@ class Board:
             self.rest("DELETE", f"{path}/{AUTOPILOT}")
 
     def views(self):
-        p = self.q('query($o:String!,$n:Int!){organization(login:$o){projectV2(number:$n){views(first:50){nodes{name}}}}}', o=self.owner, n=self.number)["organization"]["projectV2"]
-        return [v["name"] for v in p["views"]["nodes"]]
+        return [v["name"] for v in self.view_nodes()]
+
+    def view_nodes(self):
+        """The board's views, each as {id, name, filter}."""
+        p = self.q('query($o:String!,$n:Int!){organization(login:$o){projectV2(number:$n){views(first:50){nodes{id name filter}}}}}', o=self.owner, n=self.number)["organization"]["projectV2"]
+        return p["views"]["nodes"]
+
+    def set_view_filter(self, view_id, filter):
+        self.q('mutation($v:ID!,$f:String!){updateProjectV2View(input:{viewId:$v,filter:$f}){projectV2View{id}}}', v=view_id, f=filter)
 
     def add_view(self, name, layout, filter):
         self.rest("POST", f"orgs/{self.owner}/projectsV2/{self.number}/views", name=name, layout=layout, filter=filter)
@@ -181,9 +189,19 @@ def switch(board, number):
         return
     try:
         if "Autopilot" not in board.views():
-            board.add_view("Autopilot", "table", f"label:{AUTOPILOT}")
+            board.add_view("Autopilot", "table", VIEW_FILTER)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Could not add the Autopilot view to the board: {(e.stderr or str(e)).strip()}") from e
+
+
+def fix_view(board):
+    """Move an Autopilot view still on the old filter, label:autopilot, to VIEW_FILTER; any other filter is the owner's."""
+    try:
+        for v in board.view_nodes():
+            if v["name"] == "Autopilot" and v.get("filter") == f"label:{AUTOPILOT}":
+                board.set_view_filter(v["id"], VIEW_FILTER)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Could not fix the Autopilot view's filter to {VIEW_FILTER}: {(e.stderr or str(e)).strip()}") from e
 
 
 def sync(event, payload, spec, repo, q=gql, rest=api):
@@ -204,6 +222,9 @@ def sync(event, payload, spec, repo, q=gql, rest=api):
         board.set(board.item("issue", number), "Priority", option)
     if on_off:
         switch(board, on_off)
+    if event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged"):
+        # An old Autopilot view is fixed on the next merge, after the merged cards have moved.
+        fix_view(board)
     return changes
 
 
