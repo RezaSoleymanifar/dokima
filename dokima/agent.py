@@ -759,18 +759,71 @@ def issue_of_pr(head, body):
     return m.group(1) if m else None
 
 
+def autopilot_of(body):
+    """"start" or "stop" when a comment's first line begins `/autopilot start` or `/autopilot stop`; otherwise None."""
+    first = (body or "").strip().splitlines()[0].split() if (body or "").strip() else []
+    if len(first) >= 2 and first[0].lower() == "/autopilot" and first[1].lower() in ("start", "stop"):
+        return first[1].lower()
+    return None
+
+
 def route(body, on_pr, number, head="", pr_body=""):
     """What a code owner's comment starts: {role, stage, issue}, or None when it starts nothing.
 
-    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue."""
-    role = command_of(body)
-    if not role:
+    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue.
+    `/autopilot start|stop` starts no stage: it routes to {autopilot, issue}, the issue whose tree it switches."""
+    role, switch = command_of(body), autopilot_of(body)
+    if not role and not switch:
         return None
     issue = issue_of_pr(head, pr_body) if on_pr else str(number)
     if not issue:
         return None
+    if switch:
+        return {"autopilot": switch, "issue": issue}
     stage = ("pr" if on_pr else "plan") if role == "reviewer" else ""
     return {"role": role, "stage": stage, "issue": issue}
+
+
+AUTOPILOT = "autopilot"
+
+
+def issue_tree(repo, number):
+    """The issue and every sub-issue under it, at every level, from GitHub's native sub-issues; parents first."""
+    tree, todo = [], [int(number)]
+    while todo:
+        n = todo.pop(0)
+        if n in tree:
+            continue
+        tree.append(n)
+        # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+        todo += [c["number"] for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/sub_issues?per_page=100") or "[]")]
+    return tree
+
+
+def switch_autopilot(repo, number, switch):
+    """Put the issue's tree on autopilot ("start") or take it off ("stop"), touching no other label; returns the
+    issues switched: those whose `autopilot` label was added or removed."""
+    switched = []
+    for n in issue_tree(repo, number):
+        labels = {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("labels", [])}
+        if switch == "start" and AUTOPILOT not in labels:
+            # Adding a label GitHub does not have yet creates it.
+            gh("api", "-X", "POST", f"repos/{repo}/issues/{n}/labels", "-f", f"labels[]={AUTOPILOT}")
+            switched.append(n)
+        elif switch == "stop" and AUTOPILOT in labels:
+            gh("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/{AUTOPILOT}")
+            switched.append(n)
+    return switched
+
+
+def autopilot_comment(number, switch, switched):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched."""
+    names = ", ".join(f"#{n}" for n in switched)
+    if switch == "start":
+        said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
+    else:
+        said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
+    return said + " No stage was started.\n"
 
 
 def next_step(items, rec, owners, rounds=3):
@@ -880,7 +933,8 @@ def main(argv):
     agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
     agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
     agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
-    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id)"""
+    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
+    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -1008,6 +1062,11 @@ def main(argv):
             needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+        return 0
+    if argv[1] == "autopilot":
+        switch, number = argv[2], argv[3]
+        switched = switch_autopilot(os.environ["GITHUB_REPOSITORY"], number, switch)
+        sys.stdout.write(autopilot_comment(number, switch, switched))
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"
