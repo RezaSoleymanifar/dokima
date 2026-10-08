@@ -130,15 +130,22 @@ def row_of(text, words, k):
     return found[0]
 
 
+# The icons code draws in front of a field (issue #234), which are never a verdict circle.
+FIELD_ICONS = {"planner", "worker", "plan review", "code review", "autopilot", "needs you", "owner approval", "merged",
+               "still open", "acceptance criterion", "verified by", "files changed", "question", "blocker", "note",
+               "outside the plan", "issue found", "related", "blocked by", "blocks", "stats"}
+
+
 def alts(html):
-    return re.findall(r'<img [^>]*alt="([^"]*)"', html)
+    """The states of the verdict circles in `html`, leaving out the field icons."""
+    return [a for a in re.findall(r'<img [^>]*alt="([^"]*)"', html) if a not in FIELD_ICONS]
 
 
 def circle(text, words, k):
     """The state on the circle of the criterion whose words are `words`, and the link around it (or None)."""
     first, second = row_of(text, words, k)
     assert len(alts(first)) == 1, f"{k}: the circle cell of “{words}” does not hold exactly one circle"
-    assert words not in first and "<img" not in second, f"{k}: the circle of “{words}” does not hang outside its words"
+    assert words not in first and not alts(second), f"{k}: the circle of “{words}” does not hang outside its words"
     link = re.search(r'<a href="([^"]+)"[^>]*>\s*<img', first)
     return alts(first)[0], link.group(1) if link else None
 
