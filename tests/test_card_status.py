@@ -6,8 +6,10 @@ status line, never a heading:
 
     card.status(issue, found) -> (stage, todo)
         stage  "Backlog", "Plan", "Work", "Review" (the board's columns) or "Merged"
-        todo   None when nothing is the owner's to do, else the owner's to-do in words; exactly "Ready for approval"
-               when the work waits for the owner's approval and every criterion's check and All tests passed
+        todo   None when nothing is the owner's to do, else the owner's to-do, word for word one of TODO below:
+               a plan with questions, an approved plan, three blocks in a row, a rejected hand-back, a run that never
+               started, an escalation, approved work with every check green ("Ready for approval"), and approved work
+               whose checks have not all passed
         `found` is what card.render takes (see tests/test_card_records.py), plus
                 "items":    the conversation the records come from (dokima.agent.conversation), oldest first
                 "children": for a filed split, [{"number", "title", "stage"}] in the split's order
@@ -131,8 +133,8 @@ def lines_of(text):
 
 
 def bare(line):
-    """A line without its HTML tags, '*' and '_'."""
-    return re.sub(r"[*_]", "", re.sub(r"<[^>]+>", "", line)).strip()
+    """A line without its HTML tags, '*', '_' and backticks."""
+    return re.sub(r"[*_`]", "", re.sub(r"<[^>]+>", "", line)).strip()
 
 
 def status_line(text, planned=True):
@@ -257,45 +259,70 @@ def test_the_status_line_is_empty_of_todos_when_nothing_is_the_owners(record_pro
         assert "Needs you" not in line, f"181.2: the status line says Needs you when nothing is the owner's: “{line}”"
 
 
+NOT_STARTED = {"role": "not-started", "attempt": "worker", "stage": None, "handback": {},
+               "check": {"passed": False, "problems": []}, "run": "https://github.com/o/r/actions/runs/19"}
+RED = [dict(r, conclusion="failure") if r["name"].startswith("40.2") else r for r in GREEN]
+
+# The owner's to-do at each stop, word for word (backticks, '*' and '_' aside), as 181.2 names them.
+TODO = {"questions": "Answer the questions with /plan, or say /review",
+        "plan approved": "Say /work to build the plan",
+        "three blocks": "Three blocks in a row: your call",
+        "rejected": "Fix the rejected hand-back",
+        "not started": "Fix why nothing ran",
+        "escalated": "Settle the escalation",
+        "ready": "Ready for approval",
+        "not every check passed": "See why not every check passed"}
+
 CASES = [
-    ("a fresh plan goes to the reviewer", [PLANNED], ("Plan", False)),
-    ("a plan with questions waits for the owner", [ASKS], ("Plan", True)),
-    ("an approved plan waits for /work", [PLANNED, PLAN_OK], ("Plan", True)),
-    ("a blocked plan goes back to the planner", [PLANNED, PLAN_BLOCK], ("Plan", False)),
-    ("a second block in a row still goes back", [PLANNED, PLAN_BLOCK, PLANNED, PLAN_BLOCK], ("Plan", False)),
+    ("a fresh plan goes to the reviewer", [PLANNED], ("Plan", False), None, GREEN),
+    ("a plan with questions waits for the owner", [ASKS], ("Plan", True), TODO["questions"], GREEN),
+    ("an approved plan waits for /work", [PLANNED, PLAN_OK], ("Plan", True), TODO["plan approved"], GREEN),
+    ("a blocked plan goes back to the planner", [PLANNED, PLAN_BLOCK], ("Plan", False), None, GREEN),
+    ("a second block in a row still goes back", [PLANNED, PLAN_BLOCK, PLANNED, PLAN_BLOCK], ("Plan", False), None, GREEN),
     ("a third block in a row waits for the owner", [PLANNED, PLAN_BLOCK, PLANNED, PLAN_BLOCK, PLANNED, PLAN_BLOCK],
-     ("Plan", True)),
+     ("Plan", True), TODO["three blocks"], GREEN),
+    ("a third code block in a row waits for the owner",
+     [PLANNED, PLAN_OK, "/work", BUILT, CODE_BLOCK, BUILT, CODE_BLOCK, BUILT, CODE_BLOCK],
+     ("Review", True), TODO["three blocks"], GREEN),
     ("the owner speaking resets the count", [PLANNED, PLAN_BLOCK, PLANNED, PLAN_BLOCK, "/plan go on", PLANNED, PLAN_BLOCK],
-     ("Plan", False)),
-    ("a rejected hand-back waits for the owner", [REJECTED], ("Plan", True)),
-    ("a build goes to the code reviewer", [PLANNED, PLAN_OK, "/work", BUILT], ("Review", False)),
-    ("a blocked build goes back to the worker", [PLANNED, PLAN_OK, "/work", BUILT, CODE_BLOCK], ("Work", False)),
-    ("an escalation waits for the owner", [PLANNED, PLAN_OK, "/work", BUILT, ESCALATED], ("Review", True)),
-    ("approved work waits for the owner", [PLANNED, PLAN_OK, "/work", BUILT, CODE_OK], ("Review", True)),
-    ("a cancelled run waits for no one", [PLANNED, PLAN_OK, "/work", CANCELLED], ("Work", False)),
+     ("Plan", False), None, GREEN),
+    ("a rejected hand-back waits for the owner", [REJECTED], ("Plan", True), TODO["rejected"], GREEN),
+    ("a run that never started waits for the owner", [PLANNED, PLAN_OK, "/work", NOT_STARTED], ("Work", True),
+     TODO["not started"], GREEN),
+    ("a build goes to the code reviewer", [PLANNED, PLAN_OK, "/work", BUILT], ("Review", False), None, GREEN),
+    ("a blocked build goes back to the worker", [PLANNED, PLAN_OK, "/work", BUILT, CODE_BLOCK], ("Work", False), None, GREEN),
+    ("an escalation waits for the owner", [PLANNED, PLAN_OK, "/work", BUILT, ESCALATED], ("Review", True),
+     TODO["escalated"], GREEN),
+    ("approved work with every check green waits for the owner", [PLANNED, PLAN_OK, "/work", BUILT, CODE_OK],
+     ("Review", True), TODO["ready"], GREEN),
+    ("approved work with a failed check waits for the owner", [PLANNED, PLAN_OK, "/work", BUILT, CODE_OK],
+     ("Review", True), TODO["not every check passed"], RED),
+    ("a cancelled run waits for no one", [PLANNED, PLAN_OK, "/work", CANCELLED], ("Work", False), None, GREEN),
 ]
 
 
-@pytest.mark.parametrize("name,steps,want", CASES, ids=[c[0] for c in CASES])
-def test_the_status_agrees_with_the_boards_needs_you_pill(record_property, name, steps, want):
-    """The card's stage and Needs you are exactly the board's column and Needs you pill, in every river situation.
+@pytest.mark.parametrize("name,steps,want,todo_want,checks_", CASES, ids=[c[0] for c in CASES])
+def test_the_status_agrees_with_the_boards_needs_you_pill(record_property, name, steps, want, todo_want, checks_):
+    """The card's stage and Needs you are exactly the board's column and pill, and the to-do says what the owner must do.
 
     For each situation the river can stop or go on in, works out the board's column and pill with the river's own
     code (dokima.agent.board_place and next_step, as decided when the newest record was posted) and checks the card
-    gives the same stage and has a to-do exactly when the board shows Needs you, and that both are what the owner
-    expects there."""
+    gives the same stage, has a to-do exactly when the board shows Needs you, and that the to-do is the one named for
+    that stop (answer the questions, say /work, your call after three blocks, fix the rejected hand-back, fix why
+    nothing ran, settle the escalation, Ready for approval, or see why not every check passed), on the status line."""
     record_property("proves", "181.2")
-    f = found_for(steps, pr=PR if BUILT in steps else None, check_runs=GREEN if BUILT in steps else ())
+    built = any(s is BUILT for s in steps)
+    f = found_for(steps, pr=PR if built else None, check_runs=checks_ if built else ())
     assert board(f["items"], "181.2") == want, f"181.2: the river itself no longer places “{name}” at {want}"
     stage, todo = status(f, "181.2")
     assert (stage, todo is not None) == want, \
         f"181.2: {name}: the card says {stage} with to-do {todo!r}; the board has {want[0]} with Needs you {want[1]}"
-    if todo is not None:
-        assert isinstance(todo, str) and todo.strip(), f"181.2: {name}: the owner's to-do is empty"
+    if todo_want is not None:
+        assert bare(todo) == todo_want, f"181.2: {name}: the owner's to-do is “{todo}”, not “{todo_want}”"
     line = status_line(draw(f), planned=agent.latest(f["recs"], "planner") is not None)
     assert ("Needs you" in line) == want[1], f"181.2: {name}: the status line “{line}” disagrees with the board's pill"
-    if todo:
-        assert bare(todo) in bare(line), f"181.2: {name}: the status line does not say the to-do “{todo}”"
+    if todo_want is not None:
+        assert todo_want in bare(line), f"181.2: {name}: the status line “{line}” does not say the to-do “{todo_want}”"
 
 
 def test_an_issue_with_no_records_is_in_backlog_and_a_filed_split_is_in_work(record_property):
@@ -523,6 +550,7 @@ def test_never_ready_for_approval_unless_every_check_passed(record_property, nam
     stage, todo = status(f, "181.4")
     assert todo is not None, f"181.4: {name}: the river stopped for the owner but the card has no to-do"
     assert todo != "Ready for approval", f"181.4: {name}: the card says Ready for approval"
+    assert bare(todo) == TODO["not every check passed"], f"181.4: {name}: the owner's to-do is “{todo}”"
     assert "Ready for approval" not in draw(f), f"181.4: {name}: the card says Ready for approval"
 
 
