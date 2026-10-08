@@ -129,7 +129,7 @@ def run_card(monkeypatch, github, current):
 REASON = "the owner's part below the marker would change"
 
 PLAN_TESTS = ('def test_card(record_property):\n    """The card shows."""\n'
-              '    record_property("proves", "40.1")\n    assert True\n')
+              '    record_property("proves", "40.1")\n    assert False\n')
 PLAN = {"kind": "user_story", "user_story": "Owners see a card on every issue.",
         "acceptance_criteria": [{"text": "The issue shows a card on top.", "source": f"https://github.com/{REPO}/issues/{NUMBER}"}],
         "non_functional": [], "scope": ["dokima/card.py"], "out_of_scope": [],
