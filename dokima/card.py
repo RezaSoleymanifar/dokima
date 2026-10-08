@@ -163,38 +163,43 @@ def child_row(repo, child):
     return f"- [#{n}](https://github.com/{repo}/issues/{n}) {escape(child.get('title'))} · {st}"
 
 
-def links_row(repo, issue, pr, worker, check_runs, page):
-    """The links that matter, minus a link to the page the card is on ("issue" or "pr")."""
+def links_row(repo, issue, pr, worker, check_runs):
+    """The links that matter, the issue and its PR both included, so the card reads the same on either page."""
     links = []
     if worker:
         links.append(f"[latest run]({worker['html_url']})")
-    if page != "issue":
-        links.append(f"[issue #{issue['number']}]({issue['url']})")
-    if pr and page != "pr":
+    links.append(f"[issue #{issue['number']}]({issue['url']})")
+    if pr:
         links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
     if pr:
         links.append(f"{field_icon(repo, 'files changed')} [files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
 
 
-def criterion_row(repo, text, check, tests):
-    """One criterion as a table row: its circle alone in the first cell, hanging outside its words, linked to its check;
-    then its words and, when any of its tests has a docstring, Verified by with each one linking to its test."""
-    st = state(check)
-    words = escape(text)
-    proofs = [f'<a href="{t["url"]}">{escape(t["verified_by"])}</a>' for t in tests if t and t.get("verified_by")]
-    if proofs:
-        words += f"<br>{field_icon(repo, 'verified by')} Verified by: " + "; ".join(proofs)
-    return f"<tr><td>{circle(repo, st, check and check['html_url'])}</td><td>{words}</td></tr>"
+def criterion_item(repo, label, c, check, tests):
+    """One criterion as a bullet: its status circle, its label and its words, linked to its check when there is one;
+    under it one italic Verified by line per test with a docstring, only the words Verified by linking to the test,
+    then Source linking to where the owner asked for it, when it has one."""
+    words = escape(c.get("text"))
+    if check:
+        words = f'<a href="{check["html_url"]}">{words}</a>'
+    out = [f"- {circle(repo, state(check))} **{label}:** {words}"]
+    for t in tests:
+        if t and t.get("verified_by"):
+            out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
+                       f'{escape(t["verified_by"])}*')
+    if c.get("source"):
+        out.append(f'  - <a href="{c["source"]}">Source</a>')
+    return out
 
 
-def criteria_table(repo, number, start, criteria, plan_tests, by_key, tests):
-    """The table of criteria numbered from `start`, each row with its own check and tests."""
-    out = ["<table>"]
+def criteria_list(repo, number, start, label, criteria, plan_tests, by_key, tests):
+    """The bullet list of criteria numbered from `start`, each with its own check and tests."""
+    out = []
     for k, c in enumerate(criteria, start):
         key = f"{number}.{k}"
-        out.append(criterion_row(repo, c.get("text"), by_key.get(key), [tests.get(t) for t in plan_tests.get(key, [])]))
-    return out + ["</table>"]
+        out += criterion_item(repo, label, c, by_key.get(key), [tests.get(t) for t in plan_tests.get(key, [])])
+    return out
 
 
 def code_review(recs):
@@ -212,11 +217,19 @@ def owner_review(reviews, owners):
     return found[-1] if found else None
 
 
+def owner_merge(pr, owners):
+    """The PR when a code owner merged it, which counts as their approval; None otherwise."""
+    merger = ((pr or {}).get("merged_by") or {}).get("login")
+    return pr if pr and pr.get("merged") and merger in owners else None
+
+
 def done_row(repo, found, all_tests):
-    """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof."""
+    """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof.
+    A code owner's merge is their approval, with or without an Approve review."""
     review = code_review(found["recs"])
     review_st = "not started" if not review else "passed" if review["handback"].get("verdict") == "approve" else "failed"
-    approval = owner_review(found["reviews"], found["owners"])
+    merge = owner_merge(found["pr"], found["owners"])
+    approval = {"state": "APPROVED", "html_url": merge.get("html_url")} if merge else owner_review(found["reviews"], found["owners"])
     approval_st = "not started" if not approval else "passed" if approval["state"] == "APPROVED" else "failed"
     return ("**Definition of Done:** "
             f"{circle(repo, state(all_tests), all_tests and all_tests['html_url'])} All tests · "
@@ -226,8 +239,8 @@ def done_row(repo, found, all_tests):
 
 
 def render(repo, issue, found, page="issue"):
-    """The card for `issue` on `page` ("issue" or "pr"), drawn only from `found`: the agents' records, the PR, its
-    latest commit's checks, its reviews, the code owners, the plan's tests and the latest worker run."""
+    """The card for `issue`, drawn only from `found`: the agents' records, the PR, its latest commit's checks, its
+    reviews, the code owners, the plan's tests and the latest worker run. It is the same on either `page`."""
     from dokima import agent
     recs, pr, check_runs, worker = found["recs"], found["pr"], found["check_runs"], found["worker"]
     by_key = checks_by_key(check_runs)
@@ -238,7 +251,7 @@ def render(repo, issue, found, page="issue"):
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
     lines += [status_line(repo, *status(issue, found)), ""]
-    links = links_row(repo, issue, pr, worker, check_runs, page)
+    links = links_row(repo, issue, pr, worker, check_runs)
     if links:
         lines += [links, ""]
     children = found.get("children") or []
@@ -252,10 +265,11 @@ def render(repo, issue, found, page="issue"):
         if h.get("user_story"):
             lines += [f"**User story:** {escape(h['user_story'])}", ""]
         lines += [f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria**", ""]
-        lines += criteria_table(repo, issue["number"], 1, criteria, plan_tests, by_key, tests) + [""]
+        lines += criteria_list(repo, issue["number"], 1, "Acceptance criterion", criteria, plan_tests, by_key, tests) + [""]
         if nfr:
             lines += fold("Non-functional requirements",
-                          criteria_table(repo, issue["number"], len(criteria) + 1, nfr, plan_tests, by_key, tests)) + [""]
+                          criteria_list(repo, issue["number"], len(criteria) + 1, "Non-functional requirement", nfr,
+                                        plan_tests, by_key, tests)) + [""]
         lines += ["**Scope:**", ""] + [f"- {escape(s)}" for s in h.get("scope") or []] + [""]
         lines += ["**Out of scope:**", ""] + [f"- {escape(s)}" for s in h.get("out_of_scope") or []] + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
@@ -428,7 +442,7 @@ def gallery(repo, out):
         found = {"recs": agent.records(items), "items": items, "pr": pr_, "check_runs": check_runs, "reviews": [],
                  "owners": {owner}, "tests": {}, "worker": worker, "children": children}
         with open(os.path.join(out, f"{name}.md"), "w") as f:
-            f.write(render(repo, issue, found, page="pr" if pr_ else "issue") + "\n")
+            f.write(render(repo, issue, found) + "\n")
         print(f"Drew {name}.md")
 
 
@@ -447,9 +461,10 @@ def main():
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
     if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
         print(f"Card written into issue #{number}")
-    if pr and pr["state"] == "open":
+    # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
+    if pr:
         with open("pr.md", "w") as f:
-            f.write(pr_body(render(repo, issue, found, page="pr"), pr.get("body")))
+            f.write(pr_body(render(repo, issue, found), pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
 
