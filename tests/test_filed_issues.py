@@ -1,4 +1,4 @@
-"""Every issue an agent finds outside its own is filed by code at the end of its run, parked and labeled (#268).
+"""Issues any agent finds outside its own are filed at the end of its run (#268).
 
 Before this, only a review could list issues it found, and they stayed proposals on its card until someone filed them
 by hand (a `/issue` command was only planned). #222 showed the cost: the no-PR bug was found, never filed, and broke
@@ -57,7 +57,10 @@ FIND_D = {"title": "The wiki step skips renamed pages", "why": "A renamed page k
           "evidence": "dokima/trail.py:40 matches pages by file name only"}
 
 PLANNER_TEST = '''def test_a(record_property):
-    """The fix is in."""
+    """The fix is in.
+
+    Proves 57.1.
+    """
     record_property("proves", "57.1")
     assert False, "57.1: the fix is not built yet"
 '''
@@ -194,7 +197,9 @@ def fake_gh():
 
 
 def keyed(job):
-    """The job with each app-token step giving its own key, `key-<step id>`, so a filed issue shows which key made it."""
+    """The job with each app-token step giving its own key, `key-<step id>`.
+
+    So a filed issue shows which key made it."""
     steps = []
     for s in job["steps"]:
         if "create-github-app-token" in str(s.get("uses")):
@@ -215,7 +220,9 @@ def plan_handback(*found, tests=True):
 
 
 def work_handback(*found, summary="Built it. The fix is in x.py."):
-    """A worker's hand-back for #57 listing these issues found outside it; an empty summary is rejected by the check."""
+    """A worker's hand-back for #57 listing these issues found outside it.
+
+    An empty summary is rejected by the check."""
     return {"summary": summary, "criteria": {"57.1": "x.py"}, "evidence": "pytest: 1 passed",
             "issues_found": [dict(f) for f in found]}
 
@@ -232,8 +239,9 @@ def code_review(*found):
 
 
 class Agents(tam.Merges, ts.Machine):
-    """Issue #57, planned, its plan approved and `/work` said (and, at the pr stage, built as pull request #60), on
-    which agents run through agent.yml.
+    """Issue #57, planned and approved, on which agents run through agent.yml.
+
+    `/work` was said on it and, at the pr stage, it was built as pull request #60.
 
     `labels` gives each issue's labels ({57: ["autopilot"]} puts #57 on autopilot); `repo_labels` the labels the
     repo has; `options` the fake GitHub's options (fail_create)."""
@@ -350,7 +358,9 @@ def every_agent(tmp_path, *found, **kw):
 
 
 def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property, tmp_path):
-    """Each issue the planner, the worker or a review finds is filed by itself in that run, parked and labeled filed-by-dokima.
+    """Each issue any agent finds is filed in that run, parked and labeled filed-by-dokima.
+
+    Proves 268.1.
 
     Runs the planner, a plan review, the worker and a code review of #57, each finding two issues, with no owner
     command after any, and checks each run filed exactly one issue per finding, titled with the finding's own title,
@@ -380,7 +390,9 @@ def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property
 
 
 def test_a_filed_issue_says_where_and_by_whom_it_was_found_and_links_the_record(record_property, tmp_path):
-    """Each filed issue names the issue (and pull request) it was found on and the agent, and links that run's record.
+    """Each filed issue names where and by which agent it was found, and links the record.
+
+    Proves 268.2.
 
     Runs the planner, a plan review, the worker and a code review, each finding two issues, then reads each filed
     issue's body: it must name #57 (and #60 for the worker and the code review, which work on the pull request), name
@@ -415,7 +427,9 @@ def test_a_filed_issue_says_where_and_by_whom_it_was_found_and_links_the_record(
 
 
 def test_a_filed_issue_gets_nothing_more_than_filing(record_property, tmp_path):
-    """A filed issue gets no links, no autopilot and no run: it is not a sub-issue, blocks nothing, and nothing starts on it.
+    """A filed issue gets no links, no autopilot and no run.
+
+    Proves 268.3. It is not a sub-issue, blocks nothing, and nothing starts on it.
 
     Runs the planner, a plan review, the worker and a code review, each finding two issues, while #57 is on autopilot
     (so the river goes on to the next stage of #57), and checks for every run that both findings were filed, that no
@@ -449,7 +463,9 @@ def test_a_filed_issue_gets_nothing_more_than_filing(record_property, tmp_path):
 
 
 def test_the_same_finding_is_never_filed_twice(record_property, tmp_path):
-    """The same finding is filed once: not twice in one run, and not again by a later run of any agent, even once closed.
+    """The same finding is filed once, in one run or across later runs, even once closed.
+
+    Proves 268.4.
 
     On one issue, the planner lists one finding twice (its title in other letter case and spacing) beside another: two
     issues are filed. The first is then closed. A plan review finds it again (case and spacing changed again, a new
@@ -484,7 +500,9 @@ def test_the_same_finding_is_never_filed_twice(record_property, tmp_path):
 
 
 def test_the_card_names_each_filed_issue(record_property, tmp_path):
-    """The run's card names each filed issue by its number and no longer calls the findings proposals.
+    """The run's card names each filed issue by number and no longer calls them proposals.
+
+    Proves 268.5.
 
     Runs the planner, a plan review, the worker and a code review, each finding two issues, and reads each run's record
     comment as it ends up on GitHub, without its folded JSON: it must link each filed issue by number and must not
@@ -505,7 +523,9 @@ def test_the_card_names_each_filed_issue(record_property, tmp_path):
 
 
 def test_a_finding_github_refuses_to_file_says_why_on_the_card(record_property, tmp_path):
-    """When GitHub refuses to file a finding, the run's card still posts and names that finding with GitHub's reason.
+    """When GitHub refuses a finding, the card still posts and gives GitHub's reason.
+
+    Proves 268.5.
 
     Runs the planner, a plan review, the worker and a code review, each finding one issue while GitHub refuses every
     new issue, and checks each run's record is still posted and, outside its folded JSON, names the finding and
@@ -522,7 +542,9 @@ def test_a_finding_github_refuses_to_file_says_why_on_the_card(record_property, 
 
 
 def test_a_rejected_handback_files_nothing(record_property, tmp_path):
-    """A planner, worker or reviewer hand-back that code rejects files none of the issues it lists, and no new workflow or job is added.
+    """A hand-back that code rejects files none of the issues it lists.
+
+    Proves 268.6. No new workflow or job is added.
 
     Runs a planner whose plan comes with no test, a worker whose hand-back has no summary and a plan review whose
     verdict code does not accept, each listing two issues, and checks each was rejected and filed nothing; beside each,
@@ -558,7 +580,9 @@ def test_a_rejected_handback_files_nothing(record_property, tmp_path):
 
 
 def test_the_key_that_files_is_made_only_after_the_agent_and_the_check(record_property, tmp_path):
-    """Issues are filed with a key made only after the agent and the hand-back check finished, and the agent holds none.
+    """Issues are filed with a key made after the agent and the check; the agent holds none.
+
+    Proves 268.7.
 
     Runs the planner, a plan review, the worker and a code review, each finding two issues, with every key the
     workflow makes told apart by the step that made it. For every filed issue it checks the key that filed it was made
