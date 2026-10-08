@@ -854,7 +854,16 @@ def main(argv):
         if not spec:
             print("No board set; nothing to move.")
             return 0
-        column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
+        try:
+            column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
+        except (OSError, ValueError):
+            # Deciding what follows failed, so the river stopped: the run's own stage, with Needs you.
+            try:
+                rec = json.load(open(os.path.join(argv[3], "record.json")))
+            except (OSError, json.JSONDecodeError):
+                rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
+            column, needs = board_place(rec if isinstance(rec, dict) else {}, ("stop",))
+            needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
         return 0
