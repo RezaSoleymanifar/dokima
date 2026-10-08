@@ -1,14 +1,17 @@
-"""A run that starts an agent either starts it or says why on the issue, and a split gets its plan review (#176).
+"""A command either starts its agent or says why on the issue, and a split gets its plan review (#176).
 
-These tests run the agent workflow's own steps, read from .github/workflows/agent.yml, the way GitHub runs them: each
-step's `if:` is evaluated, its `${{ }}` expressions filled in, and its script run with bash in a clone of a temp git
-repo whose origin is a local bare repo. Nothing leaves the machine: a fake `gh` answers from a fake issue and records
-every comment, dispatch and issue it is asked to create; a fake `claude` hands back a review; `pip` and `npm` do
-nothing; pushes to github.com are redirected to the local origin. Steps that only `uses:` an action are skipped (the
-app token step gives a fake token). Paths under /tmp and /home/runner are moved into the test's temp folder. Values a
-step writes to GITHUB_ENV or GITHUB_OUTPUT are read as single KEY=value lines.
+These tests run the workflows' own steps, read from .github/workflows/agent.yml and commands.yml, the way GitHub runs
+them: each job's and step's `if:` is evaluated, its `${{ }}` expressions filled in, and its script run with bash in a
+clone of a temp git repo whose origin is a local bare repo. Jobs run in the order their `needs` allow, each on its own
+fresh clone and its own /tmp. Nothing leaves the machine: a fake `gh` answers from a fake issue and records every
+comment, dispatch and issue it is asked to create (and can be told to fail one call, the way GitHub does); a fake
+`claude` hands back a review; `pip` and `npm` do nothing unless a test breaks them; pushes to github.com are redirected
+to the local origin. Steps that only `uses:` an action are skipped (an app token step gives a fake token), and a job
+that `uses:` another workflow is only noted as run. Values a step writes to GITHUB_ENV or GITHUB_OUTPUT are read as
+single KEY=value lines.
 
-The fake issue is #57 in repo o/r, owned by `owner-person` through CODEOWNERS; Dokima's code is copied from this repo.
+The fake issue is #57 in repo o/r, owned by `owner-person` through CODEOWNERS, with its pull request #60;
+Dokima's code is copied from this repo.
 """
 import json
 import os
@@ -23,6 +26,7 @@ from dokima import agent  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OWNER = "owner-person"
 N = "57"
+PR = "60"
 SPLIT = {"kind": "feature", "feature": "Stuck issues get unstuck.", "stories": [
     {"title": "First", "user_story": "u1", "acceptance_criteria": [{"text": "a", "source": "https://github.com/o/r/issues/57"}],
      "non_functional": [], "depends_on": []},
@@ -35,27 +39,40 @@ APPROVE = {"previous_step": {"did": ["Proposed a split into two stories."], "dec
            "blockers": [], "notes": [], "outside_plan": [], "resolved": []}
 
 FAKE_GH = r'''#!/usr/bin/env python3
-"""A stand-in for the GitHub CLI: answers from the fake issue and records every call."""
-import json, os, shutil, sys
+"""A stand-in for the GitHub CLI: answers from the fake issue and records every call.
+
+FAKE_GH_FAIL, when set to 'words|message', makes every call starting with those words print the message, the way gh
+prints GitHub's error, and exit 1."""
+import json, os, sys
 d = os.environ["FAKE_GH_DIR"]
 a = sys.argv[1:]
 open(os.path.join(d, "calls.jsonl"), "a").write(json.dumps(a) + "\n")
+fail = os.environ.get("FAKE_GH_FAIL", "")
+if fail and " ".join(a).startswith(fail.split("|", 1)[0]):
+    sys.stderr.write(fail.split("|", 1)[1] + "\n")
+    sys.exit(1)
 def flag(name):
     return a[a.index(name) + 1] if name in a else None
 if a[:2] == ["issue", "view"]:
     issue = json.load(open(os.path.join(d, "issue.json")))
     print(issue["title"] if flag("-q") == ".title" else json.dumps(issue))
+elif a[:2] == ["pr", "view"]:
+    print(json.dumps({"number": 60, "headRefName": "try/issue-57", "body": "Closes #57", "comments": [], "reviews": []}))
 elif a[:2] in (["issue", "comment"], ["pr", "comment"]):
     body = open(flag("--body-file")).read() if flag("--body-file") else flag("--body")
     open(os.path.join(d, "posted.jsonl"), "a").write(json.dumps({"where": a[:3], "body": body}) + "\n")
 elif a[:2] == ["issue", "create"]:
-    print("https://github.com/o/r/issues/900")
+    n = 900 + sum(1 for _ in open(os.path.join(d, "calls.jsonl")) if '"create"' in _) - 1
+    print(f"https://github.com/o/r/issues/{n}")
 elif a[:2] == ["pr", "list"]:
     print("" if (flag("-q") or flag("--jq")) else "[]")
 elif a[:1] == ["api"] and any(x.startswith("users/") for x in a):
     print("1")
 elif a[:1] == ["api"] and "--paginate" in a:
     print("[]")
+elif a[:1] == ["api"] and len(a) == 2 and a[1].startswith("repos/o/r/issues/"):
+    n = int(a[1].rsplit("/", 1)[1])
+    print(json.dumps({"id": n * 10, "number": n}))
 elif a[:1] == ["api"]:
     print("{}")
 '''
@@ -70,6 +87,8 @@ os.makedirs(logs, exist_ok=True)
 open(os.path.join(logs, "s.jsonl"), "w").write(json.dumps({"message": {"model": os.environ["MODEL"], "role": "assistant", "content": "Done."}}) + "\n")
 print(json.dumps({"num_turns": 1, "duration_ms": 1000, "usage": {}}))
 '''
+
+PIP_BROKEN = "ERROR: Could not find a version that satisfies the requirement pytest"
 
 
 class Nil:
@@ -100,7 +119,7 @@ class Ctx(dict):
 
 
 def evaluate(expr, ctx, status):
-    """Evaluate one GitHub expression against the contexts and the job's status so far."""
+    """Evaluate one GitHub expression against the contexts and the status so far (a step's job, or a job's needs)."""
     parts = re.split(r"('[^']*')", expr)
     for i in range(0, len(parts), 2):
         p = parts[i].replace("&&", " and ").replace("||", " or ").replace("!=", "\0")
@@ -108,7 +127,7 @@ def evaluate(expr, ctx, status):
         p = re.sub(r"\.([A-Za-z_]\w*(?:-\w+)+)", lambda m: f"[{m.group(1)!r}]", p)
         p = re.sub(r"\bnull\b", "NIL", re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False", p)))
         parts[i] = p
-    names = {**ctx, "NIL": NIL, "always": lambda: True, "success": lambda: not status["failed"],
+    names = {**ctx, "NIL": NIL, "always": lambda: True, "success": lambda: status.get("success", not status["failed"]),
              "failure": lambda: status["failed"], "cancelled": lambda: False,
              "startsWith": lambda s, p: str(s).lower().startswith(str(p).lower()),
              "contains": lambda s, p: str(p).lower() in str(s).lower(),
@@ -121,58 +140,103 @@ def fill(text, ctx, status):
     def one(m):
         v = evaluate(m.group(1), ctx, status)
         return "" if v is None or isinstance(v, Nil) else ("true" if v is True else "false" if v is False else str(v))
-    return re.sub(r"\$\{\{(.*?)\}\}", one, text)
+    return re.sub(r"\$\{\{(.*?)\}\}", one, str(text))
 
 
-def unquote(v):
-    """A YAML scalar as written, without its quotes."""
-    v = v.strip()
-    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
+def condition(cond):
+    """A job's or step's `if:` the way GitHub reads it: without a status function it also needs success()."""
+    cond = str(cond or "success()")
+    return cond if re.search(r"\b(always|failure|success|cancelled)\(\)", cond) else f"success() && ({cond})"
 
 
-def parse(text):
-    """The run job's env and its steps, read without a YAML library: [{name, id, if, uses, env, run}]."""
-    lines = text.split("\n  run:\n", 1)[1].split("\n")
-    job_env, steps, i = {}, [], 0
-    while i < len(lines):
-        line = lines[i]
-        if line == "    env:":
-            i += 1
-            while lines[i].startswith("      ") and not lines[i].startswith("       "):
-                if not lines[i].strip().startswith("#"):
-                    k, v = lines[i].strip().split(":", 1)
-                    job_env[k] = unquote(v)
-                i += 1
-            continue
-        if line.startswith("      - "):
-            step, i = {"env": {}}, i
-            lines[i] = "        " + line[8:]
-            while i < len(lines) and (lines[i].startswith("        ") or not lines[i].strip()):
-                l = lines[i]
-                if l.startswith("        ") and not l.startswith("         ") and not l.strip().startswith("#"):
-                    k, v = l.strip().split(":", 1)
-                    v = v.strip()
-                    if k == "run" and v == "|":
-                        body, i = [], i + 1
-                        while i < len(lines) and (lines[i].startswith("          ") or not lines[i].strip()):
-                            body.append(lines[i][10:])
-                            i += 1
-                        step["run"] = "\n".join(body).rstrip() + "\n"
-                        continue
-                    if k in ("env", "with"):
-                        i += 1
-                        while i < len(lines) and lines[i].startswith("          "):
-                            if k == "env" and not lines[i].startswith("           "):
-                                ek, ev = lines[i].strip().split(":", 1)
-                                step["env"][ek] = unquote(ev)
-                            i += 1
-                        continue
-                    step[k] = unquote(v)
-                i += 1
-            steps.append(step)
-            continue
-        i += 1
-    return job_env, steps
+def load_yaml(text):
+    """A workflow file as nested dicts, lists and strings, read without a YAML library.
+
+    Covers what workflows use: mappings, lists of mappings, `|` and `>` block text, `{a: b}` and `[a, b]` on one line,
+    quoted strings and comments. Every value is kept as text."""
+    lines = text.split("\n")
+    pos = [0]
+
+    def indent(l):
+        return len(l) - len(l.lstrip(" "))
+
+    def skip():
+        while pos[0] < len(lines) and (not lines[pos[0]].strip() or lines[pos[0]].lstrip().startswith("#")):
+            pos[0] += 1
+
+    def scalar(v):
+        v = v.strip()
+        if v.startswith("{") and v.endswith("}"):
+            return {k.strip(): scalar(x) for k, x in (p.split(":", 1) for p in v[1:-1].split(",") if p.strip())}
+        if v.startswith("[") and v.endswith("]"):
+            return [scalar(p) for p in v[1:-1].split(",") if p.strip()]
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return re.sub(r"\s+#(?![^{]*\}\}).*$", "", v)
+
+    def value(rest, at):
+        rest = rest.strip()
+        if rest[:1] in ("|", ">"):
+            body = []
+            while pos[0] < len(lines) and (not lines[pos[0]].strip() or indent(lines[pos[0]]) > at):
+                body.append(lines[pos[0]])
+                pos[0] += 1
+            while body and not body[-1].strip():
+                body.pop()
+            cut = min((indent(l) for l in body if l.strip()), default=0)
+            body = [l[cut:] for l in body]
+            return " ".join(l.strip() for l in body) if rest[0] == ">" else "\n".join(body) + "\n"
+        if rest:
+            return scalar(rest)
+        skip()
+        if pos[0] < len(lines):
+            l = lines[pos[0]]
+            if indent(l) > at or (indent(l) == at and l.lstrip().startswith("- ")):
+                return node()
+        return ""
+
+    def node():
+        skip()
+        l = lines[pos[0]]
+        return seq(indent(l)) if l.lstrip().startswith("- ") else mapping(indent(l))
+
+    def mapping(at):
+        d = {}
+        while True:
+            skip()
+            if pos[0] >= len(lines):
+                return d
+            l = lines[pos[0]]
+            if indent(l) != at or l.lstrip().startswith("- "):
+                return d
+            m = re.match(r"\s*([^\s:][^:]*?):(?:\s+(.*))?$", l)
+            assert m, f"test setup: cannot read workflow line {l!r}"
+            pos[0] += 1
+            d[m.group(1)] = value(m.group(2) or "", at)
+
+    def seq(at):
+        items = []
+        while True:
+            skip()
+            if pos[0] >= len(lines):
+                return items
+            l = lines[pos[0]]
+            if indent(l) != at or not l.lstrip().startswith("- "):
+                return items
+            rest = l[at + 2:]
+            if re.match(r"[^\s:'\"][^:]*:(\s|$)", rest):
+                lines[pos[0]] = " " * (at + 2) + rest
+                items.append(mapping(at + 2))
+            else:
+                pos[0] += 1
+                items.append(scalar(rest))
+
+    return node()
+
+
+def workflow(name):
+    """One of this repo's workflows, read."""
+    return load_yaml(open(os.path.join(ROOT, ".github", "workflows", name)).read())
 
 
 def sh(cwd, *args):
@@ -210,17 +274,17 @@ def review_record(handback):
             "models": ["claude-opus-5-5"], "handback": handback, "check": {"passed": True, "problems": []}}
 
 
-class Run:
-    """One run of the agent workflow's job, on a temp repo with fake GitHub, Claude, pip and npm."""
+class Machine:
+    """A temp repo with fake GitHub, Claude, pip and npm, on which workflow jobs run the way GitHub runs them."""
 
-    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER):
-        self.tmp = str(tmp)
-        t = self.tmp
-        os.makedirs(f"{t}/bin")
-        os.makedirs(f"{t}/gh")
-        os.makedirs(f"{t}/home")
-        os.makedirs(f"{t}/runner-temp")
-        for name, body in (("gh", FAKE_GH), ("claude", FAKE_CLAUDE), ("pip", "#!/bin/sh\nexit 0\n"), ("npm", "#!/bin/sh\nexit 0\n")):
+    def __init__(self, tmp, comments, try_branch=False, actor=OWNER, gh_fail="", broken=None):
+        self.tmp = t = str(tmp)
+        for d in ("bin", "gh", "home", "runner-temp", "jobs"):
+            os.makedirs(f"{t}/{d}")
+        tools = {"gh": FAKE_GH, "claude": FAKE_CLAUDE, "pip": "#!/bin/sh\nexit 0\n", "npm": "#!/bin/sh\nexit 0\n"}
+        for name, message in (broken or {}).items():
+            tools[name] = f"#!/bin/sh\necho '{message}' >&2\nexit 1\n"
+        for name, body in tools.items():
             open(f"{t}/bin/{name}", "w").write(body.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
             os.chmod(f"{t}/bin/{name}", 0o755)
         json.dump({"number": int(N), "title": "Stuck issue", "body": "Fix it.", "comments": comments}, open(f"{t}/gh/issue.json", "w"))
@@ -246,54 +310,53 @@ class Run:
             sh(src, "git", "commit", "-qm", "tests")
             sh(src, "git", "push", "-q", "origin", f"try/issue-{N}")
             self.try_sha = sh(src, "git", "rev-parse", "HEAD")
-        sh(t, "git", "clone", "-q", f"{t}/origin.git", f"{t}/ws")
-        self.ws = f"{t}/ws"
-        text = open(os.path.join(ROOT, ".github", "workflows", "agent.yml")).read()
-        text = text.replace("/tmp/", f"{t}/").replace("/home/runner/", f"{t}/home/")
-        self.job_env, self.steps = parse(text)
-        self.role, self.stage, self.actor = role, stage, actor
-        self.ran, self.failed_step, self.log = [], None, []
-        self.run()
+        self.actor, self.gh_fail = actor, gh_fail
+        self.log, self.failed_step = [], None
 
-    def run(self):
-        """Run every step in order the way GitHub does, keeping the job's status, env and step outputs."""
+    def base_env(self, event_name):
+        """The environment every step starts from."""
         t = self.tmp
+        return git_env({"PATH": f"{t}/bin:" + os.environ["PATH"], "HOME": f"{t}/home", "FAKE_GH_DIR": f"{t}/gh",
+                        "FAKE_GH_FAIL": self.gh_fail, "FAKE_REVIEW": f"{t}/review.json", "FAKE_CLAUDE_MARK": f"{t}/claude-started",
+                        "GITHUB_REPOSITORY": "o/r", "GITHUB_REPOSITORY_OWNER": "o", "GITHUB_RUN_ID": "42",
+                        "GITHUB_SERVER_URL": "https://github.com", "GITHUB_ACTOR": self.actor, "GITHUB_EVENT_NAME": event_name,
+                        "GITHUB_EVENT_PATH": f"{t}/event.json", "GITHUB_STEP_SUMMARY": f"{t}/summary.md",
+                        "RUNNER_TEMP": f"{t}/runner-temp", "GIT_CONFIG_COUNT": "1",
+                        "GIT_CONFIG_KEY_0": f"url.file://{t}/origin.git.insteadOf",
+                        "GIT_CONFIG_VALUE_0": "https://x-access-token:fake-token@github.com/o/r.git"})
+
+    def run_job(self, name, job, ctx, event_name, paths):
+        """Run one job's steps in order on a fresh clone, keeping its status, env and step outputs; returns its result."""
+        t = self.tmp
+
+        def moved(s):
+            for a, b in paths:
+                s = s.replace(a, b)
+            return s
+        for _, b in paths:
+            os.makedirs(b, exist_ok=True)
+        ws = f"{t}/jobs/{name}/ws"
+        sh(t, "git", "clone", "-q", f"{t}/origin.git", ws)
         status = {"failed": False}
         steps_ctx, added = {}, {}
-        ctx = {"inputs": Ctx(role=self.role, stage=self.stage, issue=N),
-               "github": Ctx(event_name="workflow_dispatch", actor=self.actor, event=Ctx(), run_id="42", run_attempt="1",
-                             server_url="https://github.com", repository="o/r", token="fake-github-token"),
-               "secrets": Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k"),
-               "vars": Ctx(DOKIMA_APP_ID="1"), "steps": Ctx()}
-        job_env = {k: fill(v, {**ctx, "env": Ctx()}, status) for k, v in self.job_env.items()}
-        base = git_env({"PATH": f"{t}/bin:" + os.environ["PATH"], "HOME": f"{t}/home", "FAKE_GH_DIR": f"{t}/gh",
-                        "FAKE_REVIEW": f"{t}/review.json", "FAKE_CLAUDE_MARK": f"{t}/claude-started",
-                        "GITHUB_REPOSITORY": "o/r", "GITHUB_REPOSITORY_OWNER": "o", "GITHUB_RUN_ID": "42",
-                        "GITHUB_SERVER_URL": "https://github.com", "GITHUB_ACTOR": self.actor, "GITHUB_EVENT_NAME": "workflow_dispatch",
-                        "GITHUB_STEP_SUMMARY": f"{t}/summary.md", "RUNNER_TEMP": f"{t}/runner-temp",
-                        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.file://{t}/origin.git.insteadOf",
-                        "GIT_CONFIG_VALUE_0": "https://x-access-token:fake-token@github.com/o/r.git"})
-        for step in self.steps:
-            ctx["steps"] = Ctx(steps_ctx)
-            ctx["env"] = Ctx({**job_env, **added})
-            cond = step.get("if", "success()")
-            if not re.search(r"\b(always|failure|success|cancelled)\(\)", cond):
-                cond = f"success() && ({cond})"
-            if not evaluate(cond, ctx, status):
+        job_env = {k: moved(fill(v, {**ctx, "env": Ctx()}, status)) for k, v in (job.get("env") or {}).items()}
+        base = self.base_env(event_name)
+        for step in job.get("steps") or []:
+            sctx = {**ctx, "steps": Ctx(steps_ctx), "env": Ctx({**job_env, **added})}
+            if not evaluate(condition(step.get("if")), sctx, status):
                 continue
-            name = step.get("name") or step.get("uses") or step.get("id")
-            self.ran.append(name)
+            label = step.get("name") or step.get("uses") or step.get("id")
             outputs = {}
             if "run" in step:
                 env = {**base, **job_env, **added}
-                env.update({k: fill(v, ctx, status) for k, v in step["env"].items()})
+                env.update({k: moved(fill(v, sctx, status)) for k, v in (step.get("env") or {}).items()})
                 env["GITHUB_ENV"], env["GITHUB_OUTPUT"] = f"{t}/step-env", f"{t}/step-output"
                 for f in (env["GITHUB_ENV"], env["GITHUB_OUTPUT"]):
                     open(f, "w").close()
-                open(f"{t}/step.sh", "w").write(fill(step["run"], ctx, status))
-                p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", f"{t}/step.sh"], cwd=self.ws,
+                open(f"{t}/step.sh", "w").write(moved(fill(step["run"], sctx, status)))
+                p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", f"{t}/step.sh"], cwd=ws,
                                    env=env, capture_output=True, text=True, timeout=120)
-                self.log.append(f"## {name} (exit {p.returncode})\n{p.stdout[-1500:]}{p.stderr[-1500:]}")
+                self.log.append(f"## {name}: {label} (exit {p.returncode})\n{p.stdout[-1500:]}{p.stderr[-1500:]}")
                 for l in open(env["GITHUB_ENV"]).read().splitlines():
                     if "=" in l:
                         k, v = l.split("=", 1)
@@ -304,13 +367,14 @@ class Run:
                         outputs[k] = v
                 if p.returncode != 0:
                     status["failed"] = True
-                    self.failed_step = self.failed_step or name
-            elif step.get("id") == "app":
+                    self.failed_step = self.failed_step or label
+            elif "create-github-app-token" in str(step.get("uses")):
                 outputs = {"token": "fake-token", "app-slug": "dokima-runtime"}
             if step.get("id"):
                 steps_ctx[step["id"]] = {"outputs": outputs, "outcome": "failure" if status["failed"] else "success"}
         self.env = {**job_env, **added}
-        self.failed = status["failed"]
+        out = {k: fill(v, {**ctx, "steps": Ctx(steps_ctx), "env": Ctx(self.env)}, status) for k, v in (job.get("outputs") or {}).items()}
+        return ("failure" if status["failed"] else "success"), out
 
     def calls(self):
         """Every call made to the fake gh, as argument lists."""
@@ -334,20 +398,82 @@ class Run:
         """True when the fake Claude Code was started."""
         return os.path.exists(f"{self.tmp}/claude-started")
 
+    def tail(self):
+        """The failed step's output, then the last steps' output, for a failure message."""
+        first = [l for l in self.log if self.failed_step and f": {self.failed_step} (" in l.split("\n")[0]][:1]
+        return "\n".join(first + self.log[-3:])[-3000:]
+
+
+class Run(Machine):
+    """One run of the agent workflow (agent.yml), started by hand by the actor."""
+
+    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER, broken=None):
+        super().__init__(tmp, comments, try_branch, actor, broken=broken)
+        t = self.tmp
+        open(f"{t}/event.json", "w").write(json.dumps({"inputs": {"role": role, "stage": stage, "issue": N}}))
+        ctx = {"inputs": Ctx(role=role, stage=stage, issue=N),
+               "github": Ctx(event_name="workflow_dispatch", actor=actor, event=Ctx(), run_id="42", run_attempt="1",
+                             server_url="https://github.com", repository="o/r", token="fake-github-token"),
+               "secrets": Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k"),
+               "vars": Ctx(DOKIMA_APP_ID="1"), "needs": Ctx()}
+        self.result, _ = self.run_job("run", workflow("agent.yml")["jobs"]["run"], ctx, "workflow_dispatch",
+                                      [("/tmp/", f"{t}/"), ("/home/runner/", f"{t}/home/")])
+        self.failed = self.result == "failure"
+
     def board(self):
         """Where the run put the card, as written for the board step ('Plan needs'), or '' when it wrote nothing."""
         out = self.env.get("OUT", "")
         path = os.path.join(out, "board.txt")
         return open(path).read().strip() if out and os.path.exists(path) else ""
 
-    def tail(self):
-        """The failed step's output, then the last steps' output, for a failure message."""
-        first = [l for l in self.log if self.failed_step and l.startswith(f"## {self.failed_step} (")][:1]
-        return "\n".join(first + self.log[-3:])[-3000:]
+
+class Listener(Machine):
+    """One run of the command listener (commands.yml) on a comment, every job in the order its `needs` allow."""
+
+    def __init__(self, tmp, body, comments, actor=OWNER, on_pr=False, gh_fail=""):
+        super().__init__(tmp, comments, actor=actor, gh_fail=gh_fail)
+        t = self.tmp
+        number = int(PR if on_pr else N)
+        issue = {"number": number, **({"pull_request": {"url": f"https://api.github.com/repos/o/r/pulls/{number}"}} if on_pr else {})}
+        event = {"comment": {"body": body, "user": {"login": actor, "type": "User"}}, "issue": issue}
+        open(f"{t}/event.json", "w").write(json.dumps(event))
+        github = Ctx(event_name="issue_comment", actor=actor, event=event, run_id="42", run_attempt="1",
+                     server_url="https://github.com", repository="o/r", token="fake-github-token")
+        jobs = workflow("commands.yml")["jobs"]
+        self.results, outputs, self.ran = {}, {}, []
+        while len(self.results) < len(jobs):
+            for name, job in jobs.items():
+                needs = job.get("needs") or []
+                needs = [needs] if isinstance(needs, str) else needs
+                if name in self.results or any(n not in self.results for n in needs):
+                    continue
+                res = [self.results[n] for n in needs]
+                status = {"failed": "failure" in res, "success": all(r == "success" for r in res)}
+                ctx = {"github": github, "inputs": Ctx(), "vars": Ctx(DOKIMA_APP_ID="1"),
+                       "secrets": Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k"),
+                       "needs": Ctx({n: {"result": self.results[n], "outputs": outputs.get(n, {})} for n in needs})}
+                if not evaluate(condition(job.get("if")), ctx, status):
+                    self.results[name] = "skipped"
+                    continue
+                self.ran.append(name)
+                if "uses" in job:
+                    self.results[name] = "success"
+                    continue
+                self.results[name], outputs[name] = self.run_job(name, job, ctx, "issue_comment",
+                                                                 [("/tmp/", f"{t}/jobs/{name}/tmp/")])
+        self.failed = "failure" in self.results.values()
+
+    def agent_run_started(self):
+        """True when the listener started the agent workflow."""
+        return any("uses" in job and name in self.ran for name, job in workflow("commands.yml")["jobs"].items())
 
 
 SPLIT_PROPOSED = [owner_comment("/plan", "2026-10-07T10:00:00Z"),
                   record_comment(planner_record(SPLIT), "2026-10-07T10:10:00Z")]
+SPLIT_APPROVED = SPLIT_PROPOSED + [record_comment(review_record(APPROVE), "2026-10-07T10:20:00Z")]
+STORY_PLANNED = [owner_comment("/plan", "2026-10-07T10:00:00Z"), record_comment(planner_record(STORY), "2026-10-07T10:10:00Z")]
+STORY_APPROVED = STORY_PLANNED + [record_comment(review_record(APPROVE), "2026-10-07T10:20:00Z"),
+                                  owner_comment("/work", "2026-10-07T10:30:00Z")]
 
 
 def test_the_plan_reviewer_starts_on_a_split_with_no_try_branch(record_property, tmp_path):
@@ -400,57 +526,106 @@ def test_a_reviewed_split_stops_for_the_owner_and_files_nothing_before_work(reco
         agent.main(["agent", "kind", N])
         return capsys.readouterr().out.strip()
     assert kind_after(SPLIT_PROPOSED) == "", "176.2: /work would file the stories of a split no reviewer has approved"
-    approved = SPLIT_PROPOSED + [record_comment(review_record(APPROVE), "2026-10-07T10:20:00Z")]
-    assert kind_after(approved) == "feature", "176.2: /work would not file the stories of the approved split"
+    assert kind_after(SPLIT_APPROVED) == "feature", "176.2: /work would not file the stories of the approved split"
 
 
-def assert_says_why_and_stops(r, reason, crit="176.3"):
-    """The run posted exactly one record on the issue naming the reason, mentioned the owner, and started nothing."""
+def assert_says_why_and_stops(r, reason, crit, where=N, board=True):
+    """The run posted exactly one failed record where it should, naming the reason, mentioning the owner, starting nothing."""
     assert not r.agent_started(), f"{crit}: the agent started though its start should have failed"
     posts = r.posted()
-    assert len(posts) == 1, f"{crit}: a start failure at '{r.failed_step}' posted {len(posts)} comments, expected one:\n{r.tail()}"
-    assert posts[0]["where"][:2] == ["issue", "comment"] and N in posts[0]["where"], \
-        f"{crit}: the start failure was not posted on issue #{N}: {posts[0]['where']}"
+    assert len(posts) == 1, f"{crit}: a failure at '{r.failed_step}' posted {len(posts)} comments, expected one:\n{r.tail()}"
+    assert posts[0]["where"][1] == "comment" and where in posts[0]["where"], \
+        f"{crit}: the failure was not posted on #{where}, where it belongs: {posts[0]['where']}"
     body = posts[0]["body"]
     recs = agent.records([{"author": {"login": agent.BOT}, "body": body}])
-    assert len(recs) == 1, f"{crit}: the start failure comment is not a record the bot can read back:\n{body[:600]}"
-    assert recs[0]["check"]["passed"] is False, f"{crit}: the start failure's record says it passed"
+    assert len(recs) == 1, f"{crit}: the failure comment is not a record the bot can read back:\n{body[:600]}"
+    assert recs[0]["check"]["passed"] is False, f"{crit}: the failure's record says it passed"
     assert reason.lower() in body.lower(), f"{crit}: the comment does not say why ({reason!r}):\n{body[:800]}"
     assert "hand-back rejected" not in body, f"{crit}: the comment blames a hand-back, but the agent never started:\n{body[:600]}"
-    assert f"**Next:** @{OWNER}" in body, f"{crit}: the start failure does not stop and mention the owner:\n{body[-600:]}"
-    assert r.board().endswith("needs"), f"{crit}: the card does not show Needs you after the start failure: {r.board()!r}"
-    assert r.dispatches() == [], f"{crit}: a start failure started another stage: {r.dispatches()}"
+    assert f"**Next:** @{OWNER}" in body, f"{crit}: the failure does not stop and mention the owner:\n{body[-600:]}"
+    if board:
+        assert r.board().endswith("needs"), f"{crit}: the card does not show Needs you after the start failure: {r.board()!r}"
+    assert r.dispatches() == [], f"{crit}: a failure started another stage: {r.dispatches()}"
 
 
 def test_a_start_failure_says_why_on_the_issue_and_stops_for_the_owner(record_property, tmp_path):
-    """A run that fails before its agent starts posts a record on the issue saying why and mentions the owner.
+    """A run that fails at any step before its agent starts posts a record on the issue saying why and mentions the owner.
 
-    Three failures before the agent, each run through the whole workflow: a run started by someone who is not a code
-    owner fails at the code-owner gate, a worker on an issue with no try branch fails at the starting branch, and a
-    worker on an issue whose plan nobody approved fails building its pack. Each must post one record on the issue that
-    names its own reason (not a code owner, try/issue-57, no passed plan), ends with a Next line mentioning the owner,
-    puts Needs you on the card and starts no other stage."""
+    Five failures before the agent, each run through the whole agent workflow: a run started by someone who is not a
+    code owner fails at the code-owner gate, a worker on an issue with no try branch fails at the starting branch, a
+    worker whose plan nobody approved fails building its pack, a worker whose tools fail to install fails at the
+    install step, and a worker started on an approved split fails the pack check. Each must post one record on the
+    issue that names its own reason (not a code owner, try/issue-57, no passed plan, the install step by name, plan.json
+    is a split), end with a Next line mentioning the owner, put Needs you on the card and start no other stage. A run
+    whose agent does start still posts only its own passed record, with no failure record beside it."""
     record_property("proves", "176.3")
-    story = [owner_comment("/plan", "2026-10-07T10:00:00Z"), record_comment(planner_record(STORY), "2026-10-07T10:10:00Z")]
-    approved = story + [record_comment(review_record(APPROVE), "2026-10-07T10:20:00Z"), owner_comment("/work", "2026-10-07T10:30:00Z")]
-    r = Run(tmp_path / "gate", "worker", "", approved, try_branch=True, actor="stranger")
+    r = Run(tmp_path / "gate", "worker", "", STORY_APPROVED, try_branch=True, actor="stranger")
     assert r.failed_step, "176.3: setup: the run started by someone who is not a code owner did not fail"
-    assert_says_why_and_stops(r, "not a code owner")
-    r = Run(tmp_path / "branch", "worker", "", approved)
+    assert_says_why_and_stops(r, "not a code owner", "176.3")
+    r = Run(tmp_path / "branch", "worker", "", STORY_APPROVED)
     assert r.failed_step, "176.3: setup: the worker with no try branch did not fail"
-    assert_says_why_and_stops(r, f"try/issue-{N}")
-    r = Run(tmp_path / "pack", "worker", "", story, try_branch=True)
+    assert_says_why_and_stops(r, f"try/issue-{N}", "176.3")
+    r = Run(tmp_path / "pack", "worker", "", STORY_PLANNED, try_branch=True)
     assert r.failed_step, "176.3: setup: the worker with no approved plan did not fail"
-    assert_says_why_and_stops(r, "no passed plan")
+    assert_says_why_and_stops(r, "no passed plan", "176.3")
+    r = Run(tmp_path / "install", "worker", "", STORY_APPROVED, try_branch=True, broken={"pip": PIP_BROKEN})
+    assert r.failed_step, "176.3: setup: the worker whose install failed did not fail"
+    assert_says_why_and_stops(r, "Install pytest and Claude Code", "176.3")
+    r = Run(tmp_path / "check", "worker", "", SPLIT_APPROVED + [owner_comment("/work", "2026-10-07T10:30:00Z")], try_branch=True)
+    assert r.failed_step, "176.3: setup: the worker started on an approved split did not fail its pack check"
+    assert_says_why_and_stops(r, "plan.json is a split", "176.3")
+
+    r = Run(tmp_path / "good", "reviewer", "plan", STORY_PLANNED, try_branch=True)
+    recs = agent.records([{"author": {"login": agent.BOT}, "body": p["body"]} for p in r.posted()])
+    assert r.agent_started() and not r.failed, f"176.3: a plan review that should start did not:\n{r.tail()}"
+    assert [(x["role"], x["check"]["passed"]) for x in recs] == [("reviewer", True)], \
+        f"176.3: a run whose agent started posted more than its own passed record: {recs}"
+
+
+def test_a_failed_command_says_why_and_stops_for_the_owner(record_property, tmp_path):
+    """A code owner's command that fails in the listener before any agent starts says why where it was written.
+
+    Runs the command listener on two failures: `/review` on pull request #60 when GitHub fails to answer which issue
+    the pull request belongs to, and `/work` on an approved split when GitHub refuses to create the stories' issues.
+    Each must post one record where the command was written that carries GitHub's error, ends with a Next line
+    mentioning the owner, and starts no agent. Three good cases stay as they are: `/work` on an approved split that
+    files fine posts only its passed "Split filed" record, `/plan` from the owner starts the agent and posts nothing,
+    and `/plan` from someone who is not a code owner gets no reply and starts nothing."""
+    record_property("proves", "176.4")
+    gone = "GraphQL: Could not resolve to a PullRequest with the number of 60. (repository.pullRequest)"
+    r = Listener(tmp_path / "route", "/review", SPLIT_APPROVED, on_pr=True, gh_fail=f"pr view|{gone}")
+    assert r.failed_step, "176.4: setup: the listener did not fail when GitHub could not find the pull request"
+    assert not r.agent_run_started(), "176.4: the agent workflow started though the command could not be routed"
+    assert_says_why_and_stops(r, gone, "176.4", where=PR, board=False)
+
+    refused = "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/o/r/issues)"
+    r = Listener(tmp_path / "split", "/work", SPLIT_APPROVED, gh_fail=f"issue create|{refused}")
+    assert r.failed_step, "176.4: setup: the listener did not fail when GitHub refused to file the stories"
+    assert not r.agent_run_started(), "176.4: a worker started on an approved split"
+    assert_says_why_and_stops(r, refused, "176.4", board=False)
+
+    r = Listener(tmp_path / "filed", "/work", SPLIT_APPROVED)
+    recs = agent.records([{"author": {"login": agent.BOT}, "body": p["body"]} for p in r.posted()])
+    assert not r.failed, f"176.4: filing an approved split failed:\n{r.tail()}"
+    assert [(x["role"], x["check"]["passed"]) for x in recs] == [("split", True)], \
+        f"176.4: filing an approved split posted more than its own Split filed record: {recs}"
+    r = Listener(tmp_path / "plan", "/plan", STORY_PLANNED)
+    assert not r.failed and r.agent_run_started() and r.posted() == [], \
+        f"176.4: the owner's /plan no longer just starts the planner: started={r.agent_run_started()} posted={r.posted()}"
+    r = Listener(tmp_path / "stranger", "/plan", STORY_PLANNED, actor="stranger")
+    assert not r.failed and not r.agent_run_started() and r.posted() == [], \
+        f"176.4: a stranger's /plan got a reply or started something: started={r.agent_run_started()} posted={r.posted()}"
 
 
 def test_a_start_failure_still_fails_the_run(record_property, tmp_path):
-    """A run that fails before its agent starts still ends as a failed run on GitHub, after saying why.
+    """A run or command that fails before its agent starts still ends as a failed run on GitHub, after saying why.
 
-    Runs the worker on an issue with no try branch: the comment saying why is posted, and the run itself ends failed,
-    so a start failure is never shown as a success."""
-    record_property("proves", "176.4")
-    story = [owner_comment("/plan", "2026-10-07T10:00:00Z"), record_comment(planner_record(STORY), "2026-10-07T10:10:00Z")]
-    r = Run(tmp_path / "branch", "worker", "", story)
-    assert len(r.posted()) == 1, f"176.4: the start failure posted {len(r.posted())} comments, expected one:\n{r.tail()}"
-    assert r.failed, "176.4: the run that failed before its agent started ended as a success"
+    Runs the worker on an issue with no try branch, and the listener on a `/work` whose split GitHub refuses to file:
+    each posts its comment saying why, and the run itself still ends failed, so a failure is never shown as a success."""
+    record_property("proves", "176.5")
+    r = Run(tmp_path / "branch", "worker", "", STORY_PLANNED)
+    assert len(r.posted()) == 1, f"176.5: the start failure posted {len(r.posted())} comments, expected one:\n{r.tail()}"
+    assert r.failed, "176.5: the run that failed before its agent started ended as a success"
+    r = Listener(tmp_path / "split", "/work", SPLIT_APPROVED, gh_fail="issue create|HTTP 403: Resource not accessible by integration")
+    assert len(r.posted()) == 1, f"176.5: the failed command posted {len(r.posted())} comments, expected one:\n{r.tail()}"
+    assert r.failed, "176.5: the command that failed before any agent started ended as a success"
