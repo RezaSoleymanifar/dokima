@@ -214,14 +214,25 @@ def not_started(role, stage, why, meta):
             "check": {"passed": False, "problems": lines}}
 
 
-def live_card(role, stage, state):
-    """The run's card while it is still running: getting ready, then working since the agent started.
+def live_card(role, stage, state, ahead=None):
+    """The run's card while it is still running: queued (or waiting for the run `ahead` of it), getting ready, then
+    working since the agent started.
 
     It carries its own marker and no JSON fold, so it never reads as a record; at the end of the run code edits this
-    same comment into the run's record."""
-    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker"}.get(role, "Command")
+    same comment into the run's record. A hand-off's queued card is put up before its run exists, so it links none."""
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker",
+            "split": "Filing the split"}.get(role, "Command")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    if state in ("queued", "handoff"):
+        if ahead:
+            line = f"{icon(repo, 'queued')} **{head}** · waiting for [this run]({ahead})"
+            what = (f"Queued, and waiting for [this run]({ahead}) on the same issue to end; this run starts after it. "
+                    "This card says working when the agent starts, then becomes the run's record.")
+        else:
+            line = f"{icon(repo, 'queued')} **{head}** · queued"
+            what = "Queued: the run starts in a moment. This card says working when the agent starts, then becomes the run's record."
+        return "\n".join([LIVE, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
     if state == "working":
         line = f"{icon(repo, 'running')} **{head}** · working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
         what = "The agent is working. This card becomes the run's record when it ends."
@@ -229,6 +240,46 @@ def live_card(role, stage, state):
         line = f"{icon(repo, 'queued')} **{head}** · getting ready"
         what = "The machine is getting ready. This card says working when the agent starts, then becomes the run's record."
     return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
+
+
+GOING = {"queued", "in_progress", "waiting", "requested", "pending"}
+
+
+def where_card(repo, number, role, stage):
+    """Where a run's card and record go: the open pull request for the worker and the code review, else the issue."""
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+            "-q", ".[0].number").strip()
+    return pr if pr and (role == "worker" or stage == "pr") else str(number)
+
+
+def run_ahead(repo, number):
+    """The link of another run still going on the issue or its pull request, found from GitHub's records: a live card
+    the bot put up there, which links its run, and GitHub's word that the run has not completed. None when there is none."""
+    own = os.environ.get("GITHUB_RUN_ID", "")
+    places = {str(number), where_card(repo, number, "worker", "")}
+    for n in sorted(places):
+        for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/comments", "--paginate") or "[]"):
+            body = c.get("body") or ""
+            if (c.get("user") or {}).get("login") not in (BOT, f"{BOT}[bot]") or LIVE not in body or MARK in body:
+                continue
+            for rid in dict.fromkeys(re.findall(r"/actions/runs/(\d+)", body)):
+                if rid == own:
+                    continue
+                if gh("api", f"repos/{repo}/actions/runs/{rid}", "--jq", ".status").strip() in GOING:
+                    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{rid}"
+    return None
+
+
+def queue(role, stage, number, state):
+    """Put up a run's queued card where its record will go, saying so when it waits for another run; returns its id."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    try:
+        ahead = run_ahead(repo, number)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        ahead = None
+    body = live_card(role, stage, state, ahead)
+    return gh("api", "-X", "POST", f"repos/{repo}/issues/{where_card(repo, number, role, stage)}/comments",
+              "-f", f"body={body}", "--jq", ".id").strip()
 
 
 def render(rec):
@@ -784,7 +835,8 @@ def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
     agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
-    agent card ROLE STAGE queued|working  (prints the run's live card, which is not a record)"""
+    agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
+    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -820,6 +872,9 @@ def main(argv):
     if argv[1] == "card":
         sys.stdout.write(live_card(argv[2], argv[3], argv[4]))
         return 0
+    if argv[1] == "queue":
+        print(queue(argv[2], argv[3], argv[4], argv[5] if len(argv) > 5 else "queued"))
+        return 0
     if argv[1] == "check-round":
         try:
             h = json.load(open(argv[3]))
@@ -843,7 +898,11 @@ def main(argv):
             return 1
         rec = file_split(repo, parent, recs)
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
-        if not any(r.get("role") == "split" for r in recs):
+        card = os.environ.get("CARD_ID", "")
+        if card:
+            # The command's queued card becomes the Split filed record, edited in place.
+            gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{card}", "-f", f"body={render(rec)}", "--silent")
+        elif not any(r.get("role") == "split" for r in recs):
             gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
         if spec:

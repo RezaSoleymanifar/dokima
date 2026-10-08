@@ -757,7 +757,8 @@ def test_a_failed_command_says_why_and_stops_for_the_owner(record_property, tmp_
     the pull request belongs to, and `/work` on an approved split when GitHub refuses to create the stories' issues.
     Each must post one record where the command was written that carries GitHub's error, ends with a Next line
     mentioning the owner, and starts no agent. Three good cases stay as they are: `/work` on an approved split that
-    files fine posts only its passed "Split filed" record, `/plan` from the owner starts the agent and posts nothing,
+    files fine posts only its passed "Split filed" record, `/plan` from the owner starts the agent and posts only its
+    queued card (#186), which is not a record,
     and `/plan` from someone who is not a code owner gets no reply and starts nothing."""
     record_property("proves", "176.4")
     gone = "GraphQL: Could not resolve to a PullRequest with the number of 60. (repository.pullRequest)"
@@ -778,8 +779,10 @@ def test_a_failed_command_says_why_and_stops_for_the_owner(record_property, tmp_
     assert [(x["role"], x["check"]["passed"]) for x in recs] == [("split", True)], \
         f"176.4: filing an approved split posted more than its own Split filed record: {recs}"
     r = Listener(tmp_path / "plan", "/plan", STORY_PLANNED)
-    assert not r.failed and r.agent_run_started() and r.posted() == [], \
-        f"176.4: the owner's /plan no longer just starts the planner: started={r.agent_run_started()} posted={r.posted()}"
+    cards = r.posted()
+    assert not r.failed and r.agent_run_started() and len(cards) == 1 and \
+        not agent.records([{"author": {"login": agent.BOT}, "body": cards[0]["body"]}]), \
+        f"176.4: the owner's /plan no longer just starts the planner with its one queued card: started={r.agent_run_started()} posted={cards}"
     r = Listener(tmp_path / "stranger", "/plan", STORY_PLANNED, actor="stranger")
     assert not r.failed and not r.agent_run_started() and r.posted() == [], \
         f"176.4: a stranger's /plan got a reply or started something: started={r.agent_run_started()} posted={r.posted()}"
