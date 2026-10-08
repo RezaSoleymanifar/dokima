@@ -165,8 +165,9 @@ def story_body(parent, i, story, parent_title):
     return "\n".join(lines + ["", "</details>"]) + "\n"
 
 
-def file_split(repo, parent, recs):
-    """File the stories of the newest approved split as sub-issues of the parent, in order, with their blocked-by links.
+def file_split(repo, parent, recs, labels=()):
+    """File the stories of the newest approved split as sub-issues of the parent, in order, with their blocked-by links,
+    each created with the given labels.
 
     Returns the record of what was filed. Filing twice files nothing new: the newest split record is returned instead."""
     done = latest(recs, "split", passed=True)
@@ -176,7 +177,8 @@ def file_split(repo, parent, recs):
     title = json.loads(gh("issue", "view", str(parent), "-R", repo, "--json", "title"))["title"]
     filed = []
     for i, st in enumerate(plan["stories"], 1):
-        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title)).strip()
+        extra = [x for label in labels for x in ("--label", label)]
+        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title), *extra).strip()
         number = int(url.rstrip("/").split("/")[-1])
         node = json.loads(gh("api", f"repos/{repo}/issues/{number}"))["id"]
         gh("api", "-X", "POST", f"repos/{repo}/issues/{parent}/sub_issues", "-F", f"sub_issue_id={node}")
@@ -823,14 +825,107 @@ def switch_autopilot(repo, number, switch):
     return switched
 
 
-def autopilot_comment(number, switch, switched):
-    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched."""
+def autopilot_comment(number, switch, switched, started=()):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched, and every issue whose
+    planner it started."""
     names = ", ".join(f"#{n}" for n in switched)
     if switch == "start":
         said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
     else:
         said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
+    if started:
+        return said + f" Planning started for {', '.join(f'#{n}' for n in started)}, which wait on nothing open.\n"
     return said + " No stage was started.\n"
+
+
+AUTOPILOT_LINE = "Autopilot: blockers merged, starting plan"
+
+
+def sub_issues(repo, number):
+    """The issue's own sub-issues, one level down, each with its state."""
+    # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+    return json.loads(gh("api", f"repos/{repo}/issues/{number}/sub_issues?per_page=100") or "[]")
+
+
+def blocked_by(repo, number):
+    """The issues blocking this one, from GitHub's native blocked-by links, each with its state."""
+    return json.loads(gh("api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate") or "[]")
+
+
+def started_before(repo, number):
+    """True when GitHub's records show something already started on the issue: a record, a live card or an Autopilot
+    line the bot posted there. A planned, running or finished issue is never started again."""
+    d = json.loads(gh("issue", "view", str(number), "-R", repo, "--json", "comments"))
+    for c in d.get("comments") or []:
+        body = c.get("body") or ""
+        if (c.get("author") or {}).get("login") in (BOT, f"{BOT}[bot]") and (
+                MARK in body or LIVE in body or body.strip() == AUTOPILOT_LINE):
+            return True
+    return False
+
+
+def start_planner(repo, number):
+    """Start the issue's planner with the river's own signal, after one Autopilot line where the owner would have said /plan.
+
+    The line goes first: it is the record that this issue was started, so no later close starts it again."""
+    gh("issue", "comment", str(number), "-R", repo, "--body", AUTOPILOT_LINE)
+    gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=dokima-next", "-f", "client_payload[role]=planner",
+       "-f", "client_payload[stage]=plan", "-f", f"client_payload[issue]={number}")
+
+
+def start_waiting(repo, numbers, need_blocker=False):
+    """Start the planner of every open issue among `numbers` with no sub-issues, nothing open blocking it and nothing
+    started on it yet; with need_blocker, only those blocked by at least one issue (all now closed). Returns those started."""
+    started = []
+    for n in numbers:
+        if json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("state") != "open" or sub_issues(repo, n):
+            continue
+        blockers = blocked_by(repo, n)
+        if (need_blocker and not blockers) or any(b.get("state") != "closed" for b in blockers):
+            continue
+        if started_before(repo, n):
+            continue
+        start_planner(repo, n)
+        started.append(n)
+    return started
+
+
+def tree_done_comment(number):
+    """The comment a parent closes with when its last sub-issue closed on autopilot."""
+    return f"Every issue under #{number} is closed, so its whole tree is done and it closes.\n"
+
+
+def autopilot_closed(repo):
+    """What autopilot does when an issue closes, worked out from GitHub's state of every issue on autopilot, so a close
+    whose own run never went is still handled by the next one. Returns what it did, as lines.
+
+    Every open parent on autopilot whose sub-issues are all closed closes as completed, saying its tree is done, and
+    counts as a close one level up in turn. Every closed issue on autopilot with no parent on autopilot is the top of a
+    done tree: the tree goes off autopilot. Then every open issue left on autopilot that was blocked and whose blockers
+    have all closed starts its planner, unless something already started on it."""
+    did = []
+    while True:
+        issues = {i["number"]: i for i in json.loads(gh(
+            "api", f"repos/{repo}/issues?labels={AUTOPILOT}&state=all&per_page=100", "--paginate") or "[]")
+            if "pull_request" not in i}
+        subs = {n: sub_issues(repo, n) for n in sorted(issues)}
+        done = [p for p, cs in subs.items() if cs and issues[p]["state"] == "open" and all(c["state"] == "closed" for c in cs)]
+        if not done:
+            break
+        for p in done:
+            gh("issue", "close", str(p), "-R", repo, "--reason", "completed", "--comment", tree_done_comment(p))
+            did.append(f"closed #{p}: its whole tree is done")
+    under = {c["number"] for cs in subs.values() for c in cs}
+    off = set()
+    for n in sorted(issues):
+        if issues[n]["state"] == "closed" and n not in under:
+            switched = switch_autopilot(repo, n, "stop")
+            off |= set(switched)
+            if switched:
+                did.append("autopilot off for " + ", ".join(f"#{m}" for m in switched))
+    waiting = [n for n in sorted(issues) if n not in off and issues[n]["state"] == "open" and not subs[n]]
+    did += [f"started the planner for #{n}" for n in start_waiting(repo, waiting, need_blocker=True)]
+    return did
 
 
 def next_step(items, rec, owners, rounds=3):
@@ -941,7 +1036,8 @@ def main(argv):
     agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
     agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
     agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
-    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched)"""
+    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched) |
+    agent closed N  (what autopilot does now that issue N closed, for every tree on autopilot)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -1014,7 +1110,8 @@ def main(argv):
         if not approved(recs) or latest(recs, "planner")["handback"].get("kind") != "feature":
             print("The newest plan is not an approved split.")
             return 1
-        rec = file_split(repo, parent, recs)
+        on = AUTOPILOT in {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{parent}")).get("labels", [])}
+        rec = file_split(repo, parent, recs, [AUTOPILOT] if on else [])
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
         card = os.environ.get("CARD_ID", "")
         if card:
@@ -1033,6 +1130,9 @@ def main(argv):
             iid = b.item("issue", int(parent))
             b.set(iid, "Status", "Work")
             b.set(iid, "Action", None)
+        if on:
+            # On autopilot the stories go on too, and each one with nothing to wait for starts planning.
+            start_waiting(repo, [f["issue"] for f in rec["handback"]["stories"] if not f["blocked_by"]])
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
@@ -1074,8 +1174,15 @@ def main(argv):
         return 0
     if argv[1] == "autopilot":
         switch, number = argv[2], argv[3]
-        switched = switch_autopilot(os.environ["GITHUB_REPOSITORY"], number, switch)
-        sys.stdout.write(autopilot_comment(number, switch, switched))
+        repo = os.environ["GITHUB_REPOSITORY"]
+        switched = switch_autopilot(repo, number, switch)
+        # `/autopilot start` picks up every issue under the issue, at every level, that waits on nothing open.
+        started = start_waiting(repo, issue_tree(repo, number)[1:]) if switch == "start" else []
+        sys.stdout.write(autopilot_comment(number, switch, switched, started))
+        return 0
+    if argv[1] == "closed":
+        for line in autopilot_closed(os.environ["GITHUB_REPOSITORY"]) or [f"#{argv[2]} closed: nothing on autopilot to do."]:
+            print(line)
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

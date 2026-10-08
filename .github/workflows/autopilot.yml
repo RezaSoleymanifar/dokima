@@ -1,0 +1,47 @@
+name: autopilot
+run-name: "autopilot after #${{ github.event.issue.number }} closed"
+# Autopilot's reaction to an issue closing, usually because its pull request merged. Code reads every issue on
+# autopilot from GitHub: a parent whose last sub-issue closed closes too, saying its whole tree is done, and that
+# close counts one level up; a done tree (its top issue closed) goes off autopilot; and every issue left on autopilot
+# whose blocked-by issues have now all closed starts its planner, with one Autopilot line where the owner would have
+# said /plan. Nothing starts twice: an issue with a record, a live card or that line is never started again.
+# Every close waits in one queue for the whole repo, which a newer run never cancels, so two merges that close
+# together never read the tree at the same moment; and since each run works from the state of every tree, the run
+# that goes also does the work of any close whose run GitHub dropped from the queue. A failure says why on the issue.
+on:
+  issues:
+    types: [closed]
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+permissions:
+  contents: read
+  issues: read
+jobs:
+  closed:
+    environment: keys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Close done parents, switch done trees off, start what the close unblocked
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+        run: python3 -m dokima.agent closed "$N" 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+      - name: Say why autopilot stopped, on the issue that closed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          N: ${{ github.event.issue.number }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'Autopilot could not finish after #%s closed: %s ([run](%s))\n' "$N" "$(paste -sd' ' /tmp/why.txt 2>/dev/null)" "$RUN" > /tmp/autopilot.md
+          gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
