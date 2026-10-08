@@ -36,7 +36,8 @@ STORY = {"kind": "user_story", "user_story": "u", "acceptance_criteria": [{"text
          "non_functional": [], "scope": ["x.py"], "out_of_scope": [], "tests": {"57.1": ["tests/test_x.py::test_a"]}}
 APPROVE = {"previous_step": {"did": ["Proposed a split into two stories."], "decided": [], "open": []},
            "stage": "plan", "round": 1, "verdict": "approve", "summary": "The split keeps every promise once.",
-           "blockers": [], "notes": [], "outside_plan": [], "resolved": []}
+           "blockers": [], "notes": [], "outside_plan": [], "resolved": [],
+           "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": "S1.1"}]}
 
 FAKE_GH = r'''#!/usr/bin/env python3
 """A stand-in for the GitHub CLI: answers from the fake issue and records every call.
@@ -305,7 +306,9 @@ class Machine:
             open(f"{t}/bin/{name}", "w").write(body.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
             os.chmod(f"{t}/bin/{name}", 0o755)
         json.dump({"number": int(N), "title": "Stuck issue", "body": "Fix it.", "comments": comments}, open(f"{t}/gh/issue.json", "w"))
-        json.dump(APPROVE, open(f"{t}/review.json", "w"))
+        # A plan review lists the owner's ask under one of the plan's criteria: a story's 57.1 or a split's S1.1.
+        split = any('"kind": "feature"' in c.get("body", "") for c in comments if isinstance(c, dict))
+        json.dump({**APPROVE, "asks": [{**APPROVE["asks"][0], "criterion": "S1.1" if split else "57.1"}]}, open(f"{t}/review.json", "w"))
         # The repo: Dokima's code from this checkout, owned by owner-person, pushed to a local origin.
         src = f"{t}/src"
         shutil.copytree(os.path.join(ROOT, "dokima"), f"{src}/dokima", ignore=shutil.ignore_patterns("__pycache__"))
