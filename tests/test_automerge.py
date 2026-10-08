@@ -599,7 +599,8 @@ def test_a_refused_merge_stops_for_the_owner_and_says_why(record_property, tmp_p
     GitHub refusing for branch protection (its words must be on the pull request). Each must leave #60 unmerged, post
     no Autopilot line, mention the owner on #60 with the reason, show Needs you on the board and start nothing else.
     `/autopilot start` on an approved pull request with a red check must likewise merge nothing and say on #60 which
-    check is red, mentioning the owner."""
+    check is red, mentioning the owner; and with every check green but GitHub refusing (a conflict, then branch
+    protection), it must try the merge, leave #60 unmerged and give GitHub's words on #60, mentioning the owner."""
     record_property("proves", "212.3")
     cases = (("red check", RED, "", RED_NAME), ("no checks", [], "", "no checks"),
              ("conflict", GREEN, CONFLICT, CONFLICT), ("branch protection", GREEN, PROTECTED, PROTECTED))
@@ -612,21 +613,31 @@ def test_a_refused_merge_stops_for_the_owner_and_says_why(record_property, tmp_p
     m = Command(tmp_path / "command-red", APPROVED, {}, RED)
     m.listen("/autopilot start")
     assert_waits(m, "212.3", "/autopilot start, red check", RED_NAME)
+    for case, refuse in (("conflict", CONFLICT), ("branch protection", PROTECTED)):
+        m = Command(tmp_path / f"command-{case.replace(' ', '-')}", APPROVED, {}, GREEN, refuse=refuse)
+        m.listen("/autopilot start")
+        assert pr_state(m).get("calls"), \
+            f"212.3 (/autopilot start, {case}): with every check green no merge was tried:\n{m.tail()}"
+        assert_waits(m, "212.3", f"/autopilot start, {case}", refuse)
 
 
 def test_agents_md_says_autopilot_merges_what_the_reviewer_approved(record_property):
     """AGENTS.md's flow says that on autopilot the reviewer's approval with green checks merges by itself.
 
     Reads AGENTS.md: step 6 of The flow (the Merge step, which today says only that the owner approves and merges)
-    must mention autopilot."""
+    must say that on autopilot the reviewer's approval with green checks merges, and must not say autopilot never merges."""
     record_property("proves", "212.4")
     text = open(os.path.join(ts.ROOT, "AGENTS.md")).read()
     sections = {m.group(1).strip(): m.group(2) for m in re.finditer(r"^## (.+?)\n(.*?)(?=^## |\Z)", text, re.S | re.M)}
     flow = next((v for k, v in sections.items() if k.startswith("The flow")), "")
     step = next((l for l in flow.splitlines() if l.startswith("6.")), "")
     assert step, "212.4: AGENTS.md's The flow has no step 6"
-    assert "merge" in step.lower() and "autopilot" in step.lower(), \
-        f"212.4: step 6 of AGENTS.md's The flow does not say that autopilot merges an approved pull request: {step!r}"
+    low = step.lower()
+    missing = [w for w in ("merge", "autopilot", "approv", "green") if w not in low]
+    assert not missing, f"212.4: step 6 of AGENTS.md's The flow does not say that on autopilot the reviewer's " \
+        f"approval with green checks merges the pull request (missing {missing}): {step!r}"
+    assert not re.search(r"autopilot\W+(?:\w+\W+){0,3}(?:never|not|doesn't|does not)\W+merge", low), \
+        f"212.4: step 6 of AGENTS.md's The flow says autopilot does not merge: {step!r}"
 
 
 def test_a_pull_request_changing_a_workflow_file_never_merges_by_autopilot(record_property, tmp_path):
@@ -654,7 +665,9 @@ def test_nothing_merges_unless_every_check_on_the_merging_commit_is_green(record
     On a repo where GitHub itself would merge anything, runs the code review of #60 on autopilot, approving, with: one
     red check beside a green one, one check still running, no checks at all, and green checks on the reviewed head but
     a new commit (its checks still running) pushed the moment code first looks. None may be merged. `/autopilot start`
-    with a check still running merges nothing either. Beside them, every check green merges at that head."""
+    on the approved pull request merges nothing either with a check still running, with no checks, or with a new commit
+    pushed the moment code first looks. Beside them, every check green merges at that head, by the review and by
+    `/autopilot start`."""
     record_property("proves", "212.6")
     cases = (("one red", RED, False), ("one running", PENDING, False), ("none", [], False), ("head moved", GREEN, True))
     for case, checks, moves in cases:
@@ -664,8 +677,18 @@ def test_nothing_merges_unless_every_check_on_the_merging_commit_is_green(record
             f"212.6 ({case}): merged commit {merged(m)} though not every check on it had passed: {pr_state(m)['checks']}"
         assert autopilot_lines(m) == [], f"212.6 ({case}): an Autopilot line was posted though nothing should merge"
         no_bypass(m, "212.6", case)
-    m = Command(tmp_path / "command-running", APPROVED, {}, PENDING)
+    for case, checks, moves in (("running", PENDING, False), ("none", [], False), ("head moved", GREEN, True)):
+        m = Command(tmp_path / f"command-{case.replace(' ', '-')}", APPROVED, {}, checks, moves=moves)
+        m.listen("/autopilot start")
+        assert merged(m) is None, \
+            f"212.6 (/autopilot start, {case}): merged commit {merged(m)} though not every check on it had passed: " \
+            f"{pr_state(m)['checks']}"
+        assert autopilot_lines(m) == [], \
+            f"212.6 (/autopilot start, {case}): an Autopilot line was posted though nothing should merge"
+        no_bypass(m, "212.6", f"/autopilot start, {case}")
+    m = Command(tmp_path / "command-green", APPROVED, {}, GREEN)
     m.listen("/autopilot start")
-    assert merged(m) is None, "212.6 (/autopilot start, running): merged though a check was still running"
+    assert merged(m) == m.try_sha, \
+        f"212.6: test control: /autopilot start with every check green did not merge at the head:\n{m.tail()}"
     m = Review(tmp_path / "green", PR_APPROVE, {57: [LABEL]}, GREEN)
     assert merged(m) == m.try_sha, f"212.6: test control: every check green did not merge at the head:\n{m.tail()}"
