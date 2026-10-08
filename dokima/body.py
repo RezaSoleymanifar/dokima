@@ -1,13 +1,20 @@
-"""The issue body: code's card above one fixed marker, the owner's ask folded below it, never rewritten.
+"""The issue body: code's card above one fixed marker, the owner's ask open below it, never rewritten.
+
+A split's story, quoted by code from the parent's approved plan, stays folded under Original issue. Bodies saved
+before #237 carry the fold around every ask: reading still accepts it, and the next redraw opens an owner's ask.
 
 Every code path that redraws an issue body (the card and the planner) saves it through `save`, which keeps the
 owner's part byte for byte or refuses, leaves the body as it was and says why in a comment on the issue.
 """
+import re
 import subprocess
 
 MARKER = "<!-- dokima-ask -->"
 FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
+OPEN_START = "\n\n"
+# A split's story as dokima/agent.py story_body draws it: quoted from the parent's plan, so it stays folded.
+QUOTED = re.compile(r"<!-- dokima-card -->\n<!-- /dokima-card -->\n\n<details open><summary>From the approved plan of #\d+, ")
 
 
 class Refused(Exception):
@@ -22,13 +29,21 @@ def ask(body):
     below = body.split(MARKER, 1)[1]
     if below.startswith(FOLD_START) and below.endswith(FOLD_END) and len(below) >= len(FOLD_START) + len(FOLD_END):
         return below[len(FOLD_START):len(below) - len(FOLD_END)]
+    if below.startswith(OPEN_START):
+        return below[len(OPEN_START):]
     return below
+
+
+def quoted(text):
+    """Whether the owner's part is a split's story quoted by code, not words the owner wrote."""
+    return bool(QUOTED.match(text))
 
 
 def redraw(body, top):
     """The new body: `top` above the marker and the owner's part below it, kept exactly; Refused when it would change."""
     body = body or ""
-    below = body.split(MARKER, 1)[1] if MARKER in body else FOLD_START + body + FOLD_END
+    owner = ask(body)
+    below = FOLD_START + owner + FOLD_END if quoted(owner) else OPEN_START + owner
     new = top.rstrip("\n") + "\n\n" + MARKER + below
     if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below:
         raise Refused("the owner's part below the marker would change: the new card holds the marker "

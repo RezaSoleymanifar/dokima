@@ -23,6 +23,7 @@ LABEL = "work"
 WORK_BRANCH = re.compile(r"work/issue-(\d+)")
 CARD_START = "<!-- dokima-card -->"
 CARD_END = "<!-- /dokima-card -->"
+ASK_MARKER = "<!-- dokima-ask -->"  # dokima/body.py MARKER: the owner's ask below it is never plan
 
 # Checkbox format: "- [ ] Objective: ..." then indented "- [ ] Acceptance criteria: ..." and "Verified by: ...".
 # The older words (Goal, Done when) read the same.
@@ -45,11 +46,16 @@ def parse(body):
     """The plan's words: goals with their criteria (numbered from 1 across the issue), Not checked, and notes.
 
     Notes are any other lines outside the card, kept as they were written. A folded section
-    (<details> ... </details>, such as Context) is always notes: nothing inside it is plan.
+    (<details> ... </details>, such as Context) is always notes: nothing inside it is plan, and nor is the owner's
+    ask below the marker.
     """
-    goals, n, gap, notes, in_card, in_fold = [], 0, None, [], False, False
+    goals, n, gap, notes, in_card, in_fold, in_ask = [], 0, None, [], False, False, False
     for line in (body or "").splitlines():
         stripped = line.strip()
+        if in_ask or (not in_card and stripped == ASK_MARKER):
+            in_ask = True
+            notes.append(line)
+            continue
         if not in_card and (in_fold or stripped.startswith("<details")):
             in_fold = "</details>" not in stripped
             notes.append(line)

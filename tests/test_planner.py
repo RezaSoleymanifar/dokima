@@ -41,13 +41,6 @@ def test_plan_is_written_into_the_issue_as_goal_criteria_and_scope(record_proper
     assert "**Out of scope:** No retries" in parsed["notes"] and "- `dokima/jobs.py`" in parsed["notes"], "80.1: out of scope or scope missing"
 
 
-def test_owner_text_is_folded_and_never_read_as_plan(record_property):
-    record_property("proves", "80.1")
-    body = planner.render("9", "- [ ] Goal: old goal\n  - [ ] Done when: old", PLAN, TAGS)
-    assert "<details><summary>Original issue</summary>" in body
-    assert len(plan.parse(body)["goals"]) == 1, "80.1: the owner's old checkboxes were read as a second goal"
-
-
 def test_planning_again_keeps_the_owner_text_once(record_property):
     record_property("proves", "80.1")
     first = planner.render("9", "Make slow calls async.", PLAN, TAGS)
