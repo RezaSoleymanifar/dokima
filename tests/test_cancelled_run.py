@@ -85,7 +85,8 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
     Cancels runs at the code-owner gate, while the tools install, while the planner, the plan reviewer and the worker
     (whose card is on its open pull request) work, and after a review's hand-back passed code's check. Each must leave
     exactly one comment, in the right place, that says it was cancelled, no longer says getting ready or working,
-    names no one with an @, does not say any hand-back was rejected or that a step failed, and ends with a Next line.
+    names no one with an @, shows no running, queued or failed icon, does not say any hand-back was rejected or that a
+    step failed, and ends with a Next line.
     Runs that end without a cancel (a rejected hand-back, a failed install, a blocking review) must never say
     cancelled."""
     record_property("proves", "188.1")
@@ -100,12 +101,14 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
         assert re.search(r"\bcancell?ed\b", body, re.I), f"188.1 ({name}): the card does not say the run was cancelled:\n{body[:900]}"
         assert LIVE not in body and "working since" not in body and "getting ready" not in body, \
             f"188.1 ({name}): the card still shows the run as getting ready or working:\n{body[:900]}"
-        assert not {"running", "queued"} & set(ICON.findall(body)), \
-            f"188.1 ({name}): the card still shows a running or queued icon: {ICON.findall(body)}"
+        assert not {"running", "queued", "failed"} & set(ICON.findall(body)) and 'alt="failed"' not in body, \
+            f"188.1 ({name}): the card still shows a running, queued or failed icon: {ICON.findall(body)}"
         assert not MENTION.findall(body), f"188.1 ({name}): the cancelled run's card mentions {MENTION.findall(body)}:\n{body[-700:]}"
         assert "rejected" not in body.lower() and "failed" not in re.sub(r"<img[^>]*>", "", body).lower(), \
             f"188.1 ({name}): the cancelled run's card reads as a failure, not a cancel:\n{body[:900]}"
-        assert "**Next:**" in body, f"188.1 ({name}): the cancelled run's card has no Next line:\n{body[-600:]}"
+        lines = [l for l in body.splitlines() if l.strip()]
+        assert lines and lines[-1].startswith("**Next:**"), \
+            f"188.1 ({name}): the cancelled run's card does not end with a Next line:\n{body[-600:]}"
     for name in ("rejected", "no-tools", "blocked"):
         r = runs[name]
         assert r.cancelled_step is None and r.agent_started() == (name != "no-tools"), f"188.1 ({name}): setup went wrong:\n{r.tail()}"
