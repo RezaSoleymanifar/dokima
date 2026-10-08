@@ -75,7 +75,7 @@ Only the planner asks the owner, as a plain list inside its plan, and only where
 
 ## The issue body
 
-The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses and says why (planned).
+The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses, leaves the body as it was and says why in a comment on the issue. A fresh ask gets the marker on its first redraw, with its whole body kept below it. The card and the planner both save through `dokima/body.py`.
 
 ## Agent records and cards
 

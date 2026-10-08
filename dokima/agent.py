@@ -214,6 +214,13 @@ def not_started(role, stage, why, meta):
             "check": {"passed": False, "problems": lines}}
 
 
+def cancelled(role, stage, started, meta):
+    """The record of a run someone cancelled: what it was and whether its agent had started. Nothing it handed back
+    is used, and the river starts nothing after it."""
+    return {"role": "cancelled", "attempt": role, "stage": stage or None, "agent_started": started, **meta,
+            "handback": {}, "check": {"passed": False, "problems": []}}
+
+
 def live_card(role, stage, state, ahead=None):
     """The run's card while it is still running: queued (or waiting for the run `ahead` of it), getting ready, then
     working since the agent started.
@@ -293,6 +300,15 @@ def render(rec):
         lines = [MARK, f"{icon(repo, 'failed')} **{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
         lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
                   "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "cancelled":
+        a = rec.get("attempt")
+        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker"}.get(a, "Command")
+        what = ("The run was cancelled after its agent started; nothing it handed back is used." if rec.get("agent_started")
+                else "The run was cancelled before its agent started.")
+        lines = [MARK, f"{icon(repo, 'cancelled')} **{head}** · cancelled", "", what]
+        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
+                  "", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
     head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
     lines = [MARK, f"{icon(repo, 'passed' if rec['check']['passed'] else 'failed')} **{head}**"
@@ -740,8 +756,11 @@ def next_step(items, rec, owners, rounds=3):
 
     A planner hands to the reviewer unless it has questions for the owner. A worker hands to the reviewer. A blocking
     review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
-    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner."""
+    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
+    cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
+    if role == "cancelled":
+        return ("cancelled", "Nothing starts by itself after a cancel. Give the command again to start this stage.")
     if role == "not-started":
         return ("stop", "Nothing ran, see why above. Fix the cause, then give the command again.")
     if not rec.get("check", {}).get("passed"):
@@ -801,10 +820,10 @@ STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker"
 
 def board_place(rec, step):
     """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
-    the owner, and the Needs you pill exactly when the river stops for the owner."""
+    the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
-    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), True
+    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
@@ -827,6 +846,8 @@ def next_line(step, owners):
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
+    if step[0] == "cancelled":
+        return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
 
@@ -835,6 +856,7 @@ def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
     agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
+    agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
     agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
     agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id)"""
     if argv[1] == "pack":
@@ -866,6 +888,17 @@ def main(argv):
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         rec = not_started(role, stage, open(why_file).read() if os.path.exists(why_file) else "", meta)
+        json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
+    if argv[1] == "cancelled":
+        role, stage, out, started, log_dir = argv[2:7]
+        meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
+        if started == "true":
+            meta.update({"models": models_used(log_dir), "report": run_report(os.path.join(out, "claude.json")),
+                         "log": os.environ.get("LOG_URL")})
+        rec = cancelled(role, stage, started == "true", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
         return 0
@@ -926,8 +959,9 @@ def main(argv):
         number, out = argv[2], argv[3]
         owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
         rec = json.load(open(os.path.join(out, "record.json")))
-        # A run that never started stops for the owner whatever the conversation says, so it is not read.
-        items = [] if rec.get("role") == "not-started" else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
+        # A run that never started stops for the owner, and a cancelled one stops, whatever the conversation says,
+        # so it is not read.
+        items = [] if rec.get("role") in ("not-started", "cancelled") else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
         step = next_step(items, rec, owners)
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")

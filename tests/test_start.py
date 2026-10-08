@@ -188,14 +188,17 @@ FAKE_CLAUDE = r'''#!/usr/bin/env python3
 
 When it starts it keeps what GitHub showed at that moment (every comment and every version, at-agent-start.json),
 its own environment (agent-env.json) and the time it started (agent-started-at), so a test can see the run as the
-agent found it."""
-import json, os, shutil, time
+agent found it. With FAKE_CANCELLED set, the run is being cancelled: it stops there, as Claude Code does when its step
+is stopped, and hands back nothing."""
+import json, os, shutil, sys, time
 d = os.environ["FAKE_GH_DIR"]
 store = os.path.join(d, "comments.json")
 json.dump(json.load(open(store)) if os.path.exists(store) else [], open(os.path.join(d, "at-agent-start.json"), "w"))
 json.dump(dict(os.environ), open(os.path.join(d, "agent-env.json"), "w"))
 open(os.path.join(d, "agent-started-at"), "w").write(str(time.time()))
 open(os.environ["FAKE_CLAUDE_MARK"], "w").write("started")
+if os.environ.get("FAKE_CANCELLED"):
+    sys.exit(143)
 shutil.copy(os.environ["FAKE_REVIEW"], os.path.join(os.environ["OUT"], "review.json"))
 logs = os.path.join(os.environ["HOME"], ".claude", "projects", "p")
 os.makedirs(logs, exist_ok=True)
@@ -246,8 +249,9 @@ def evaluate(expr, ctx, status):
         p = re.sub(r"\.([A-Za-z_]\w*(?:-\w+)+)", lambda m: f"[{m.group(1)!r}]", p)
         p = re.sub(r"\bnull\b", "NIL", re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False", p)))
         parts[i] = p
-    names = {**ctx, "NIL": NIL, "always": lambda: True, "success": lambda: status.get("success", not status["failed"]),
-             "failure": lambda: status["failed"], "cancelled": lambda: False,
+    names = {**ctx, "NIL": NIL, "always": lambda: True,
+             "success": lambda: status.get("success", not status["failed"] and not status.get("cancelled")),
+             "failure": lambda: status["failed"], "cancelled": lambda: bool(status.get("cancelled")),
              "startsWith": lambda s, p: str(s).lower().startswith(str(p).lower()),
              "contains": lambda s, p: str(p).lower() in str(s).lower(),
              "format": lambda f, *xs: re.sub(r"\{(\d+)\}", lambda m: str(xs[int(m.group(1))]), f)}
@@ -413,8 +417,9 @@ def review_record(handback):
 class Machine:
     """A temp repo with fake GitHub, Claude, pip and npm, on which workflow jobs run the way GitHub runs them."""
 
-    def __init__(self, tmp, comments, try_branch=False, actor=OWNER, gh_fail="", broken=None, options=None):
+    def __init__(self, tmp, comments, try_branch=False, actor=OWNER, gh_fail="", broken=None, options=None, cancel_at=None):
         self.tmp = t = str(tmp)
+        self.cancel_at = cancel_at
         for d in ("bin", "gh", "home", "runner-temp", "jobs"):
             os.makedirs(f"{t}/{d}")
         json.dump(options or {}, open(f"{t}/gh/options.json", "w"))
@@ -448,7 +453,7 @@ class Machine:
             sh(src, "git", "push", "-q", "origin", f"try/issue-{N}")
             self.try_sha = sh(src, "git", "rev-parse", "HEAD")
         self.actor, self.gh_fail = actor, gh_fail
-        self.log, self.failed_step = [], None
+        self.log, self.failed_step, self.cancelled_step = [], None, None
 
     def base_env(self, event_name):
         """The environment every step starts from."""
@@ -465,7 +470,12 @@ class Machine:
     def run_job(self, name, job, ctx, event_name, paths, defaults=None):
         """Run one job's steps in order on a fresh clone, keeping its status, env and step outputs; returns its result.
 
-        `defaults` is the workflow's own `defaults:` block, so each step gets the shell GitHub would give it."""
+        `defaults` is the workflow's own `defaults:` block, so each step gets the shell GitHub would give it. When the
+        machine was told to cancel at a step (cancel_at, its name), the run is cancelled while that step runs, the way
+        the Cancel button on the Actions page does: its script runs with FAKE_CANCELLED set, so the fake agent stops
+        without handing anything back, the step ends cancelled whatever its exit code, and from then on only steps
+        whose `if:` holds with success() false and cancelled() true run, as GitHub runs them; job.status says
+        cancelled."""
         t = self.tmp
 
         def moved(s):
@@ -481,13 +491,15 @@ class Machine:
         job_env = {k: moved(fill(v, {**ctx, "env": Ctx()}, status)) for k, v in (job.get("env") or {}).items()}
         base = self.base_env(event_name)
         for step in job.get("steps") or []:
-            sctx = {**ctx, "steps": Ctx(steps_ctx), "env": Ctx({**job_env, **added})}
+            job_status = "cancelled" if status.get("cancelled") else "failure" if status["failed"] else "success"
+            sctx = {**ctx, "steps": Ctx(steps_ctx), "env": Ctx({**job_env, **added}), "job": Ctx(status=job_status)}
             if not evaluate(condition(step.get("if")), sctx, status):
                 continue
             label = step.get("name") or step.get("uses") or step.get("id")
             outputs = {}
+            cancel = bool(self.cancel_at) and label == self.cancel_at and not status.get("cancelled")
             if "run" in step:
-                env = {**base, **job_env, **added}
+                env = {**base, **job_env, **added, **({"FAKE_CANCELLED": "1"} if cancel else {})}
                 env.update({k: moved(fill(v, sctx, status)) for k, v in (step.get("env") or {}).items()})
                 env["GITHUB_ENV"], env["GITHUB_OUTPUT"] = f"{t}/step-env", f"{t}/step-output"
                 for f in (env["GITHUB_ENV"], env["GITHUB_OUTPUT"]):
@@ -504,16 +516,21 @@ class Machine:
                     if "=" in l:
                         k, v = l.split("=", 1)
                         outputs[k] = v
-                if p.returncode != 0:
+                if cancel:
+                    self.log[-1] = self.log[-1].replace(f"(exit {p.returncode})", "(cancelled)", 1)
+                elif p.returncode != 0:
                     status["failed"] = True
                     self.failed_step = self.failed_step or label
             elif "create-github-app-token" in str(step.get("uses")):
                 outputs = {"token": "fake-token", "app-slug": "dokima-runtime"}
+            if cancel:
+                status["cancelled"], self.cancelled_step = True, label
             if step.get("id"):
-                steps_ctx[step["id"]] = {"outputs": outputs, "outcome": "failure" if status["failed"] else "success"}
+                steps_ctx[step["id"]] = {"outputs": outputs, "outcome": "cancelled" if cancel else
+                                         "failure" if status["failed"] else "success"}
         self.env = {**job_env, **added}
         out = {k: fill(v, {**ctx, "steps": Ctx(steps_ctx), "env": Ctx(self.env)}, status) for k, v in (job.get("outputs") or {}).items()}
-        return ("failure" if status["failed"] else "success"), out
+        return ("cancelled" if status.get("cancelled") else "failure" if status["failed"] else "success"), out
 
     def calls(self):
         """Every call made to the fake gh, as argument lists."""
@@ -553,8 +570,9 @@ class Machine:
 class Run(Machine):
     """One run of the agent workflow (agent.yml), started by hand by the actor."""
 
-    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER, broken=None, options=None, review=None):
-        super().__init__(tmp, comments, try_branch, actor, broken=broken, options=options)
+    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER, broken=None, options=None, review=None,
+                 cancel_at=None):
+        super().__init__(tmp, comments, try_branch, actor, broken=broken, options=options, cancel_at=cancel_at)
         if review is not None:
             json.dump(review, open(f"{self.tmp}/review.json", "w"))
         t = self.tmp

@@ -136,7 +136,6 @@ def test_same_card_on_issue_and_pr_and_only_icons_change(record_property):
     assert plan.parse(issue_text) == plan.parse(later) == WORDS
     assert card.pr_body(render(), "Closes #40.\n\nSome prose.") == render() + "\n\nCloses #40"
     src = open(os.path.join(os.path.dirname(__file__), "..", "dokima", "card.py")).read()
-    assert 'f"repos/{repo}/issues/{number}", "-F", "body=@issue.md"' in src
     assert 'f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md"' in src
     yml = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "card.yml")).read()
     assert "types: [opened, edited]" in yml and "github.event.sender.type != 'Bot'" in yml
