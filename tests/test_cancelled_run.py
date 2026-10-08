@@ -87,8 +87,8 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
     exactly one comment, in the right place, that says it was cancelled, no longer says getting ready or working,
     names no one with an @, shows no running, queued or failed icon, does not say any hand-back was rejected or that a
     step failed, and ends with a Next line.
-    Runs that end without a cancel (a rejected hand-back, a failed install, a blocking review) must never say
-    cancelled."""
+    Runs that end without a cancel (a rejected hand-back, a failed install, a blocking review) must leave their record
+    and never say cancelled in any comment they leave, including the next stage's queued card a hand-off posts."""
     record_property("proves", "188.1")
     for name, spec in CANCELLED.items():
         r = runs[name]
@@ -112,8 +112,12 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
     for name in ("rejected", "no-tools", "blocked"):
         r = runs[name]
         assert r.cancelled_step is None and r.agent_started() == (name != "no-tools"), f"188.1 ({name}): setup went wrong:\n{r.tail()}"
-        body = visible(only_comment(r, "188.1", name)["versions"][-1])
-        assert not re.search(r"\bcancell?ed\b", body, re.I), f"188.1 ({name}): a run nobody cancelled says it was cancelled:\n{body[:900]}"
+        cs = r.comments()
+        records = [c for c in cs if c["versions"][-1].startswith("<!-- dokima-record -->")]
+        assert len(records) == 1, f"188.1 ({name}): the run left {len(records)} records, expected one: {[c['versions'][-1][:150] for c in cs]}"
+        for c in cs:
+            body = visible(c["versions"][-1])
+            assert not re.search(r"\bcancell?ed\b", body, re.I), f"188.1 ({name}): a run nobody cancelled says it was cancelled:\n{body[:900]}"
 
 
 def test_the_owner_is_mentioned_on_a_real_rejection_and_not_on_a_cancel(record_property, runs):
