@@ -428,6 +428,26 @@ def problems_review(r):
     return bad
 
 
+def problems_asks(r, ids):
+    """Everything wrong with a plan review's asks list: every ask the owner made, in their words, with a link to where
+    they said it and the plan's criterion (one of ids) that keeps it, or "missing"; an approve keeps every ask."""
+    asks = r.get("asks")
+    if not isinstance(asks, list) or not asks:
+        return ["asks must list every ask in the owner's issue and comments, each {\"ask\": \"the owner's words\", "
+                "\"source\": \"a link to where they said it\", \"criterion\": \"N.k\" or \"missing\"}"]
+    bad = problems_items(r, "asks", ("ask", "source", "criterion"), name="ask")
+    good = [a for a in asks if isinstance(a, dict) and all(filled(a.get(k)) for k in ("ask", "source", "criterion"))]
+    for a in good:
+        c = a["criterion"].strip()
+        if c != "missing" and c not in ids:
+            bad.append(f"the ask \"{a['ask']}\" is matched to {c}, which is not a criterion of the plan "
+                       f"({', '.join(ids) or 'none'})")
+    gone = [a["ask"] for a in good if a["criterion"].strip() == "missing"]
+    if r.get("verdict") == "approve" and gone:
+        bad.append("an approve keeps every ask, but these are marked missing: " + "; ".join(f'"{g}"' for g in gone))
+    return bad
+
+
 def problems_work(w):
     """Everything wrong with a work.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -575,6 +595,8 @@ def check(kind, path, plan_path=None, number=None):
             bad.append(f"the issue number {number!r} is not a number: the hand-back can't be checked against the plan")
         else:
             bad += problems_plan(kind, data, plan, number)
+            if kind == "review" and os.environ.get("STAGE") == "plan":
+                bad += problems_asks(data, plan_criteria(plan, number))
     for b in bad:
         print(b)
     return 1 if bad else 0

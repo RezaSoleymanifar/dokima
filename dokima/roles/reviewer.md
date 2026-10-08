@@ -34,6 +34,13 @@ earlier blocker.
 - A guess where a question to the owner was due, or an owner's ask turned into a concern or dropped, is a blocker.
 - Round three that still has a blocker is an escalation: say in one sentence what the two sides disagree on.
 
+# Every ask of the owner
+On a plan, the planner wrote the criteria from the owner's words, so it cannot see an ask it dropped. Read the owner's
+issue text and comments yourself and list every ask you find in "asks": each in the owner's words, with a link to the
+issue or comment where they said it, matched to the one criterion of the plan that keeps it ("N.k", or "S<s>.<k>" for a
+split) or marked "missing". An ask marked missing is a blocker: a plan review with one cannot approve. A code review of
+the pull request lists no asks.
+
 # Summing up the step you review
 Start your hand-back with what the planner or worker did, for the owner, who will not read their output: "previous_step"
 with three short lists, "did", "decided" and "open", at most five lines in all. Write it the way acceptance criteria are
@@ -50,9 +57,10 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
    "notes": [{"text": "...", "evidence": "..."}],
    "outside_plan": [{"file": "path", "change": "..."}],
    "resolved": ["B1", ...],
-   "issues_found": [{"title": "...", "why": "...", "evidence": "..."}]}
+   "issues_found": [{"title": "...", "why": "...", "evidence": "..."}],
+   "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}]}
 "approve" has no blockers; "block" has at least one; notes are optional, at most three; outside_plan is for the pull
-request only. Every blocker names its fixer: the worker for code, the planner for a test or the plan; code sends a code
+request only; asks is for the plan only, and is never empty. Every blocker names its fixer: the worker for code, the planner for a test or the plan; code sends a code
 review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
 a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
 round, so you never write them.
