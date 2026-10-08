@@ -404,10 +404,11 @@ def record_fold(rec):
     return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
 
 
-def render(rec, pr=None):
+def render(rec, pr=None, plan=None):
     """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
     needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
-    worker's pull request, once it exists."""
+    worker's pull request, once it exists; `plan` is the plan a plan review judged, whose assumptions answer its
+    questions."""
     role, h = rec["role"], rec["handback"]
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
@@ -448,6 +449,16 @@ def render(rec, pr=None):
         if blocks:
             lines += [""] + blocks
         judged = [a for a in h.get("assumptions") or [] if isinstance(a, dict)]
+        answers = {q.get("question"): q.get("assumption") for q in (plan or {}).get("questions") or []
+                   if isinstance(q, dict) and q.get("assumption")}
+        answered = [a for a in judged if a.get("accepted") is True and a.get("matched") and a.get("source")
+                    and a.get("question") in answers]
+        if answered:
+            lines += ["", f"{field_icon(repo, 'question')} **Answered from your words:**"]
+            for a in answered:
+                lines += [f"- {escape_line(a['question'])}", f"  - {escape_line(answers[a['question']])}",
+                          f"  - Your words: [\"{escape_line(a['matched']).replace(']', '\\]')}\"]({words_link(a['source'])})"]
+        judged = [a for a in judged if a not in answered]
         if judged:
             lines += ["", "**The plan's assumptions:**"]
             lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
@@ -467,6 +478,13 @@ def render(rec, pr=None):
                   for q in h["questions"]]
     lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
+
+
+def words_link(source):
+    """Where the owner said the words: the issue or comment link as given, or AGENTS.md on the repo's main branch."""
+    if source == "AGENTS.md":
+        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/blob/main/AGENTS.md"
+    return source
 
 
 def escape_line(text):
@@ -1441,7 +1459,14 @@ def main(argv):
         text = open(check_file).read() if os.path.exists(check_file) else ""
         rec = build_record(role, stage, out, text, passed == "true", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
-        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        reviewed = os.path.join(os.environ.get("PACK", ""), "plan.json")
+        plan = None
+        if role == "reviewer" and stage == "plan" and os.environ.get("PACK") and os.path.exists(reviewed):
+            try:
+                plan = json.load(open(reviewed))
+            except (OSError, json.JSONDecodeError):
+                plan = None
+        open(os.path.join(out, "comment.md"), "w").write(render(rec, plan=plan if isinstance(plan, dict) else None))
         return 0
     if argv[1] == "not-started":
         role, stage, out, why_file = argv[2:6]
