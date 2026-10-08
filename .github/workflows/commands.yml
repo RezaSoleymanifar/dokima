@@ -8,7 +8,9 @@ run-name: "${{ github.event.comment.body }}"
 # starts, gets one record where it was written with GitHub's error, and the owner is mentioned. Every code owner's
 # command first puts up one card for its run, which becomes that run's record. A code owner's `/autopilot start` or
 # `/autopilot stop` starts no stage: it switches the issue's whole tree (or the tree of the issue a pull request was
-# built for) on or off autopilot, the `autopilot` label, and says which issues it switched where it was written.
+# built for) on or off autopilot, the `autopilot` label, and says which issues it switched where it was written. On
+# `/autopilot start`, an approved plan of that issue still waiting for `/work` starts the worker, and an approved split
+# not yet filed is filed, each with one Autopilot line on the issue.
 on:
   issue_comment:
     types: [created]
@@ -137,12 +139,26 @@ jobs:
           N: ${{ needs.route.outputs.issue }}
           ON_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: |
-          python3 -m dokima.agent autopilot "$SWITCH" "$N" > /tmp/autopilot.md 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+          export OWNERS=$(python3 -m dokima.plan approvers)
+          python3 -m dokima.agent autopilot "$SWITCH" "$N" /tmp/pickup > /tmp/autopilot.md 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
           if [ "$ON_PR" = true ]; then
             gh pr comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
           else
             gh issue comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
+          fi
+          # What was waiting for `/work` goes on now, with one Autopilot line on the issue in place of the command.
+          [ -s /tmp/pickup/autopilot.md ] || exit 0
+          gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file /tmp/pickup/autopilot.md
+          if [ "$(cat /tmp/pickup/next.txt)" = split ]; then
+            python3 -m dokima.agent split "$N" 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
+          else
+            CARD=$(python3 -m dokima.agent queue worker "" "$N" handoff) \
+              || { CARD=; echo "::warning title=No queued card::the worker puts up its own"; }
+            gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=dokima-next \
+              -f "client_payload[role]=worker" -f "client_payload[stage]=plan" -f "client_payload[issue]=$N" \
+              -f "client_payload[card]=$CARD" 2> /tmp/why.txt || { cat /tmp/why.txt >&2; exit 1; }
           fi
       - id: why
         if: failure()

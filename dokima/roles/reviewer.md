@@ -41,6 +41,14 @@ issue or comment where they said it, matched to the one criterion of the plan th
 split) or marked "missing". An ask marked missing is a blocker: a plan review with one cannot approve. A code review of
 the pull request lists no asks.
 
+# The plan's questions
+On a plan with questions for the owner, judge every question's assumption in `assumptions`, once each. Say in
+`changes` (true or false) whether the assumption changes how the system works or what it costs. Accept it only when it
+does not and it clearly matches what the owner already said: quote the owner's words word for word in `matched` and
+link where they said them in `source`: the issue's own link, the link of a code owner's comment on it, or AGENTS.md.
+Code checks the words are really there; words it cannot find there count as not accepted. Otherwise do not accept it
+and say why. On autopilot a question you do not accept stops for the owner; one you accept goes on without them.
+
 # Summing up the step you review
 Start your hand-back with what the planner or worker did, for the owner, who will not read their output: "previous_step"
 with three short lists, "did", "decided" and "open", at most five lines in all. Write it the way acceptance criteria are
@@ -58,9 +66,12 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
    "outside_plan": [{"file": "path", "change": "..."}],
    "resolved": ["B1", ...],
    "issues_found": [{"title": "...", "why": "...", "evidence": "..."}],
-   "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}]}
+   "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}],
+   "assumptions": [{"question": "the plan's question", "accepted": true | false, "changes": true | false,
+                    "matched": "the owner's words", "source": "issue or comment link, or AGENTS.md", "why": "..."}]}
 "approve" has no blockers; "block" has at least one; notes are optional, at most three; outside_plan is for the pull
-request only; asks is for the plan only, and is never empty. Every blocker names its fixer: the worker for code, the
+request only; asks is for the plan only, and is never empty; assumptions is for a plan with questions only,
+with matched and source when accepted and why when not. Every blocker names its fixer: the worker for code, the
 planner for a test or the plan; code sends a code review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
 a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
 round, so you never write them.

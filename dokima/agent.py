@@ -333,6 +333,12 @@ def render(rec):
         lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
         fixes = lambda b: f", the {b['fixer']} fixes it" if b.get("fixer") in FIXERS else ""
         lines += [f"- **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers", [])]
+        judged = [a for a in h.get("assumptions") or [] if isinstance(a, dict)]
+        if judged:
+            lines += ["", "**The plan's assumptions:**"]
+            lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
+                      if a.get("accepted") is True else f"- {a.get('question', '')} Not accepted: {a.get('why', '')}"
+                      for a in judged]
         if h.get("issues_found"):
             lines += ["", "**Issues found outside this one** (proposals until you file them):"]
             lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
@@ -547,6 +553,59 @@ def problems_asks(r, ids):
     return bad
 
 
+ASSUMPTION_SHAPE = ('{"question": "the plan\'s question", "accepted": true | false, "changes": true | false, '
+                    '"matched": "the owner\'s words", "source": "where they said them"} (or "why" when not accepted)')
+
+
+def issue_url(number):
+    """The link of the issue on GitHub."""
+    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/issues/{number}"
+
+
+def owner_source(source, number):
+    """True when a source names the owner's words Dokima can check: the issue's own text, one of its comments, or AGENTS.md."""
+    return source == "AGENTS.md" or bool(re.fullmatch(re.escape(issue_url(number)) + r"(#issuecomment-\d+)?", source))
+
+
+def problems_assumptions(r, plan, number):
+    """Everything wrong with a plan review's judgements of the plan's questions: every question judged once, each
+    saying whether its assumption is accepted and whether it changes how the system works or what it costs; one
+    accepted never changes them and names the owner's words and where they said them; one not accepted says why."""
+    qs = [q.get("question") for q in plan.get("questions") or [] if isinstance(q, dict)]
+    judged = r.get("assumptions", [])
+    if not isinstance(judged, list):
+        return [f"assumptions must be a list, one per question of the plan, each {ASSUMPTION_SHAPE}"]
+    bad, seen = [], []
+    for i, a in enumerate(judged, 1):
+        if not isinstance(a, dict):
+            bad.append(f"assumptions item {i} must be an object, {ASSUMPTION_SHAPE}")
+            continue
+        q = a.get("question")
+        label = f"the assumption of \"{q}\""
+        if q not in qs:
+            bad.append(f"assumptions item {i} judges \"{q}\", which is not a question of the plan")
+            continue
+        seen.append(q)
+        if not isinstance(a.get("accepted"), bool):
+            bad.append(f"{label} needs accepted: true or false")
+        if not isinstance(a.get("changes"), bool):
+            bad.append(f"{label} needs changes: true or false, whether it changes how the system works or what it costs")
+        if a.get("accepted") is True:
+            if a.get("changes") is True:
+                bad.append(f"{label} is accepted though it changes how the system works or what it costs (changes is "
+                           "true): only the owner accepts such an assumption")
+            if not filled(a.get("matched")):
+                bad.append(f"{label} is accepted with no matched words: quote the owner's words it matches")
+            if not filled(a.get("source")) or not owner_source(a["source"].strip(), number):
+                bad.append(f"{label} needs a source: {issue_url(number)}, one of its comments' links, or AGENTS.md")
+        elif a.get("accepted") is False and not filled(a.get("why")):
+            bad.append(f"{label} is not accepted and needs why")
+    for q in qs:
+        if seen.count(q) != 1:
+            bad.append(f"the assumption of \"{q}\" must be judged exactly once in assumptions, {ASSUMPTION_SHAPE}")
+    return bad
+
+
 def problems_work(w):
     """Everything wrong with a work.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -696,6 +755,7 @@ def check(kind, path, plan_path=None, number=None):
             bad += problems_plan(kind, data, plan, number)
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
+                bad += problems_assumptions(data, plan, number)
     for b in bad:
         print(b)
     return 1 if bad else 0
@@ -825,17 +885,19 @@ def switch_autopilot(repo, number, switch):
     return switched
 
 
-def autopilot_comment(number, switch, switched, started=()):
-    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched, and every issue whose
-    planner it started."""
+def autopilot_comment(number, switch, switched, started=(), picked=""):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched, every issue whose
+    planner it started, and what of the issue's own waiting work it picked up."""
     names = ", ".join(f"#{n}" for n in switched)
     if switch == "start":
         said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
     else:
         said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
     if started:
-        return said + f" Planning started for {', '.join(f'#{n}' for n in started)}, which wait on nothing open.\n"
-    return said + " No stage was started.\n"
+        said += f" Planning started for {', '.join(f'#{n}' for n in started)}, which wait on nothing open."
+    if picked:
+        said += f" {picked}"
+    return said + ("\n" if started or picked else " No stage was started.\n")
 
 
 AUTOPILOT_LINE = "Autopilot: blockers merged, starting plan"
@@ -928,12 +990,64 @@ def autopilot_closed(repo):
     return did
 
 
-def next_step(items, rec, owners, rounds=3):
+AUTOPILOT_LINES = {"worker": "Autopilot: plan approved, starting work", "split": "Autopilot: split approved, filing its stories"}
+UNREAD = "Autopilot could not be read from GitHub, so nothing starts by itself."
+
+
+def on_autopilot(repo, number):
+    """True or False from the issue's own labels on GitHub; None when GitHub cannot say."""
+    try:
+        labels = json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("labels")
+    except (subprocess.CalledProcessError, json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(labels, list):
+        return None
+    return any((l.get("name") if isinstance(l, dict) else l) == AUTOPILOT for l in labels)
+
+
+def agents_text():
+    """AGENTS.md as the runtime has it, from main; empty when there is none."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "AGENTS.md")
+    try:
+        return open(path).read()
+    except OSError:
+        return ""
+
+
+def said_there(words, source, items, body, owners, number):
+    """True when the words appear word for word where the source says: the issue's own text, a code owner's comment on
+    this issue, or AGENTS.md. Anything else, a comment by anyone else (the bot included) or one not found, is False."""
+    flat = lambda t: " ".join((t or "").split())
+    words, source = flat(words), (source or "").strip()
+    if not words or not owner_source(source, number):
+        return False
+    if source == "AGENTS.md":
+        return words in flat(agents_text())
+    if source == issue_url(number):
+        from dokima.body import ask
+        return words in flat(ask(body))
+    return any(c.get("url") == source and (c.get("author") or {}).get("login") in owners and words in flat(c.get("body"))
+               for c in items)
+
+
+def not_accepted(items, h, owners, body, number):
+    """The questions of the reviewed plan whose assumption the review did not accept on the owner's real words."""
+    plan = latest(records(items), "planner")
+    qs = [q.get("question") for q in ((plan or {}).get("handback") or {}).get("questions") or [] if isinstance(q, dict)]
+    ok = {a.get("question") for a in h.get("assumptions") or [] if isinstance(a, dict) and a.get("accepted") is True
+          and a.get("changes") is False and said_there(a.get("matched"), a.get("source"), items, body, owners, number)}
+    return [q for q in qs if q not in ok]
+
+
+def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number=""):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
-    A planner hands to the reviewer unless it has questions for the owner. A worker hands to the reviewer. A blocking
-    review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
-    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
+    A planner hands to the reviewer unless it has questions for the owner and the issue is not on autopilot. A worker
+    hands to the reviewer. A blocking review sends the work back, until three blocks in a row at that stage since the
+    owner last spoke; then it is the owner's call. On autopilot (`autopilot()` says, None when GitHub cannot), an
+    approved plan goes to the worker and an approved split is filed, each ("start", role, stage, "autopilot"), once
+    the plan reviewer accepted every question's assumption on the owner's real words; a question not accepted stops.
+    Otherwise an approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
     cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
     if role == "cancelled":
@@ -944,18 +1058,36 @@ def next_step(items, rec, owners, rounds=3):
         return ("stop", "The hand-back was rejected by code, see the problems above. Fix the cause, then start the stage again.")
     if role == "planner":
         if h.get("questions"):
-            return ("stop", "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions.")
+            asked = "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions."
+            on = autopilot()
+            if on is None:
+                return ("stop", f"{UNREAD} {asked}")
+            return ("start", "reviewer", "plan") if on else ("stop", asked)
         return ("start", "reviewer", "plan")
     if role == "worker":
         return ("start", "reviewer", "pr")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
+    plan = (latest(records(items), "planner") or {}).get("handback") or {}
+    if stage == "plan" and verdict in ("approve", "block") and plan.get("questions"):
+        on = autopilot()
+        if on is None:
+            return ("stop", f"{UNREAD} The plan has questions for you. Answer with `/plan` and your words.")
+        left = not_accepted(items, h, owners, body, number) if on else []
+        if left:
+            return ("stop", "The reviewer did not accept the plan's assumption for: " + " ".join(f"\"{q}\"" for q in left)
+                    + " Answer with `/plan` and your words" + (", or say `/work` to build it on its assumptions." if verdict == "approve" else "."))
     if verdict == "approve" and stage == "plan" and test_fix(items, owners):
         return ("start", "worker", "")
+    if verdict == "approve" and stage == "plan":
+        on = autopilot()
+        if on:
+            return ("start", "split" if plan.get("kind") == "feature" else "worker", "", "autopilot")
+        why = "The plan is approved. Say `/work` to build it, or `/plan` with changes."
+        return ("stop", f"{UNREAD} {why}" if on is None else why)
     if verdict == "approve":
-        return ("stop", "The plan is approved. Say `/work` to build it, or `/plan` with changes." if stage == "plan" else
-                "The work is approved. Merge the pull request, or review it with a command to send it back.")
+        return ("stop", "The work is approved. Merge the pull request, or review it with a command to send it back.")
     if verdict == "escalate":
         return ("stop", "The reviewer escalated this to you, see why above.")
     last_owner = max([i for i, c in enumerate(items) if (c.get("author") or {}).get("login") in owners], default=-1)
@@ -965,6 +1097,26 @@ def next_step(items, rec, owners, rounds=3):
         return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
     to_planner = stage == "plan" or any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", []))
     return ("start", "planner" if to_planner else "worker", "")
+
+
+def waiting(items, owners, body, number):
+    """What `/autopilot start` picks up on the issue: "worker" for an approved plan waiting for `/work`, "split" for an
+    approved split not yet filed, else None, decided by the river as if the approval came on autopilot. Nothing is
+    picked up twice: not after the owner's `/work`, an Autopilot line, or a worker or split record since the approval."""
+    if not approved(records(items)):
+        return None
+    at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
+    for c in items[at + 1:]:
+        who = (c.get("author") or {}).get("login")
+        if (who in owners and command_of(c.get("body")) == "worker") or (who == BOT and (c.get("body") or "").strip().startswith("Autopilot:")) \
+                or is_record(c, "worker") or is_record(c, "split"):
+            return None
+    step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
+    if step[0] != "start" or step[3:] != ("autopilot",):
+        return None
+    if step[1] == "split" and latest(records(items), "split"):
+        return None
+    return step[1]
 
 
 def criteria_texts(plan):
@@ -998,6 +1150,9 @@ STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker"
 def board_place(rec, step):
     """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
     the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
+    if step[0] == "start" and step[1] == "split":
+        # Filing a split puts the parent in Work, as `/work` does.
+        return "Work", False
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
     return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
@@ -1020,6 +1175,8 @@ def move_card(repo, number, column, needs_you, spec, q=None):
 
 def next_line(step, owners):
     """The last line of a card: what happens next, mentioning the owner when it is their turn."""
+    if step[0] == "start" and step[1] == "split":
+        return "**Next:** The split's stories are filed now."
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
@@ -1036,7 +1193,8 @@ def main(argv):
     agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
     agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
     agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
-    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched) |
+    agent autopilot start|stop N [OUT]  (switches N's issue tree on or off autopilot, prints the comment naming what
+    switched; with OUT, `start` writes what it picks up to OUT/next.txt and its Autopilot line to OUT/autopilot.md) |
     agent closed N  (what autopilot does now that issue N closed, for every tree on autopilot)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
@@ -1144,15 +1302,26 @@ def main(argv):
         number, out = argv[2], argv[3]
         owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
         rec = json.load(open(os.path.join(out, "record.json")))
+        repo = os.environ["GITHUB_REPOSITORY"]
         # A run that never started stops for the owner, and a cancelled one stops, whatever the conversation says,
         # so it is not read.
-        items = [] if rec.get("role") in ("not-started", "cancelled") else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
-        step = next_step(items, rec, owners)
+        d, items = ({}, []) if rec.get("role") in ("not-started", "cancelled") else conversation(repo, number)
+        read = []
+
+        def autopilot():
+            # Read once, and only when the river's decision turns on it.
+            if not read:
+                read.append(on_autopilot(repo, number))
+            return read[0]
+        step = next_step(items, rec, owners, autopilot=autopilot, body=d.get("body") or "", number=number)
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
+        if step[3:] == ("autopilot",):
+            # The line the owner would have typed `/work` in place of; the workflow posts it on the issue.
+            open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
         open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
-        print(" ".join(step) if step[0] == "start" else "stop")
+        print(" ".join(step[:3]) if step[0] == "start" else "stop")
         return 0
     if argv[1] == "board":
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
@@ -1176,9 +1345,21 @@ def main(argv):
         switch, number = argv[2], argv[3]
         repo = os.environ["GITHUB_REPOSITORY"]
         switched = switch_autopilot(repo, number, switch)
+        pick = None
+        if switch == "start" and len(argv) > 4:
+            # What is already waiting for the owner's `/work` is picked up: written to OUT for the workflow to start.
+            owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+            d, items = conversation(repo, number)
+            pick = waiting(items, owners, d.get("body") or "", number)
+            os.makedirs(argv[4], exist_ok=True)
+            if pick:
+                open(os.path.join(argv[4], "autopilot.md"), "w").write(AUTOPILOT_LINES[pick] + "\n")
+                open(os.path.join(argv[4], "next.txt"), "w").write(pick + "\n")
+        picked = {"worker": f"#{number}'s approved plan goes to the worker now.",
+                  "split": f"#{number}'s approved split files its stories now."}.get(pick, "")
         # `/autopilot start` picks up every issue under the issue, at every level, that waits on nothing open.
         started = start_waiting(repo, issue_tree(repo, number)[1:]) if switch == "start" else []
-        sys.stdout.write(autopilot_comment(number, switch, switched, started))
+        sys.stdout.write(autopilot_comment(number, switch, switched, started, picked))
         return 0
     if argv[1] == "closed":
         for line in autopilot_closed(os.environ["GITHUB_REPOSITORY"]) or [f"#{argv[2]} closed: nothing on autopilot to do."]:
