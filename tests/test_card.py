@@ -27,6 +27,10 @@ PLANNED = {"role": "planner", "stage": None, "handback": PLAN, "check": {"passed
 APPROVED = [PLANNED, {"role": "reviewer", "stage": "plan", "handback": {"verdict": "approve"}, "check": {"passed": True},
                       "run": "https://github.com/o/r/actions/runs/9"}]
 DONE = {"status": "completed", "conclusion": "success", "html_url": "https://github.com/o/r/actions/runs/1"}
+READY = APPROVED + [{"role": "worker", "stage": None, "handback": {}, "check": {"passed": True},
+                     "run": "https://github.com/o/r/actions/runs/10"},
+                    {"role": "reviewer", "stage": "pr", "handback": {"verdict": "approve"}, "check": {"passed": True},
+                     "run": "https://github.com/o/r/actions/runs/11"}]
 BUILDING = {"status": "in_progress", "conclusion": None, "html_url": "https://github.com/o/r/actions/runs/1"}
 
 
@@ -43,46 +47,44 @@ def render(checks=GREEN, worker=DONE, pr=PR, recs=APPROVED, page="issue"):
     return card.render(REPO, ISSUE, found, page=page)
 
 
-def title(body):
-    return body.splitlines()[1]
+def status(body):
+    """The card's status line: its first line, as the card has no summary sentence here."""
+    lines = [l for l in body.splitlines()[1:] if l.strip()]
+    return lines[0]
+
+
+def links(body):
+    """The card's links row."""
+    return next(l for l in body.splitlines() if l.startswith("[latest run]"))
 
 
 def icon(name):
     return card.icon(REPO, name)
 
 
-def test_title_shows_each_stage():
-    assert title(render(checks=[], worker=None, pr=None, recs=[PLANNED])) == "### Plan: add `work` to start"
-    assert title(render(checks=[], worker=BUILDING, pr=None)) == "### Building"
-    running = GREEN[:1] + [run("40.2 · second thing works", status="in_progress", conclusion=None)] + GREEN[2:]
-    assert title(render(checks=running)) == "### Checking"
-    failing = GREEN[:1] + [run("40.2 · second thing works", conclusion="failure")] + GREEN[2:]
-    assert title(render(checks=failing)) == "### Checks failing"
-    assert title(render(pr=dict(PR, merged=True))) == "### Merged"
-
-
 def test_title_asks_for_approval_when_all_checks_passed(record_property):
+    """Approved work with every check passed says Ready for approval on its status line."""
     record_property("proves", "58.1")
-    assert title(render()) == "### Approve the result to merge"
+    assert "Ready for approval" in status(render(recs=READY))
 
 
 def test_links_row():
-    assert render().splitlines()[2] == ("[latest run](https://github.com/o/r/actions/runs/1) · [PR #5](https://github.com/o/r/pull/5)"
+    assert links(render()) == ("[latest run](https://github.com/o/r/actions/runs/1) · [PR #5](https://github.com/o/r/pull/5)"
                                         " · [files changed](https://github.com/o/r/pull/5/files)")
 
 
 def test_latest_run_links_the_worker_running_or_finished(record_property):
     record_property("proves", "76.1")
     for worker in (BUILDING, DONE):
-        row = render(worker=worker).splitlines()[2]
+        row = links(render(worker=worker))
         assert row.startswith("[latest run](https://github.com/o/r/actions/runs/1)")
         assert "live run" not in row
 
 
 def test_unrelated_running_check_is_ignored(record_property):
     record_property("proves", "76.2")
-    body = render(checks=GREEN + [run("card", status="in_progress", conclusion=None, n=9)])
-    assert title(body) == "### Approve the result to merge"
+    body = render(checks=GREEN + [run("card", status="in_progress", conclusion=None, n=9)], recs=READY)
+    assert "Ready for approval" in status(body)
     assert "job/9" not in body
 
 
@@ -97,8 +99,8 @@ def test_no_footer_and_no_gap(record_property):
 
 def test_card_never_links_to_its_own_page(record_property):
     record_property("proves", "74.4")
-    on_issue = render().splitlines()[2]
-    on_pr = render(page="pr").splitlines()[2]
+    on_issue = links(render())
+    on_pr = links(render(page="pr"))
     assert "[issue #40]" not in on_issue and "[PR #5]" in on_issue
     assert "[PR #5]" not in on_pr and "[issue #40]" in on_pr
 

@@ -15,7 +15,7 @@ from dokima import planner  # noqa: E402
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 PROMPT = " ".join(open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read().split())
 SRC = "https://github.com/o/r/issues/9"
-STORY = {"kind": "user_story", "user_story": "Slow calls return a job id.",
+STORY = {"kind": "user_story", "summary": "Slow calls hand back a job id instead of timing out.", "user_story": "Slow calls return a job id.",
          "acceptance_criteria": [{"text": "A slow call returns a job id within 20 s.", "source": SRC}],
          "non_functional": [{"text": "Job ids never repeat.", "why": "two jobs would share results", "principle": "fail closed"}],
          "scope": ["dokima/jobs.py"], "out_of_scope": ["No retries."],
@@ -86,9 +86,9 @@ def test_a_feature_is_shown_as_handed_back(record_property, tmp_path):
     """
     record_property("proves", "138.2")
     story = {"title": "t", "user_story": "u", "acceptance_criteria": [{"text": "a", "source": SRC}], "depends_on": []}
-    assert hand_back(tmp_path, {"kind": "feature", "feature": "f", "stories": [story, story]})[0] == "feature", "138.2: feature not read"
+    assert hand_back(tmp_path, {"kind": "feature", "summary": "s", "feature": "f", "stories": [story, story]})[0] == "feature", "138.2: feature not read"
     with pytest.raises(planner.Garbled, match="2 to 5"):
-        hand_back(tmp_path, {"kind": "feature", "feature": "f", "stories": [story]})
+        hand_back(tmp_path, {"kind": "feature", "summary": "s", "feature": "f", "stories": [story]})
 
 
 def test_labels_come_from_the_plan_not_from_test_text(record_property):
