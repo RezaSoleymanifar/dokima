@@ -135,7 +135,7 @@ def run_card(monkeypatch, github, current):
 
 REASON = "the owner's part below the marker would change"
 
-PLAN_TESTS = ('def test_card(record_property):\n    """The card shows."""\n'
+PLAN_TESTS = ('def test_card(record_property):\n    """The card shows.\n\n    Proves 40.1.\n    """\n'
               '    record_property("proves", "40.1")\n    assert False\n')
 PLAN = {"kind": "user_story", "summary": "Every issue shows a card.", "user_story": "Owners see a card on every issue.",
         "acceptance_criteria": [{"text": "The issue shows a card on top.", "source": f"https://github.com/{REPO}/issues/{NUMBER}"}],
