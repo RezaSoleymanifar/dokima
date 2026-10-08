@@ -19,8 +19,8 @@ from dokima import planner  # noqa: E402
 from tests.test_plan_check import ROOT, STORY, check  # noqa: E402,F401
 
 
-def jobs(id_doc='"""A slow call returns a job id."""', id_body='assert False, "9.1: no job id yet"',
-         unique_doc='"""Job ids never repeat."""', unique_body='assert False, "9.2: no job ids yet"', top=""):
+def jobs(id_doc='"""A slow call returns a job id.\n\n    Proves 9.1.\n    """', id_body='assert False, "9.1: no job id yet"',
+         unique_doc='"""Job ids never repeat.\n\n    Proves 9.2 and 9.3.\n    """', unique_body='assert False, "9.2: no job ids yet"', top=""):
     """The planner's tests/test_jobs.py, with the two tests STORY names; by default both have a summary and fail."""
     def one(name, key, doc, body):
         lines = [f"def {name}(record_property):"] + ([f"    {doc}"] if doc else [])
@@ -89,8 +89,10 @@ def test_a_new_test_without_a_one_sentence_summary_is_rejected_naming_it(record_
     """
     record_property("proves", "155.1")
     plan = change_legacy()
-    for good in ('"""A slow call returns a job id within 1.5 s."""', '"""Does a slow call return a job id?"""',
-                 '"""A slow call returns a job id!"""', '"""A slow call returns a job id.\n\n    More words. And more."""'):
+    for good in ('"""A slow call returns a job id within 1.5 s.\n\n    Proves 9.1.\n    """',
+                 '"""Does a slow call return a job id?\n\n    Proves 9.1.\n    """',
+                 '"""A slow call returns a job id!\n\n    Proves 9.1.\n    """',
+                 '"""A slow call returns a job id.\n\n    More words. And more. Proves 9.1."""'):
         write_jobs(jobs(id_doc=good))
         rc, why = legacy({"plan.json": plan}, "155.1")
         assert rc == 0 and not why, \
