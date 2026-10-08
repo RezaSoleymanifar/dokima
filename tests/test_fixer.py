@@ -7,6 +7,7 @@ names its criterion on every failure. A plan for issue 9 with criteria 9.1 to 9.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,9 +32,12 @@ def blocker(id_, fixer, criterion="9.1"):
 
 
 def review(*blockers, verdict="block"):
-    """A well-formed review.json holding these blockers."""
+    """A well-formed review.json holding these blockers, listing the owner's one ask matched to 9.1.
+
+    A plan review must list every ask and a code review may, so the sample passes code's check on any stage (#244)."""
     return {"previous_step": {"did": ["Built it."], "decided": [], "open": []}, "verdict": verdict,
-            "summary": "s", "blockers": list(blockers), "notes": [], "outside_plan": [], "resolved": []}
+            "summary": "s", "blockers": list(blockers), "notes": [], "outside_plan": [], "resolved": [],
+            "asks": [{"ask": "Paint the door blue", "source": "https://github.com/o/r/issues/9", "criterion": "9.1"}]}
 
 
 def rec(role, stage="", handback=None):
@@ -66,17 +70,26 @@ def check_review(tmp_path, handback):
     return r.returncode, r.stdout, r.stderr
 
 
-def test_every_review_blocker_names_the_worker_or_the_planner(record_property, tmp_path):
+def test_every_review_blocker_names_the_worker_or_the_planner(record_property, tmp_path, monkeypatch):
     """A review passes its check only when every blocker says who fixes it, the worker or the planner.
 
-    Runs the real hand-back check: a blocker for the worker, one for the planner, and both together pass. A blocker
-    with no fixer, an empty one, one naming the reviewer or the owner, and a number are each rejected with exit 1, a
-    reason naming the blocker's id and the fixer field, and no crash, also when the other blocker is well formed."""
+    Runs the real hand-back check: a blocker for the worker, one for the planner, and both together pass, on every
+    stage a machine may run on (STAGE unset, plan or pr), since the sample review lists the owner's asks (#244). A
+    blocker with no fixer, an empty one, one naming the reviewer or the owner, and a number are each rejected with
+    exit 1, a reason naming the blocker's id and the fixer field, and no crash, also when the other blocker is well formed."""
     record_property("proves", "166.1")
-    for case in (review(blocker("B1", "worker")), review(blocker("B1", "planner")),
-                 review(blocker("B1", "worker"), blocker("B2", "planner"))):
-        code, out, err = check_review(tmp_path, case)
-        assert (code, out.strip()) == (0, ""), f"166.1: a review whose blockers name their fixer was rejected: {out}{err[-400:]}"
+    record_property("proves", "244.1")
+    for stage in ("", "plan", "pr"):
+        if stage:
+            monkeypatch.setenv("STAGE", stage)
+        else:
+            monkeypatch.delenv("STAGE", raising=False)
+        for case in (review(blocker("B1", "worker")), review(blocker("B1", "planner")),
+                     review(blocker("B1", "worker"), blocker("B2", "planner"))):
+            code, out, err = check_review(tmp_path, case)
+            assert (code, out.strip()) == (0, ""), \
+                f"166.1, 244.1: a review whose blockers name their fixer was rejected with STAGE={stage or 'unset'}: {out}{err[-400:]}"
+    monkeypatch.delenv("STAGE", raising=False)
     for bad in (None, "", "reviewer", "owner", 5):
         code, out, err = check_review(tmp_path, review(blocker("B1", "worker"), blocker("B2", bad)))
         assert "Traceback" not in err + out, f"166.1: the check crashed on fixer {bad!r}:\n{err[-600:]}"
@@ -93,7 +106,9 @@ def test_the_review_comment_shows_who_fixes_each_blocker(record_property):
     not the worker, and B2's line names the worker and not the planner."""
     record_property("proves", "166.1")
     body = agent.render(rec("reviewer", "pr", review(blocker("B1", "planner"), blocker("B2", "worker", "9.2"))))
-    lines = {b: [l for l in body.splitlines() if l.startswith(f"- **{b}**")] for b in ("B1", "B2")}
+    # The blocker icon code draws in front of each blocker (issue #234) is not part of its words.
+    plain = [re.sub(r"<img [^>]*>\s*", "", l) for l in body.splitlines()]
+    lines = {b: [l for l in plain if l.startswith(f"- **{b}**")] for b in ("B1", "B2")}
     assert len(lines["B1"]) == 1 and len(lines["B2"]) == 1, f"166.1: each blocker needs exactly one line in the comment:\n{body}"
     assert "planner" in lines["B1"][0] and "worker" not in lines["B1"][0], f"166.1: B1's line does not say the planner fixes it: {lines['B1'][0]}"
     assert "worker" in lines["B2"][0] and "planner" not in lines["B2"][0], f"166.1: B2's line does not say the worker fixes it: {lines['B2'][0]}"
@@ -125,6 +140,9 @@ def fake_github(monkeypatch, recs):
             return json.dumps({"number": 9, "title": "T", "body": "B", "comments": comments})
         if args[:2] == ("pr", "list"):
             return "[]"
+        if args[:2] == ("issue", "list") or (args[0] == "api" and args[1].lstrip("/").startswith("repos/o/r/issues")
+                                             and "/comments" not in args[1]):
+            return "[]"  # the repo's open issues, which the planner's pack lists
         raise AssertionError(f"unexpected gh call {args}")
     monkeypatch.setattr(agent, "gh", gh)
 
@@ -142,7 +160,7 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     agent.pack("o/r", 9, "planner", "", str(tmp_path / "p"))
     got = [b.get("id") for b in json.load(open(tmp_path / "p" / "open_blockers.json"))]
     assert got == ["B1"], f"166.3: the planner was handed blockers {got}, not exactly the test blocker B1"
-    assert agent.problems_round("planner", {"replies": []}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
+    assert agent.problems_round("planner", {"replies": [], "links": {"blocked_by": [], "blocks": [], "relates_to": []}}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
         "166.3: the planner's hand-back may skip the code review's test blocker B1"
     fake_github(monkeypatch, base + [rec("planner", handback=STORY), PLAN_OK])
     agent.pack("o/r", 9, "worker", "", str(tmp_path / "w"))

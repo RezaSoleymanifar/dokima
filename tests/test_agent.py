@@ -1,6 +1,7 @@
 """An agent's hand-back is checked by code before anyone else sees it: well formed passes, every malformation is named."""
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -216,7 +217,10 @@ def test_each_round_answers_every_open_blocker(record_property, tmp_path):
     record_property("proves", "agent.14")
     (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}, {"id": "B2"}]))
     assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}, {"blocker": "B2"}]}, str(tmp_path)) == []
-    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}]}, str(tmp_path)) == ["blocker B2 is not answered"]
+    (tmp_path / "issue.md").write_text("# Issue #9: T\n\n## Comments\n")
+    (tmp_path / "open_issues.json").write_text("[]")
+    links = {"blocked_by": [], "blocks": [], "relates_to": []}
+    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}], "links": links}, str(tmp_path)) == ["blocker B2 is not answered"]
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": [{"id": "B2"}]}, str(tmp_path)) == []
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": []}, str(tmp_path)) == ["earlier blocker B2 is neither resolved nor still listed"]
     assert agent.problems_round("worker", {}, str(tmp_path / "none")) == []
@@ -312,7 +316,8 @@ def test_an_approved_split_is_filed_as_sub_issues_with_their_order(record_proper
     body = [c[c.index("--body") + 1] for c in calls if c[:2] == ("issue", "create")][1]
     assert "Part of:** #139 Parent" in body and "u2" in body and "[source](https://x/2)" in body
     card = agent.render(r)
-    assert "#202 Second (blocked by #201)" in card and "no model" in card
+    words = re.sub(r"<img [^>]*>\s*", "", card)  # the field icons code draws (issue #234) are not words
+    assert "#202 Second (blocked by #201)" in words and "no model" in words
     calls.clear()
     again = agent.file_split("o/r", 139, recs + [r])
     assert again == r and not [c for c in calls if c[:2] == ("issue", "create")], "filing twice filed new issues"

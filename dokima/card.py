@@ -32,6 +32,14 @@ TODO = {"questions": "Answer the questions with /plan, or say /review",
         "not every check passed": "See why not every check passed"}
 STAGES = {"Backlog", "Plan", "Work", "Review", "Merged"}
 ICON_FILE = {"passed": "passed", "failed": "failed", "running": "running", "not started": "none"}
+# Every field a card or run comment shows, and its own Octicon in dokima/icons/. Fixed here, never chosen by an agent.
+FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-review", "code review": "code-review",
+               "autopilot": "autopilot", "passed": "passed", "failed": "failed", "needs you": "needs-you",
+               "owner approval": "owner-approval", "merged": "merged", "still open": "still-open",
+               "acceptance criterion": "acceptance-criterion", "verified by": "verified-by",
+               "files changed": "files-changed", "question": "question", "blocker": "blocker", "note": "note",
+               "outside the plan": "outside-the-plan", "issue found": "issue-found", "related": "related",
+               "blocked by": "blocked-by", "blocks": "blocks", "stats": "stats"}
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
 
 
@@ -39,6 +47,11 @@ def icon(repo, name, alt=None):
     """One of GitHub's own circle icons (Octicons, MIT), served from this repo, centered on its line."""
     url = f"https://raw.githubusercontent.com/{repo}/main/dokima/icons/{name}.svg"
     return f'<img src="{url}" width="16" height="16" align="absmiddle" alt="{alt or name}">'
+
+
+def field_icon(repo, field):
+    """The fixed icon of a field, drawn in front of it, with the field's name as its alt text."""
+    return icon(repo, FIELD_ICONS[field], alt=field)
 
 
 def state(check):
@@ -135,50 +148,58 @@ def status(issue, found):
     return column, todo(issue, found, rec) if needs else None
 
 
-def status_line(stage, todo):
+def status_line(repo, stage, todo):
     """The small status line under the summary: the stage, then Needs you and the owner's to-do when there is one."""
-    return f"**{stage}**" + (f" · Needs you: {todo}" if todo else "")
+    head = f"{field_icon(repo, 'merged')} **{stage}**" if stage == "Merged" else f"**{stage}**"
+    return head + (f" · {field_icon(repo, 'needs you')} Needs you: {todo}" if todo else "")
 
 
 def child_row(repo, child):
     """One child of a split: its link, its title and its stage, or unknown when its stage could not be read."""
     st = child.get("stage") if child.get("stage") in STAGES else "unknown"
+    if st == "Merged":
+        st = f"{field_icon(repo, 'merged')} {st}"
     n = child["number"]
     return f"- [#{n}](https://github.com/{repo}/issues/{n}) {escape(child.get('title'))} · {st}"
 
 
-def links_row(repo, issue, pr, worker, check_runs, page):
-    """The links that matter, minus a link to the page the card is on ("issue" or "pr")."""
+def links_row(repo, issue, pr, worker, check_runs):
+    """The links that matter, the issue and its PR both included, so the card reads the same on either page."""
     links = []
     if worker:
         links.append(f"[latest run]({worker['html_url']})")
-    if page != "issue":
-        links.append(f"[issue #{issue['number']}]({issue['url']})")
-    if pr and page != "pr":
+    links.append(f"[issue #{issue['number']}]({issue['url']})")
+    if pr:
         links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
     if pr:
-        links.append(f"[files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
+        links.append(f"{field_icon(repo, 'files changed')} [files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
 
 
-def criterion_row(repo, text, check, tests):
-    """One criterion as a table row: its circle alone in the first cell, hanging outside its words, linked to its check;
-    then its words and, when any of its tests has a docstring, Verified by with each one linking to its test."""
-    st = state(check)
-    words = escape(text)
-    proofs = [f'<a href="{t["url"]}">{escape(t["verified_by"])}</a>' for t in tests if t and t.get("verified_by")]
-    if proofs:
-        words += "<br>Verified by: " + "; ".join(proofs)
-    return f"<tr><td>{circle(repo, st, check and check['html_url'])}</td><td>{words}</td></tr>"
+def criterion_item(repo, label, c, check, tests):
+    """One criterion as a bullet: its status circle, its label and its words, linked to its check when there is one;
+    under it one italic Verified by line per test with a docstring, only the words Verified by linking to the test,
+    then Source linking to where the owner asked for it, when it has one."""
+    words = escape(c.get("text"))
+    if check:
+        words = f'<a href="{check["html_url"]}">{words}</a>'
+    out = [f"- {circle(repo, state(check))} **{label}:** {words}"]
+    for t in tests:
+        if t and t.get("verified_by"):
+            out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
+                       f'{escape(t["verified_by"])}*')
+    if c.get("source"):
+        out.append(f'  - <a href="{c["source"]}">Source</a>')
+    return out
 
 
-def criteria_table(repo, number, start, criteria, plan_tests, by_key, tests):
-    """The table of criteria numbered from `start`, each row with its own check and tests."""
-    out = ["<table>"]
+def criteria_list(repo, number, start, label, criteria, plan_tests, by_key, tests):
+    """The bullet list of criteria numbered from `start`, each with its own check and tests."""
+    out = []
     for k, c in enumerate(criteria, start):
         key = f"{number}.{k}"
-        out.append(criterion_row(repo, c.get("text"), by_key.get(key), [tests.get(t) for t in plan_tests.get(key, [])]))
-    return out + ["</table>"]
+        out += criterion_item(repo, label, c, by_key.get(key), [tests.get(t) for t in plan_tests.get(key, [])])
+    return out
 
 
 def code_review(recs):
@@ -196,21 +217,30 @@ def owner_review(reviews, owners):
     return found[-1] if found else None
 
 
+def owner_merge(pr, owners):
+    """The PR when a code owner merged it, which counts as their approval; None otherwise."""
+    merger = ((pr or {}).get("merged_by") or {}).get("login")
+    return pr if pr and pr.get("merged") and merger in owners else None
+
+
 def done_row(repo, found, all_tests):
-    """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof."""
+    """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof.
+    A code owner's merge is their approval, with or without an Approve review."""
     review = code_review(found["recs"])
     review_st = "not started" if not review else "passed" if review["handback"].get("verdict") == "approve" else "failed"
-    approval = owner_review(found["reviews"], found["owners"])
+    merge = owner_merge(found["pr"], found["owners"])
+    approval = {"state": "APPROVED", "html_url": merge.get("html_url")} if merge else owner_review(found["reviews"], found["owners"])
     approval_st = "not started" if not approval else "passed" if approval["state"] == "APPROVED" else "failed"
     return ("**Definition of Done:** "
             f"{circle(repo, state(all_tests), all_tests and all_tests['html_url'])} All tests · "
-            f"{circle(repo, review_st, review and review.get('run'))} Code review · "
-            f"{circle(repo, approval_st, approval and approval.get('html_url'))} Owner approval")
+            f"{circle(repo, review_st, review and review.get('run'))} {field_icon(repo, 'code review')} Code review · "
+            f"{circle(repo, approval_st, approval and approval.get('html_url'))} {field_icon(repo, 'owner approval')} "
+            "Owner approval")
 
 
 def render(repo, issue, found, page="issue"):
-    """The card for `issue` on `page` ("issue" or "pr"), drawn only from `found`: the agents' records, the PR, its
-    latest commit's checks, its reviews, the code owners, the plan's tests and the latest worker run."""
+    """The card for `issue`, drawn only from `found`: the agents' records, the PR, its latest commit's checks, its
+    reviews, the code owners, the plan's tests and the latest worker run. It is the same on either `page`."""
     from dokima import agent
     recs, pr, check_runs, worker = found["recs"], found["pr"], found["check_runs"], found["worker"]
     by_key = checks_by_key(check_runs)
@@ -220,8 +250,8 @@ def render(repo, issue, found, page="issue"):
     lines = [plan.CARD_START]
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
-    lines += [status_line(*status(issue, found)), ""]
-    links = links_row(repo, issue, pr, worker, check_runs, page)
+    lines += [status_line(repo, *status(issue, found)), ""]
+    links = links_row(repo, issue, pr, worker, check_runs)
     if links:
         lines += [links, ""]
     children = found.get("children") or []
@@ -234,11 +264,12 @@ def render(repo, issue, found, page="issue"):
         tests, plan_tests = found["tests"], h.get("tests") or {}
         if h.get("user_story"):
             lines += [f"**User story:** {escape(h['user_story'])}", ""]
-        lines += ["**Acceptance criteria**", ""]
-        lines += criteria_table(repo, issue["number"], 1, criteria, plan_tests, by_key, tests) + [""]
+        lines += [f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria**", ""]
+        lines += criteria_list(repo, issue["number"], 1, "Acceptance criterion", criteria, plan_tests, by_key, tests) + [""]
         if nfr:
             lines += fold("Non-functional requirements",
-                          criteria_table(repo, issue["number"], len(criteria) + 1, nfr, plan_tests, by_key, tests)) + [""]
+                          criteria_list(repo, issue["number"], len(criteria) + 1, "Non-functional requirement", nfr,
+                                        plan_tests, by_key, tests)) + [""]
         lines += ["**Scope:**", ""] + [f"- {escape(s)}" for s in h.get("scope") or []] + [""]
         lines += ["**Out of scope:**", ""] + [f"- {escape(s)}" for s in h.get("out_of_scope") or []] + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
@@ -411,7 +442,7 @@ def gallery(repo, out):
         found = {"recs": agent.records(items), "items": items, "pr": pr_, "check_runs": check_runs, "reviews": [],
                  "owners": {owner}, "tests": {}, "worker": worker, "children": children}
         with open(os.path.join(out, f"{name}.md"), "w") as f:
-            f.write(render(repo, issue, found, page="pr" if pr_ else "issue") + "\n")
+            f.write(render(repo, issue, found) + "\n")
         print(f"Drew {name}.md")
 
 
@@ -430,9 +461,10 @@ def main():
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
     if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
         print(f"Card written into issue #{number}")
-    if pr and pr["state"] == "open":
+    # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
+    if pr:
         with open("pr.md", "w") as f:
-            f.write(pr_body(render(repo, issue, found, page="pr"), pr.get("body")))
+            f.write(pr_body(render(repo, issue, found), pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
 
