@@ -118,6 +118,13 @@ def run_card(monkeypatch, github, current):
     monkeypatch.setattr(card, "find_work", lambda repo: (NUMBER, None))
     monkeypatch.setattr(card, "latest_worker_run", lambda repo, n: None)
     monkeypatch.setattr(plan, "fetch_issue", lambda repo, n: issue)
+    # The card is drawn from the agents' records (#180): the plan record holds the same criterion as PLAN_TOP.
+    planned = {"role": "planner", "stage": None, "check": {"passed": True}, "run": "https://github.com/o/r/actions/runs/1",
+               "handback": {"kind": "user_story", "user_story": "Owners see a card.", "non_functional": [],
+                            "acceptance_criteria": [{"text": "first thing works", "source": issue["url"]}],
+                            "scope": ["dokima/card.py"], "out_of_scope": [], "tests": {}}}
+    found = {"recs": [planned], "pr": None, "check_runs": [], "reviews": [], "owners": set(), "tests": {}, "worker": None}
+    monkeypatch.setattr(card, "gather", lambda repo, n, pr: found, raising=False)
     before = len(github.saves)
     try:
         card.main()
