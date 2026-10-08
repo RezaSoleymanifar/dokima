@@ -76,7 +76,8 @@ def test_a_question_that_is_anything_else_is_rejected_saying_which_and_why(recor
 
 def readable(rec):
     """The part of a record comment the owner reads: everything above the folded full record."""
-    return agent.render(rec).split("<details><summary>Full record</summary>")[0]
+    # The field icons code draws (issue #234) are not words; their alt text names the field, as in alt="question".
+    return re.sub(r"<img [^>]*>", "", agent.render(rec).split("<details><summary>Full record</summary>")[0])
 
 
 @pytest.mark.parametrize("kind", ["user_story", "feature"])
