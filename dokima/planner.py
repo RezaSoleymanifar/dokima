@@ -137,6 +137,9 @@ def from_kind(p, issue=None):
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
         check_stories(stories, issue)
+        bad = problems_questions(p.get("questions", []))
+        if bad:
+            raise Garbled("; ".join(bad))
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
         raise Garbled(f"plan.json kind is {kind!r}: {ALWAYS}")
