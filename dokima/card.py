@@ -54,6 +54,19 @@ def field_icon(repo, field):
     return icon(repo, FIELD_ICONS[field], alt=field)
 
 
+def link_lines(repo, links):
+    """One line per kind of link a plan has (Blocked by, Blocks, Relates to), each with its own icon; none for a kind
+    with no links or a plan with no links field."""
+    links = links if isinstance(links, dict) else {}
+    out = []
+    for kind, field, label in (("blocked_by", "blocked by", "Blocked by"), ("blocks", "blocks", "Blocks"),
+                               ("relates_to", "related", "Relates to")):
+        numbers = links.get(kind) if isinstance(links.get(kind), list) else []
+        if numbers:
+            out.append(f"{field_icon(repo, field)} **{label}:** " + ", ".join(f"#{n}" for n in numbers))
+    return out
+
+
 def state(check):
     """GitHub's verdict for one check run (already filtered to the PR's latest commit): passed, failed, running or not started."""
     if check is None:
@@ -249,6 +262,9 @@ def render(repo, issue, found, page="issue"):
     else:
         criteria, nfr = h.get("acceptance_criteria") or [], h.get("non_functional") or []
         tests, plan_tests = found["tests"], h.get("tests") or {}
+        related = link_lines(repo, h.get("links"))
+        if related:
+            lines += related + [""]
         if h.get("user_story"):
             lines += [f"**User story:** {escape(h['user_story'])}", ""]
         lines += [f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria**", ""]
