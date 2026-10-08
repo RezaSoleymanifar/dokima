@@ -518,6 +518,26 @@ def problems_review(r):
     return bad
 
 
+def problems_asks(r, ids):
+    """Everything wrong with a plan review's asks list: every ask the owner made, in their words, with a link to where
+    they said it and the plan's criterion (one of ids) that keeps it, or "missing"; an approve keeps every ask."""
+    asks = r.get("asks")
+    if not isinstance(asks, list) or not asks:
+        return ["asks must list every ask in the owner's issue and comments, each {\"ask\": \"the owner's words\", "
+                "\"source\": \"a link to where they said it\", \"criterion\": \"N.k\" or \"missing\"}"]
+    bad = problems_items(r, "asks", ("ask", "source", "criterion"), name="ask")
+    good = [a for a in asks if isinstance(a, dict) and all(filled(a.get(k)) for k in ("ask", "source", "criterion"))]
+    for a in good:
+        c = a["criterion"].strip()
+        if c != "missing" and c not in ids:
+            bad.append(f"the ask \"{a['ask']}\" is matched to {c}, which is not a criterion of the plan "
+                       f"({', '.join(ids) or 'none'})")
+    gone = [a["ask"] for a in good if a["criterion"].strip() == "missing"]
+    if r.get("verdict") == "approve" and gone:
+        bad.append("an approve keeps every ask, but these are marked missing: " + "; ".join(f'"{g}"' for g in gone))
+    return bad
+
+
 def problems_work(w):
     """Everything wrong with a work.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -665,6 +685,8 @@ def check(kind, path, plan_path=None, number=None):
             bad.append(f"the issue number {number!r} is not a number: the hand-back can't be checked against the plan")
         else:
             bad += problems_plan(kind, data, plan, number)
+            if kind == "review" and os.environ.get("STAGE") == "plan":
+                bad += problems_asks(data, plan_criteria(plan, number))
     for b in bad:
         print(b)
     return 1 if bad else 0
@@ -737,18 +759,71 @@ def issue_of_pr(head, body):
     return m.group(1) if m else None
 
 
+def autopilot_of(body):
+    """"start" or "stop" when a comment's first line begins `/autopilot start` or `/autopilot stop`; otherwise None."""
+    first = (body or "").strip().splitlines()[0].split() if (body or "").strip() else []
+    if len(first) >= 2 and first[0].lower() == "/autopilot" and first[1].lower() in ("start", "stop"):
+        return first[1].lower()
+    return None
+
+
 def route(body, on_pr, number, head="", pr_body=""):
     """What a code owner's comment starts: {role, stage, issue}, or None when it starts nothing.
 
-    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue."""
-    role = command_of(body)
-    if not role:
+    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue.
+    `/autopilot start|stop` starts no stage: it routes to {autopilot, issue}, the issue whose tree it switches."""
+    role, switch = command_of(body), autopilot_of(body)
+    if not role and not switch:
         return None
     issue = issue_of_pr(head, pr_body) if on_pr else str(number)
     if not issue:
         return None
+    if switch:
+        return {"autopilot": switch, "issue": issue}
     stage = ("pr" if on_pr else "plan") if role == "reviewer" else ""
     return {"role": role, "stage": stage, "issue": issue}
+
+
+AUTOPILOT = "autopilot"
+
+
+def issue_tree(repo, number):
+    """The issue and every sub-issue under it, at every level, from GitHub's native sub-issues; parents first."""
+    tree, todo = [], [int(number)]
+    while todo:
+        n = todo.pop(0)
+        if n in tree:
+            continue
+        tree.append(n)
+        # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+        todo += [c["number"] for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/sub_issues?per_page=100") or "[]")]
+    return tree
+
+
+def switch_autopilot(repo, number, switch):
+    """Put the issue's tree on autopilot ("start") or take it off ("stop"), touching no other label; returns the
+    issues switched: those whose `autopilot` label was added or removed."""
+    switched = []
+    for n in issue_tree(repo, number):
+        labels = {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("labels", [])}
+        if switch == "start" and AUTOPILOT not in labels:
+            # Adding a label GitHub does not have yet creates it.
+            gh("api", "-X", "POST", f"repos/{repo}/issues/{n}/labels", "-f", f"labels[]={AUTOPILOT}")
+            switched.append(n)
+        elif switch == "stop" and AUTOPILOT in labels:
+            gh("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/{AUTOPILOT}")
+            switched.append(n)
+    return switched
+
+
+def autopilot_comment(number, switch, switched):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched."""
+    names = ", ".join(f"#{n}" for n in switched)
+    if switch == "start":
+        said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
+    else:
+        said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
+    return said + " No stage was started.\n"
 
 
 def next_step(items, rec, owners, rounds=3):
@@ -858,7 +933,8 @@ def main(argv):
     agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
     agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
     agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
-    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id)"""
+    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
+    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -986,6 +1062,11 @@ def main(argv):
             needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+        return 0
+    if argv[1] == "autopilot":
+        switch, number = argv[2], argv[3]
+        switched = switch_autopilot(os.environ["GITHUB_REPOSITORY"], number, switch)
+        sys.stdout.write(autopilot_comment(number, switch, switched))
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

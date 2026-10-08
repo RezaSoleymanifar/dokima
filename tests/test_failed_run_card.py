@@ -58,7 +58,8 @@ BLOCK = {"previous_step": {"did": ["Planned one criterion."], "decided": [], "op
          "stage": "plan", "round": 1, "verdict": "block", "summary": "One test proves nothing.",
          "blockers": [{"id": "B1", "criterion": "57.1", "test": "tests/test_x.py::test_a", "problem": "It asserts nothing.",
                        "evidence": "test_a has no assert.", "fix": "Assert the value.", "fixer": "planner"}],
-         "notes": [], "outside_plan": [], "resolved": []}
+         "notes": [], "outside_plan": [], "resolved": [],
+         "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": "57.1"}]}
 
 
 def board_state(path):

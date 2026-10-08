@@ -1,0 +1,11 @@
+{
+ "summary": "`agent board` read board.txt with no fallback, so when the run's \"Decide what follows\" step failed (or nothing was written) it crashed and the card was never moved or marked. Now, without a readable board.txt, it places the card as a stop for the owner: the column of the run's own stage from record.json, or from the run's ROLE and STAGE when there is no record, with Needs you.",
+ "criteria": {
+  "132.1": "dokima/agent.py main() 'board': when board.txt is missing or unreadable, board_place(record, ('stop',)) puts the issue and its open PR in the record's stage column with Needs you; runs that decided still use board.txt, so a hand-on keeps the pill cleared.",
+  "132.2": "dokima/agent.py main() 'board': with no record.json either, it falls back to the job's ROLE and STAGE env for the column, sets Needs you, and exits 0."
+ },
+ "evidence": "pytest -q: 273 passed in 22.40s",
+ "outside_scope": [],
+ "suspect_tests": [],
+ "replies": []
+}

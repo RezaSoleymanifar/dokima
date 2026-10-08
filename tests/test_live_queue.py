@@ -30,7 +30,8 @@ BLOCK = {"previous_step": {"did": ["Planned one criterion."], "decided": [], "op
          "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
          "blockers": [{"id": "B1", "criterion": f"{N}.1", "test": None, "problem": "No good-case test.",
                        "evidence": "The plan has one test for the bad case only.", "fix": "Add one.", "fixer": "planner"}],
-         "notes": [], "outside_plan": [], "resolved": []}
+         "notes": [], "outside_plan": [], "resolved": [],
+         "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": f"{N}.1"}]}
 WORK = {"summary": "Made it.", "criteria": {f"{N}.1": "x.py, the change"}, "evidence": "pytest -q: 1 passed"}
 ICON = re.compile(r'<img[^>]*src="https://raw\.githubusercontent\.com/[^/"]+/[^/"]+/main/dokima/icons/([A-Za-z0-9_-]+)\.svg"')
 STAGE_WORDS = {"planner": ("planner",), "reviewer-plan": ("reviewer (plan)", "plan review"),
