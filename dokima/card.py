@@ -56,6 +56,11 @@ def circle(repo, st, url=None):
     return f'<a href="{url}">{img}</a>' if url else img
 
 
+def fold(title, lines):
+    """A long part folded under its title, so the card on top stays short: the issue card and every run comment use it."""
+    return [f"<details><summary><b>{title}</b></summary>", "", *lines, "", "</details>"]
+
+
 def escape(text):
     return html.escape(text or "", quote=False)
 
@@ -232,9 +237,8 @@ def render(repo, issue, found, page="issue"):
         lines += ["**Acceptance criteria**", ""]
         lines += criteria_table(repo, issue["number"], 1, criteria, plan_tests, by_key, tests) + [""]
         if nfr:
-            lines += ["<details><summary><b>Non-functional requirements</b></summary>", ""]
-            lines += criteria_table(repo, issue["number"], len(criteria) + 1, nfr, plan_tests, by_key, tests)
-            lines += ["", "</details>", ""]
+            lines += fold("Non-functional requirements",
+                          criteria_table(repo, issue["number"], len(criteria) + 1, nfr, plan_tests, by_key, tests)) + [""]
         lines += ["**Scope:**", ""] + [f"- {escape(s)}" for s in h.get("scope") or []] + [""]
         lines += ["**Out of scope:**", ""] + [f"- {escape(s)}" for s in h.get("out_of_scope") or []] + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]

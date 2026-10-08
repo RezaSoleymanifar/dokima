@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 
+from dokima import card
 from dokima.card import icon
 
 VERDICTS = {"approve", "block", "escalate"}
@@ -298,41 +299,145 @@ def queue(role, stage, number, state):
               "-f", f"body={body}", "--jq", ".id").strip()
 
 
-def render(rec):
-    """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
+HEADS = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker", "split": "Code"}
+
+
+def sentences(text):
+    """Text cut into its sentences: a sentence ends at a full stop, question or exclamation mark followed by a space."""
+    return [x for x in re.split(r"(?<=[.?!])\s+", text.strip() if isinstance(text, str) else "") if x]
+
+
+def change_sentence(summary):
+    """The worker's own words on what it changed: its summary after the cause sentence, or all of it when it is one."""
+    said = sentences(summary)
+    return " ".join(said[1:] if len(said) > 1 else said)
+
+
+def bullets(items, show):
+    """One line per item, drawn by `show`; non-dict items, and a malformed field that is no list, are shown as they are."""
+    items = items if isinstance(items, list) else [items] if items not in (None, "", {}) else []
+    return [f"- {show(x) if isinstance(x, dict) else x}" for x in items]
+
+
+def pairs(d):
+    """One line per key and value of a field that should be a dict; nothing when it is not."""
+    return [f"- {k}: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in d.items()] if isinstance(d, dict) else []
+
+
+def details(rec):
+    """The long parts of a run's record, each in its own fold, drawn by the issue card's fold code."""
+    role, h = rec["role"], rec["handback"]
+    if not isinstance(h, dict):
+        return []
+    parts = []
+    if role == "planner":
+        parts += [("Non-functional requirements", bullets(h.get("non_functional"), lambda n: f"{n.get('text', '')} "
+                                                           f"({n.get('why', '')}; {n.get('principle', '')})")),
+                  ("Scope", bullets(h.get("scope"), str)), ("Out of scope", bullets(h.get("out_of_scope"), str)),
+                  ("Tests", pairs(h.get("tests"))),
+                  ("Test changes", pairs(h.get("test_changes"))),
+                  ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
+                  ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
+    elif role == "worker":
+        cause = sentences(h.get("summary"))
+        parts += [("What it built", ([f"- {cause[0]}"] if len(cause) > 1 else [])
+                   + pairs(h.get("criteria"))
+                   + ([f"- Its own test run: {h['evidence']}"] if h.get("evidence") else [])),
+                  ("What it found", bullets(h.get("outside_scope"), lambda o: f"Outside the plan: {o.get('file', '')}: {o.get('why', '')}")),
+                  ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
+                   + bullets(h.get("replies"), lambda r: f"{r.get('blocker', '')} {r.get('answer', '')}: {r.get('why', '')}"))]
+    elif role == "reviewer":
+        parts += [("Details", ([f"- {h['summary']}"] if h.get("summary") and h.get("verdict") != "escalate" else [])
+                   + bullets(h.get("blockers"), lambda b: f"{b.get('id')} on {b.get('criterion')}: {b.get('problem', '')} "
+                                                          f"Evidence: {b.get('evidence', '')} Fix: {b.get('fix', '')}")
+                   + bullets(h.get("resolved"), lambda r: f"Resolved: {json.dumps(r)}")),
+                  ("Notes", bullets(h.get("notes"), lambda n: f"{n.get('text', '')} ({n.get('evidence', '')})")),
+                  ("Outside the plan", bullets(h.get("outside_plan"), lambda o: f"{o.get('file', '')}: {o.get('change', '')}")),
+                  ("The owner's asks", bullets(h.get("asks"), lambda a: f"{a.get('ask', '')} ({a.get('criterion', '')}, {a.get('source', '')})"))]
+    prev = h.get("previous_step")
+    if isinstance(prev, dict):
+        parts.append(("What the previous step did", [f"- **{label}:**{x[1:]}" for k, label in
+                                                     (("did", "Did"), ("decided", "Decided"), ("open", "Still open"))
+                                                     for x in bullets(prev.get(k), str)]))
+    out = []
+    for title, lines in parts:
+        if lines:
+            out += [""] + card.fold(title, lines)
+    return out
+
+
+def opening(rec):
+    """The one plain sentence a run comment opens with: what the run did."""
+    role, h, passed = rec["role"], rec["handback"], rec["check"]["passed"]
+    if not passed and role == "worker":
+        return "The worker stopped early with its hand-back rejected by code."
+    if not passed:
+        return f"{HEADS[role]}'s run ended with its hand-back rejected by code."
+    if role == "planner" and h.get("kind") == "feature":
+        n = len(h.get("stories") or [])
+        return f"The planner proposes a split into {n} stories" + (" and asks you questions." if h.get("questions") else ".")
+    if role == "planner":
+        q = len(h.get("questions") or [])
+        return f"The planner planned this issue and asks you {q} question{'s' if q > 1 else ''}." if q else "The planner planned this issue."
+    if role == "reviewer":
+        what = "the plan" if rec.get("stage") == "plan" else "the work"
+        n = len({b.get("criterion") for b in h.get("blockers") or [] if isinstance(b, dict)})
+        return {"approve": f"The reviewer passed {what}.",
+                "block": f"The reviewer blocked {what} on {n} criteri{'a' if n != 1 else 'on'}.",
+                "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
+    if role == "split":
+        return f"Code filed the split as {len(h.get('stories') or [])} stories."
+    return change_sentence(h.get("summary"))
+
+
+def record_fold(rec):
+    """The full JSON record, always the last fold of a run comment: later packs are built from it."""
+    return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
+
+
+def render(rec, pr=None):
+    """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
+    needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
+    worker's pull request, once it exists."""
     role, h = rec["role"], rec["handback"]
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
         a = rec.get("attempt")
-        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker",
-                "split": "Filing the split"}.get(a, "Command")
-        lines = [MARK, f"{icon(repo, 'failed')} **{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
-        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
-                  "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker",
+               "split": "Filing the split"}.get(a, "The command")
+        lines = [MARK, f"{icon(repo, 'failed')} {who} stopped before any agent started.", ""] + [f"- {p}" for p in rec["check"]["problems"]]
+        lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
     if role == "cancelled":
         a = rec.get("attempt")
-        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker"}.get(a, "Command")
-        what = ("The run was cancelled after its agent started; nothing it handed back is used." if rec.get("agent_started")
-                else "The run was cancelled before its agent started.")
-        lines = [MARK, f"{icon(repo, 'cancelled')} **{head}** · cancelled", "", what]
-        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
-                  "", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker"}.get(a, "The command")
+        what = (f"{who} run was cancelled after its agent started, and nothing it handed back is used." if rec.get("agent_started")
+                else f"{who} run was cancelled before its agent started.")
+        lines = [MARK, f"{icon(repo, 'cancelled')} {what}"]
+        lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
-    head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
-    lines = [MARK, f"{icon(repo, 'passed' if rec['check']['passed'] else 'failed')} **{head}**"
-             + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
-    if not rec["check"]["passed"]:
+    passed = rec["check"]["passed"]
+    first = f"{icon(repo, 'passed' if passed else 'failed')} {escape_line(opening(rec))}"
+    if role == "worker" and pr:
+        first += f" ([pull request #{pr.rstrip('/').rsplit('/', 1)[-1]}]({pr}))"
+    lines = [MARK, first]
+    if not passed:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
     elif role == "planner" and h.get("kind") == "feature":
-        lines += ["", f"Proposes a split: {h.get('feature', '')}", ""]
+        lines += ["", f"**Feature:** {h.get('feature', '')}", ""]
         lines += [f"{i}. {st.get('title', '')}" for i, st in enumerate(h.get("stories", []), 1)]
     elif role == "planner":
-        lines += ["", h.get("user_story") or h.get("question") or ""]
+        lines += ["", f"**User story:** {h.get('user_story') or h.get('question') or ''}"]
+        criteria = [c.get("text", "") if isinstance(c, dict) else c for c in h.get("acceptance_criteria") or []]
+        if criteria:
+            lines += ["", "**Acceptance criteria:**", ""] + [f"{i}. {c}" for i, c in enumerate(criteria, 1)]
     elif role == "reviewer":
-        lines += ["", f"**{h.get('verdict')}**: {h.get('summary', '')}"]
+        if h.get("verdict") == "escalate" and h.get("summary"):
+            lines += ["", h["summary"]]
         fixes = lambda b: f", the {b['fixer']} fixes it" if b.get("fixer") in FIXERS else ""
-        lines += [f"- **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers", [])]
+        blocks = [f"- **{b.get('id')}** ({b.get('criterion')}{fixes(b)}): {b.get('problem')}" for b in h.get("blockers") or []]
+        if blocks:
+            lines += [""] + blocks
         judged = [a for a in h.get("assumptions") or [] if isinstance(a, dict)]
         if judged:
             lines += ["", "**The plan's assumptions:**"]
@@ -347,21 +452,17 @@ def render(rec):
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" (blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
                          for f in h.get("stories", [])]
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
-    else:
-        lines += ["", h.get("summary", "")]
-    if role == "planner" and h.get("questions"):
+    if passed and role == "planner" and h.get("questions"):
         lines += ["", "**Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
-    prev = h.get("previous_step") if isinstance(h, dict) else None
-    if isinstance(prev, dict) and any(prev.get(k) for k in ("did", "decided", "open")):
-        lines += ["", "<details><summary>What the previous step did</summary>", ""]
-        for k, label in (("did", "Did"), ("decided", "Decided"), ("open", "Still open")):
-            lines += [f"- **{label}:** {x}" for x in prev.get(k) or []]
-        lines += ["", "</details>"]
-    lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
-              "", footnote(rec)]
+    lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
+
+
+def escape_line(text):
+    """One sentence kept on one line, so the comment opens with it whole."""
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 def jsonl_files(root):
@@ -1435,6 +1536,16 @@ def main(argv):
                 step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
                     ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
                              "with a command to send it back.")
+        if rec.get("role") == "worker":
+            # The pull request is opened after the record is written, so the worker's sentence links it only now.
+            try:
+                pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+                        "-q", ".[0].number").strip()
+            except subprocess.CalledProcessError:
+                pr = ""
+            if pr.isdigit():
+                url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}"
+                open(os.path.join(out, "comment.md"), "w").write(render(rec, url))
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
         if step[3:] == ("autopilot",):
