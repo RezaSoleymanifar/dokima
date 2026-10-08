@@ -12,6 +12,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+
+from dokima.card import icon
 
 VERDICTS = {"approve", "block", "escalate"}
 FIXERS = {"worker", "planner"}
@@ -24,6 +27,7 @@ def gh(*args):
 
 
 MARK = "<!-- dokima-record -->"
+LIVE = "<!-- dokima-live -->"
 BOT = os.environ.get("DOKIMA_BOT", "dokima-runtime")
 HANDBACK = {"planner": "plan.json", "reviewer": "review.json", "worker": "work.json"}
 
@@ -210,19 +214,38 @@ def not_started(role, stage, why, meta):
             "check": {"passed": False, "problems": lines}}
 
 
+def live_card(role, stage, state):
+    """The run's card while it is still running: getting ready, then working since the agent started.
+
+    It carries its own marker and no JSON fold, so it never reads as a record; at the end of the run code edits this
+    same comment into the run's record."""
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker"}.get(role, "Command")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    if state == "working":
+        line = f"{icon(repo, 'running')} **{head}** · working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
+        what = "The agent is working. This card becomes the run's record when it ends."
+    else:
+        line = f"{icon(repo, 'queued')} **{head}** · getting ready"
+        what = "The machine is getting ready. This card says working when the agent starts, then becomes the run's record."
+    return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
+
+
 def render(rec):
     """The comment that carries a record: a short readable summary, then the full record as JSON in a fold."""
     role, h = rec["role"], rec["handback"]
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
         a = rec.get("attempt")
         head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker",
                 "split": "Filing the split"}.get(a, "Command")
-        lines = [MARK, f"**{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
+        lines = [MARK, f"{icon(repo, 'failed')} **{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
         lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
                   "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
     head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
-    lines = [MARK, f"**{head}**" + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
+    lines = [MARK, f"{icon(repo, 'passed' if rec['check']['passed'] else 'failed')} **{head}**"
+             + ("" if rec["check"]["passed"] else " · hand-back rejected by code")]
     if not rec["check"]["passed"]:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
     elif role == "planner" and h.get("kind") == "feature":
@@ -760,7 +783,8 @@ def next_line(step, owners):
 def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
-    agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started)"""
+    agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
+    agent card ROLE STAGE queued|working  (prints the run's live card, which is not a record)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -792,6 +816,9 @@ def main(argv):
         rec = not_started(role, stage, open(why_file).read() if os.path.exists(why_file) else "", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
+    if argv[1] == "card":
+        sys.stdout.write(live_card(argv[2], argv[3], argv[4]))
         return 0
     if argv[1] == "check-round":
         try:

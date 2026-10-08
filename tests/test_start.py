@@ -3,9 +3,10 @@
 These tests run the workflows' own steps, read from .github/workflows/agent.yml and commands.yml, the way GitHub runs
 them: each job's and step's `if:` is evaluated, its `${{ }}` expressions filled in, and its script run with bash in a
 clone of a temp git repo whose origin is a local bare repo. Jobs run in the order their `needs` allow, each on its own
-fresh clone and its own /tmp. Nothing leaves the machine: a fake `gh` answers from a fake issue and records every
-comment, dispatch and issue it is asked to create (and can be told to fail one call, the way GitHub does); a fake
-`claude` hands back a review; `pip` and `npm` do nothing unless a test breaks them; pushes to github.com are redirected
+fresh clone and its own /tmp. Nothing leaves the machine: a fake `gh` answers from a fake issue, keeps every comment
+with each version of it as it is edited in place, and records every call, dispatch and issue it is asked to create
+(and can be told to fail one call, the way GitHub does); a fake `claude` hands back a review and notes what GitHub
+showed when it started; `pip` and `npm` do nothing unless a test breaks them; pushes to github.com are redirected
 to the local origin. Steps that only `uses:` an action are skipped (an app token step gives a fake token), and a job
 that `uses:` another workflow is only noted as run. Values a step writes to GITHUB_ENV or GITHUB_OUTPUT are read as
 single KEY=value lines.
@@ -39,35 +40,140 @@ APPROVE = {"previous_step": {"did": ["Proposed a split into two stories."], "dec
            "blockers": [], "notes": [], "outside_plan": [], "resolved": []}
 
 FAKE_GH = r'''#!/usr/bin/env python3
-"""A stand-in for the GitHub CLI: answers from the fake issue and records every call.
+"""A stand-in for the GitHub CLI: answers from the fake issue, keeps every comment the run writes, records every call.
 
+Comments live in comments.json, each with its id, where it is (issue #57 or pull request #60), its author and every
+version of its body, oldest first, the way GitHub keeps a comment that is edited in place. A comment is written by
+`gh issue comment` / `gh pr comment` (with --body or --body-file; with --edit-last it edits the newest one there),
+or by `gh api` on repos/o/r/issues/N/comments (creates) and repos/o/r/issues/comments/ID (reads, or edits with PATCH),
+the body given as -f/-F/--field/--raw-field body=..., body=@file, or --input with a JSON file. `-q`/`--jq` with a
+plain `.field` picks that field. The author is Dokima's bot for the app's token and github-actions for the workflow's
+own token. `gh issue view` and `gh pr view` show these comments as GitHub would.
+
+options.json, when present, can say: pr_open (the issue has open pull request #60), fail_edits (every edit fails
+the way GitHub fails it), fail_card (every new comment fails until the agent has started).
 FAKE_GH_FAIL, when set to 'words|message', makes every call starting with those words print the message, the way gh
 prints GitHub's error, and exit 1."""
-import json, os, sys
+import datetime, json, os, re, sys
 d = os.environ["FAKE_GH_DIR"]
 a = sys.argv[1:]
+opts = json.load(open(os.path.join(d, "options.json"))) if os.path.exists(os.path.join(d, "options.json")) else {}
+started = os.path.exists(os.environ.get("FAKE_CLAUDE_MARK", "/nonexistent"))
+token = os.environ.get("GH_TOKEN", "")
 open(os.path.join(d, "calls.jsonl"), "a").write(json.dumps(a) + "\n")
+open(os.path.join(d, "calls-meta.jsonl"), "a").write(json.dumps({"args": a, "token": token, "agent_started": started}) + "\n")
 fail = os.environ.get("FAKE_GH_FAIL", "")
 if fail and " ".join(a).startswith(fail.split("|", 1)[0]):
     sys.stderr.write(fail.split("|", 1)[1] + "\n")
     sys.exit(1)
-def flag(name):
-    return a[a.index(name) + 1] if name in a else None
+def flag(*names):
+    for name in names:
+        if name in a:
+            return a[a.index(name) + 1]
+    return None
+STORE = os.path.join(d, "comments.json")
+def load():
+    return json.load(open(STORE)) if os.path.exists(STORE) else []
+def save(cs):
+    json.dump(cs, open(STORE, "w"), indent=1)
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def shown(c):
+    url = f"https://github.com/o/r/{'pull' if c['kind'] == 'pr' else 'issues'}/{c['number']}#issuecomment-{c['id']}"
+    return {"id": c["id"], "node_id": f"IC_{c['id']}", "html_url": url, "url": url, "body": c["versions"][-1],
+            "user": {"login": c["author"]}, "author": {"login": c["author"]}, "createdAt": c["created"], "created_at": c["created"]}
+def out(obj):
+    q = flag("-q", "--jq")
+    if q and re.fullmatch(r"\.[A-Za-z_]+", q.strip()):
+        print(obj.get(q.strip()[1:], ""))
+    else:
+        print(json.dumps(obj))
+def refuse_new():
+    if opts.get("fail_card") and not started:
+        sys.stderr.write("HTTP 502: Server Error (https://api.github.com/repos/o/r/issues/57/comments)\n")
+        sys.exit(1)
+def refuse_edit():
+    if opts.get("fail_edits"):
+        sys.stderr.write("HTTP 404: Not Found (https://api.github.com/repos/o/r/issues/comments)\n")
+        sys.exit(1)
+def create(kind, number, body):
+    refuse_new()
+    cs = load()
+    c = {"id": 5000 + len(cs) + 1, "kind": kind, "number": int(number), "created": now(), "versions": [body],
+         "author": "dokima-runtime" if token == "fake-token" else "github-actions"}
+    cs.append(c)
+    save(cs)
+    return c
+def edit(cid, body):
+    refuse_edit()
+    cs = load()
+    for c in cs:
+        if c["id"] == int(cid):
+            c["versions"].append(body)
+            save(cs)
+            return c
+    sys.stderr.write("HTTP 404: Not Found\n")
+    sys.exit(1)
+def api_body():
+    if "--input" in a:
+        p = flag("--input")
+        return json.load(sys.stdin if p == "-" else open(p)).get("body")
+    for i, x in enumerate(a):
+        if x in ("-f", "-F", "--field", "--raw-field") and i + 1 < len(a) and a[i + 1].startswith("body="):
+            v = a[i + 1][5:]
+            if x in ("-F", "--field") and v.startswith("@"):
+                return sys.stdin.read() if v == "@-" else open(v[1:]).read()
+            return v
+    return None
+def comments_on(kind, number):
+    return [{"author": {"login": c["author"]}, "body": c["versions"][-1], "createdAt": c["created"]}
+            for c in load() if c["kind"] == kind and c["number"] == int(number)]
 if a[:2] == ["issue", "view"]:
     issue = json.load(open(os.path.join(d, "issue.json")))
+    issue["comments"] = issue["comments"] + comments_on("issue", issue["number"])
     print(issue["title"] if flag("-q") == ".title" else json.dumps(issue))
 elif a[:2] == ["pr", "view"]:
-    print(json.dumps({"number": 60, "headRefName": "try/issue-57", "body": "Closes #57", "comments": [], "reviews": []}))
+    print(json.dumps({"number": 60, "headRefName": "try/issue-57", "body": "Closes #57", "comments": comments_on("pr", 60), "reviews": []}))
 elif a[:2] in (["issue", "comment"], ["pr", "comment"]):
-    body = open(flag("--body-file")).read() if flag("--body-file") else flag("--body")
-    open(os.path.join(d, "posted.jsonl"), "a").write(json.dumps({"where": a[:3], "body": body}) + "\n")
+    kind, number = a[0], a[2]
+    body = open(flag("--body-file", "-F")).read() if flag("--body-file", "-F") else flag("--body", "-b")
+    if "--edit-last" in a:
+        mine = [c for c in load() if c["kind"] == kind and c["number"] == int(number)]
+        if not mine:
+            sys.stderr.write("no comments found for current user\n")
+            sys.exit(1)
+        c = edit(mine[-1]["id"], body)
+    else:
+        c = create(kind, number, body)
+    print(shown(c)["html_url"])
 elif a[:2] == ["issue", "create"]:
     n = 900 + sum(1 for _ in open(os.path.join(d, "calls.jsonl")) if '"create"' in _) - 1
     print(f"https://github.com/o/r/issues/{n}")
 elif a[:2] == ["pr", "list"]:
-    print("" if (flag("-q") or flag("--jq")) else "[]")
+    if opts.get("pr_open") and "closed" not in a and "merged" not in a:
+        print("60" if (flag("-q") or flag("--jq")) else json.dumps([{"number": 60}]))
+    else:
+        print("" if (flag("-q") or flag("--jq")) else "[]")
 elif a[:1] == ["api"] and any(x.startswith("users/") for x in a):
     print("1")
+elif a[:1] == ["api"] and any(re.fullmatch(r"/?repos/o/r/issues/\d+/comments", x) for x in a):
+    path = next(x for x in a if re.fullmatch(r"/?repos/o/r/issues/\d+/comments", x))
+    n = int(path.rstrip("/").split("/")[-2])
+    body = api_body()
+    if body is None and (flag("-X", "--method") or "GET").upper() == "GET":
+        print(json.dumps([shown(c) for c in load() if c["number"] == n]))
+    else:
+        out(shown(create("pr" if n == 60 else "issue", n, body)))
+elif a[:1] == ["api"] and any(re.fullmatch(r"/?repos/o/r/issues/comments/\d+", x) for x in a):
+    cid = next(x for x in a if re.fullmatch(r"/?repos/o/r/issues/comments/\d+", x)).rsplit("/", 1)[1]
+    if (flag("-X", "--method") or "GET").upper() in ("PATCH", "POST"):
+        out(shown(edit(cid, api_body())))
+    else:
+        c = next((c for c in load() if c["id"] == int(cid)), None)
+        if c is None:
+            sys.stderr.write("HTTP 404: Not Found\n")
+            sys.exit(1)
+        out(shown(c))
 elif a[:1] == ["api"] and "--paginate" in a:
     print("[]")
 elif a[:1] == ["api"] and len(a) == 2 and a[1].startswith("repos/o/r/issues/"):
@@ -78,8 +184,17 @@ elif a[:1] == ["api"]:
 '''
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
-"""A stand-in for Claude Code: hands back the review the test chose and leaves a session log naming its model."""
-import json, os, shutil
+"""A stand-in for Claude Code: hands back the review the test chose and leaves a session log naming its model.
+
+When it starts it keeps what GitHub showed at that moment (every comment and every version, at-agent-start.json),
+its own environment (agent-env.json) and the time it started (agent-started-at), so a test can see the run as the
+agent found it."""
+import json, os, shutil, time
+d = os.environ["FAKE_GH_DIR"]
+store = os.path.join(d, "comments.json")
+json.dump(json.load(open(store)) if os.path.exists(store) else [], open(os.path.join(d, "at-agent-start.json"), "w"))
+json.dump(dict(os.environ), open(os.path.join(d, "agent-env.json"), "w"))
+open(os.path.join(d, "agent-started-at"), "w").write(str(time.time()))
 open(os.environ["FAKE_CLAUDE_MARK"], "w").write("started")
 shutil.copy(os.environ["FAKE_REVIEW"], os.path.join(os.environ["OUT"], "review.json"))
 logs = os.path.join(os.environ["HOME"], ".claude", "projects", "p")
@@ -116,6 +231,10 @@ class Ctx(dict):
     def __getattr__(self, k):
         v = self.get(k, NIL)
         return Ctx(v) if isinstance(v, dict) and not isinstance(v, Ctx) else v
+
+    def __getitem__(self, k):
+        """A name with a dash (`steps.card-key`), read the same way as a dotted one."""
+        return self.__getattr__(k)
 
 
 def evaluate(expr, ctx, status):
@@ -294,10 +413,11 @@ def review_record(handback):
 class Machine:
     """A temp repo with fake GitHub, Claude, pip and npm, on which workflow jobs run the way GitHub runs them."""
 
-    def __init__(self, tmp, comments, try_branch=False, actor=OWNER, gh_fail="", broken=None):
+    def __init__(self, tmp, comments, try_branch=False, actor=OWNER, gh_fail="", broken=None, options=None):
         self.tmp = t = str(tmp)
         for d in ("bin", "gh", "home", "runner-temp", "jobs"):
             os.makedirs(f"{t}/{d}")
+        json.dump(options or {}, open(f"{t}/gh/options.json", "w"))
         tools = {"gh": FAKE_GH, "claude": FAKE_CLAUDE, "pip": "#!/bin/sh\nexit 0\n", "npm": "#!/bin/sh\nexit 0\n"}
         for name, message in (broken or {}).items():
             tools[name] = f"#!/bin/sh\necho '{message}' >&2\nexit 1\n"
@@ -400,10 +520,17 @@ class Machine:
         path = f"{self.tmp}/gh/calls.jsonl"
         return [json.loads(l) for l in open(path)] if os.path.exists(path) else []
 
+    def comments(self):
+        """Every comment the run wrote, oldest first, as the fake GitHub keeps it: id, kind (issue or pr), number,
+        author and every version of its body."""
+        path = f"{self.tmp}/gh/comments.json"
+        return json.load(open(path)) if os.path.exists(path) else []
+
     def posted(self):
-        """Every comment posted, as {where, body}."""
-        path = f"{self.tmp}/gh/posted.jsonl"
-        return [json.loads(l) for l in open(path)] if os.path.exists(path) else []
+        """Every comment the run wrote, as {where, author, body}: where it is and its body as it stands now, after any
+        edits."""
+        return [{"where": [c["kind"], "comment", str(c["number"])], "author": c["author"], "body": c["versions"][-1]}
+                for c in self.comments()]
 
     def dispatches(self):
         """Every signal sent to start another stage."""
@@ -426,8 +553,10 @@ class Machine:
 class Run(Machine):
     """One run of the agent workflow (agent.yml), started by hand by the actor."""
 
-    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER, broken=None):
-        super().__init__(tmp, comments, try_branch, actor, broken=broken)
+    def __init__(self, tmp, role, stage, comments, try_branch=False, actor=OWNER, broken=None, options=None, review=None):
+        super().__init__(tmp, comments, try_branch, actor, broken=broken, options=options)
+        if review is not None:
+            json.dump(review, open(f"{self.tmp}/review.json", "w"))
         t = self.tmp
         open(f"{t}/event.json", "w").write(json.dumps({"inputs": {"role": role, "stage": stage, "issue": N}}))
         ctx = {"inputs": Ctx(role=role, stage=stage, issue=N),
