@@ -21,10 +21,11 @@ Issue #180 (story 2 of #143). The card is drawn by `dokima/card.py` from what Gi
 The plan is the newest planner record whose check passed. Criterion k is <issue>.k, the acceptance criteria first and
 then the non-functional requirements, and its check is the check run named "<issue>.k · ...".
 
-Layout, as the tests read it: each criterion is one HTML table row (<tr>) of two cells (<td>): the first holds only its
-verdict circle (an <img> whose alt is its state, wrapped in a link to its check when one exists), the second its words,
-then, when its tests have one, "Verified by" with the test's docstring first line linking to the test. The
-non-functional requirements sit inside a <details> fold. The Definition of Done is one line, the last with a circle
+Layout, as the tests read it (issue #235): each criterion is one bullet line "- " opening with its verdict circle (an
+<img> whose alt is its state, never inside a link), then its words, linked to its check when one exists; under it,
+indented, one "Verified by" line per test with a docstring, where the words Verified by link to the test and the
+docstring's first line follows. Markdown links and HTML links read alike. The non-functional requirements sit inside
+a <details> fold. The Definition of Done is one line, the last with a circle
 on the card: All tests, then review, then owner approval, each a circle (linked when there is a verdict) and its words.
 Every circle's alt is one of: passed, failed, running, not started.
 """
@@ -118,16 +119,26 @@ def block(text):
     return text[text.index(plan.CARD_START):text.index(plan.CARD_END) + len(plan.CARD_END)]
 
 
-def rows(text):
-    """Every table row of the card, as the list of its cells' inner HTML."""
-    return [re.findall(r"<td[^>]*>(.*?)</td>", r, re.S) for r in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S)]
+def links_as_html(text):
+    """The text with every markdown link written as HTML, so both forms read alike."""
+    return re.sub(r"\[((?:<img [^>]*>|[^\]])*)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)
 
 
 def row_of(text, words, k):
-    """The one table row whose second cell holds `words`; fails naming criterion k when there is not exactly one."""
-    found = [cells for cells in rows(text) if len(cells) == 2 and words in cells[1]]
-    assert len(found) == 1, f"{k}: expected one table row of two cells for “{words}”, found {len(found)}"
-    return found[0]
+    """The bullet line of the criterion whose words are `words`, and the lines under it.
+
+    Links are written as HTML.
+
+    Fails naming criterion k when not exactly one bullet line holds the words."""
+    lines = links_as_html(text).splitlines()
+    at = [i for i, l in enumerate(lines) if l.startswith("- ") and words in l]
+    assert len(at) == 1, f"{k}: expected one bullet line for “{words}”, found {len(at)}"
+    under = []
+    for line in lines[at[0] + 1:]:
+        if not re.match(r"\s+\S", line):
+            break
+        under.append(line)
+    return lines[at[0]], "\n".join(under)
 
 
 # The icons code draws in front of a field (issue #234), which are never a verdict circle.
@@ -142,11 +153,12 @@ def alts(html):
 
 
 def circle(text, words, k):
-    """The state on the circle of the criterion whose words are `words`, and the link around it (or None)."""
+    """The state on a criterion's circle, and the link on its words or None."""
     first, second = row_of(text, words, k)
-    assert len(alts(first)) == 1, f"{k}: the circle cell of “{words}” does not hold exactly one circle"
-    assert words not in first and not alts(second), f"{k}: the circle of “{words}” does not hang outside its words"
-    link = re.search(r'<a href="([^"]+)"[^>]*>\s*<img', first)
+    assert len(alts(first)) == 1, f"{k}: the bullet of “{words}” does not hold exactly one circle"
+    assert first.index("<img") < first.index(words) and not alts(second), f"{k}: the circle of “{words}” is not its bullet"
+    assert not re.search(r'<a href="[^"]+"[^>]*>\s*<img', first), f"{k}: the circle of “{words}” sits inside a link"
+    link = re.search(r'<a href="([^"]+)"[^>]*>' + re.escape(words) + "</a>", first)
     return alts(first)[0], link.group(1) if link else None
 
 
@@ -393,11 +405,11 @@ def test_the_user_story_comes_first_then_the_criteria(record_property):
     assert 0 <= text.find(PLAN["user_story"]) < first < second, "180.2: the user story and criteria are not in order"
 
 
-def test_each_criterion_has_its_circle_hanging_outside_linked_to_its_check(record_property):
-    """Each criterion's verdict circle hangs outside its words like a bullet and links to its check.
+def test_each_criterion_has_its_circle_as_its_bullet_and_its_words_link_its_check(record_property):
+    """Each criterion's verdict circle opens its bullet, and the criterion's words link to its check.
 
-    Draws the card with one criterion passed and one failed, and checks each criterion's circle sits alone in its own
-    cell beside the words, shows that criterion's own verdict and links to that criterion's own check."""
+    Draws the card with one criterion passed and one failed, and checks each criterion's circle opens its own bullet
+    outside any link, shows that criterion's own verdict, and its words link to that criterion's own check."""
     record_property("proves", "180.2")
     checks_ = [run("40.1 · First thing works", n=1), run("40.2 · Second thing works", conclusion="failure", n=2)]
     text = draw(check_runs=checks_)
@@ -405,17 +417,18 @@ def test_each_criterion_has_its_circle_hanging_outside_linked_to_its_check(recor
     assert circle(text, "Second thing works", "180.2") == ("failed", job(2)), "180.2: criterion 2's circle is wrong"
 
 
-def test_verified_by_is_each_tests_first_docstring_line_linking_to_the_test(record_property):
-    """Under each criterion, Verified by shows each of its tests' docstring first line, linking to that test.
+def test_verified_by_is_each_tests_first_docstring_line_and_links_to_the_test(record_property):
+    """Under each criterion, Verified by shows each test's sentence and links to the test.
 
-    Draws the card for a criterion proved by two tests and checks both sentences are in the criterion's cell, each
-    as the text of a link to its own test."""
+    Draws the card for a criterion proved by two tests and checks both sentences are under the criterion, each on
+    its own Verified by line whose words Verified by link to its own test."""
     record_property("proves", "180.2")
     _, words = row_of(draw(), "First thing works", "180.2")
     assert "Verified by" in words, "180.2: the criterion does not say Verified by"
     for t in ("tests/test_a.py::test_one", "tests/test_a.py::test_one_more"):
-        link = re.search(rf'<a href="{re.escape(TESTS[t]["url"])}"[^>]*>([^<]*)</a>', words)
-        assert link and TESTS[t]["verified_by"] in link.group(1), f"180.2: Verified by does not link “{TESTS[t]['verified_by']}” to {t}"
+        line = next((l for l in words.splitlines() if TESTS[t]["verified_by"] in l), "")
+        link = re.search(rf'<a href="{re.escape(TESTS[t]["url"])}"[^>]*>(.*?)</a>', line)
+        assert link and "Verified by" in link.group(1), f"180.2: Verified by does not link “{TESTS[t]['verified_by']}” to {t}"
 
 
 def test_verified_by_is_hidden_when_there_is_none(record_property):
