@@ -52,7 +52,10 @@ def on_stage(monkeypatch, stage):
 def run(tmp_path, *args):
     """Run Dokima's agent command from the repo root, the way the workflow does; return (exit code, stdout, stderr)."""
     env = {**os.environ, "PYTHONPATH": ROOT}
-    env.pop("PYTHONSAFEPATH", None)
+    # A worker's or reviewer's run sets PLANNER_BASE, and the worker's check then reads the branch's docstrings (#240);
+    # these samples are judged on their own, whatever branch the tests run on.
+    for k in ("PYTHONSAFEPATH", "PLANNER_BASE"):
+        env.pop(k, None)
     p = subprocess.run([sys.executable, "-m", "dokima.agent", *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
     return p.returncode, p.stdout, p.stderr
 
