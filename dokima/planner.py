@@ -137,6 +137,8 @@ def from_kind(p, issue=None):
     every criterion's source must be it or one of its comment links.
     """
     kind = p["kind"]
+    if kind in ("feature", "user_story") and (not isinstance(p.get("summary"), str) or not p["summary"].strip()):
+        raise Garbled("plan.json needs a summary: one plain sentence saying what the issue is about")
     if kind == "feature":
         stories = p.get("stories")
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
