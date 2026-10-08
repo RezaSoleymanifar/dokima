@@ -1159,17 +1159,19 @@ def board_place(rec, step):
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
-    """Put the issue and its open pull request in that column, with or without the Needs you pill."""
+    """Put the issue and its open pull request in that column, with the Needs you pill when the river stops for the
+    owner, else the Autopilot pill while the issue is on autopilot."""
     from dokima import board
     b = board.Board(spec, repo, q or board.gql)
     targets = [("issue", int(number))]
     pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
     if pr:
         targets.append(("pr", int(pr)))
+    pill = "Needs you" if needs_you else "Autopilot" if b.autopilot("issue", int(number)) else None
     for kind, n in targets:
         iid = b.item(kind, n)
         b.set(iid, "Status", column)
-        b.set(iid, "Action", "Needs you" if needs_you else None)
+        b.set(iid, "Action", pill)
     return targets
 
 
@@ -1284,10 +1286,10 @@ def main(argv):
             for f in rec["handback"]["stories"]:
                 iid = b.item("issue", f["issue"])
                 b.set(iid, "Status", "Backlog")
-                b.set(iid, "Action", None)
+                b.set(iid, "Action", "Autopilot" if on else None)
             iid = b.item("issue", int(parent))
             b.set(iid, "Status", "Work")
-            b.set(iid, "Action", None)
+            b.set(iid, "Action", "Autopilot" if on else None)
         if on:
             # On autopilot the stories go on too, and each one with nothing to wait for starts planning.
             start_waiting(repo, [f["issue"] for f in rec["handback"]["stories"] if not f["blocked_by"]])
