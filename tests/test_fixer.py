@@ -31,9 +31,12 @@ def blocker(id_, fixer, criterion="9.1"):
 
 
 def review(*blockers, verdict="block"):
-    """A well-formed review.json holding these blockers."""
+    """A well-formed review.json holding these blockers, listing the owner's one ask matched to 9.1.
+
+    A plan review must list every ask and a code review may, so the sample passes code's check on any stage (#244)."""
     return {"previous_step": {"did": ["Built it."], "decided": [], "open": []}, "verdict": verdict,
-            "summary": "s", "blockers": list(blockers), "notes": [], "outside_plan": [], "resolved": []}
+            "summary": "s", "blockers": list(blockers), "notes": [], "outside_plan": [], "resolved": [],
+            "asks": [{"ask": "Paint the door blue", "source": "https://github.com/o/r/issues/9", "criterion": "9.1"}]}
 
 
 def rec(role, stage="", handback=None):
@@ -66,17 +69,26 @@ def check_review(tmp_path, handback):
     return r.returncode, r.stdout, r.stderr
 
 
-def test_every_review_blocker_names_the_worker_or_the_planner(record_property, tmp_path):
+def test_every_review_blocker_names_the_worker_or_the_planner(record_property, tmp_path, monkeypatch):
     """A review passes its check only when every blocker says who fixes it, the worker or the planner.
 
-    Runs the real hand-back check: a blocker for the worker, one for the planner, and both together pass. A blocker
-    with no fixer, an empty one, one naming the reviewer or the owner, and a number are each rejected with exit 1, a
-    reason naming the blocker's id and the fixer field, and no crash, also when the other blocker is well formed."""
+    Runs the real hand-back check: a blocker for the worker, one for the planner, and both together pass, on every
+    stage a machine may run on (STAGE unset, plan or pr), since the sample review lists the owner's asks (#244). A
+    blocker with no fixer, an empty one, one naming the reviewer or the owner, and a number are each rejected with
+    exit 1, a reason naming the blocker's id and the fixer field, and no crash, also when the other blocker is well formed."""
     record_property("proves", "166.1")
-    for case in (review(blocker("B1", "worker")), review(blocker("B1", "planner")),
-                 review(blocker("B1", "worker"), blocker("B2", "planner"))):
-        code, out, err = check_review(tmp_path, case)
-        assert (code, out.strip()) == (0, ""), f"166.1: a review whose blockers name their fixer was rejected: {out}{err[-400:]}"
+    record_property("proves", "244.1")
+    for stage in ("", "plan", "pr"):
+        if stage:
+            monkeypatch.setenv("STAGE", stage)
+        else:
+            monkeypatch.delenv("STAGE", raising=False)
+        for case in (review(blocker("B1", "worker")), review(blocker("B1", "planner")),
+                     review(blocker("B1", "worker"), blocker("B2", "planner"))):
+            code, out, err = check_review(tmp_path, case)
+            assert (code, out.strip()) == (0, ""), \
+                f"166.1, 244.1: a review whose blockers name their fixer was rejected with STAGE={stage or 'unset'}: {out}{err[-400:]}"
+    monkeypatch.delenv("STAGE", raising=False)
     for bad in (None, "", "reviewer", "owner", 5):
         code, out, err = check_review(tmp_path, review(blocker("B1", "worker"), blocker("B2", bad)))
         assert "Traceback" not in err + out, f"166.1: the check crashed on fixer {bad!r}:\n{err[-600:]}"
