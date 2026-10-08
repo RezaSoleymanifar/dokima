@@ -1,8 +1,10 @@
 name: board
 # Keeps the project board's Status and "Waiting on" current at every stage moment.
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
-# names a board ("org/number").
+# names a board ("org/number"). Every run recounts each card's Needs you from its latest record;
+# "Run workflow" (workflow_dispatch) also puts every card back in the column its real state says.
 on:
+  workflow_dispatch:
   issues:
     types: [labeled, closed]
   issue_comment:
