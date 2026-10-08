@@ -289,7 +289,8 @@ def test_the_reviewer_card_shows_pass_or_only_the_criteria_it_blocks_on(record_p
     """The reviewer's card says it passed, or shows why it blocks, and its proposed issues.
 
     Draws a plan review that approves, with asks on 9.1 to 9.4 and one proposed issue, and checks the short part on top
-    says pass in words, names no criterion and shows the proposed issue. Then draws a code review that blocks on 9.2
+    says pass in words and names no criterion, and the proposed issue shows outside every fold (after the change
+    outside the plan, in the owner's order of issue #236). Then draws a code review that blocks on 9.2
     and 9.3 with the same asks, and checks the top shows each blocker's problem and never a criterion number or a
     blocker code (issue #236)."""
     record_property("proves", "182.4")
@@ -297,7 +298,9 @@ def test_the_reviewer_card_shows_pass_or_only_the_criteria_it_blocks_on(record_p
     words = re.sub(r"<[^>]+>", "", short)
     assert re.search(r"\bpass", words, re.I), f"182.4: the passing reviewer card does not say pass on top, in words:\n{short}"
     assert not re.search(r"\b9\.\d\b", short), f"182.4: the passing reviewer card lists criteria on top:\n{short}"
-    assert "1. Board ignores closed PRs: cards go stale" in short, f"182.4: the reviewer card does not show its proposed issue on top:\n{short}"
+    unfolded = FOLD.sub("", agent.render(rec("reviewer", "plan", APPROVE)))
+    assert "1. Board ignores closed PRs: cards go stale" in unfolded, \
+        f"182.4: the reviewer card does not show its proposed issue outside its folds:\n{unfolded}"
     short = top(agent.render(rec("reviewer", "pr", BLOCK)))
     for problem in ("The day is never checked.", "Restarts are not tried."):
         assert problem in short, f"182.4: the reviewer card does not show why it blocks ({problem!r}) on top:\n{short}"

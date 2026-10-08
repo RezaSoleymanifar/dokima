@@ -7,9 +7,13 @@ does, from the repo root of the run, and read the comment the way the owner does
     the planner's comment  lists each criterion as the issue card does: its status circle, its sentence, Verified by
                            with the first docstring line of each of its tests (read from the test files in the folder
                            the command runs in), then its Source link
-    a review's comment     lists only what fails, read against the plan in $PACK/plan.json: each failing criterion's
-                           sentence, why it fails (its blockers' problems) and its Source link; and each ask of the
-                           owner's no criterion keeps: the ask, "Nothing covers this" and its Source link
+    a review's comment     opens with its verdict, then, in the owner's order, lists only what fails, read against
+                           the plan in $PACK/plan.json: each failing criterion's sentence, why it fails (its blockers'
+                           problems) and its Source link; each ask of the owner's no criterion keeps: the ask,
+                           "Nothing covers this" and its Source link; its changes outside the plan; the plan's
+                           questions whose assumption it could not confirm; and the issues it found
+    a shared field         looks the same whichever agent shows it: the worker's and a review's changes outside the
+                           plan, and the planner's questions and a review's unconfirmed ones
     the worker's comment   names the files it changed since $BASE (committed, uncommitted or new) on one line
     every comment          folds its stats right above the Full record fold, which stays the last fold
 
@@ -100,6 +104,13 @@ APPROVE = {"previous_step": PREVIOUS, "verdict": "approve", "summary": "Every as
 WORK = {"summary": "The calls blocked the server. They now run as jobs.",
         "criteria": {"77.1": "submit() returns the id at once"}, "evidence": "python3 -m pytest -q: 12 passed in 3.1s",
         "outside_scope": [], "suspect_tests": [], "replies": []}
+QA = {"question": "Should a job expire after a day?", "assumption": "The plan assumes it does, as you said zq."}
+QB = {"question": "Should a failed job retry by itself?", "assumption": "The plan assumes it retries once zq."}
+ACCEPT_A = {"question": QA["question"], "accepted": True, "changes": False, "matched": "expire after a day zq",
+            "source": SRC1}
+DOUBT_B = {"question": QB["question"], "accepted": False, "changes": False, "why": "You never said how often zq."}
+FOUND = [{"title": "Retries are missing zq", "why": "A failed job never retries zq.", "evidence": "jobs.py:9"}]
+OUTSIDE = "A shared helper needed one line zq."
 
 
 def git(cwd, *args):
@@ -109,7 +120,7 @@ def git(cwd, *args):
 
 @pytest.fixture
 def run(tmp_path, monkeypatch):
-    """A run's machine: a git checkout with the planner's tests, a pack and a hand-back folder.
+    """A run's machine: a git checkout with tests, a pack and a hand-back folder.
 
     Set up as the workflow sets them; returns a function that writes a record the way the workflow does and gives
     back its comment and record."""
@@ -220,7 +231,7 @@ BARE_HEADING = re.compile(r"^[^\w\n]*(?:<img [^>]*>\s*)?\*\*[^*\n]+\*\*:?\s*$", 
 
 
 def no_blank_parts(body, k, what):
-    """Fail naming criterion k on an empty fold or a bold heading with nothing under it."""
+    """Fail naming criterion k on an empty fold or a bare heading."""
     text = visible(body)
     assert not EMPTY_FOLD.search(text), f"{k}: {what} holds an empty fold:\n{text}"
     lines = text.splitlines()
@@ -270,6 +281,20 @@ def test_a_run_comment_shows_each_optional_part_only_when_it_has_something(recor
     q = {"question": "Should a job expire after a day?", "assumption": "The plan assumes it does."}
     words = plain(visible(run("planner", "", dict(PLAN, questions=[q]))[0]))
     assert q["question"] in words and q["assumption"] in words, f"236.2: the plan's question is not shown:\n{words}"
+    (run.pack / "plan.json").write_text(json.dumps(dict(PLAN, questions=[QA])))
+    for judged in (None, [], [ACCEPT_A]):
+        hb = dict(APPROVE, issues_found=[]) if judged is None else dict(APPROVE, issues_found=[], assumptions=judged)
+        body = run("reviewer", "plan", hb)[0]
+        text = visible(body)
+        for gone, mark in (("Questions", "question"), ("Issues found", "issue found")):
+            assert gone not in plain(text) and img(mark) not in text, \
+                f"236.2: a plan review with nothing for {gone} (assumptions {judged!r}) still shows it:\n{text}"
+        assert QA["question"] not in text, f"236.2: a plan review shows a question whose assumption it accepted:\n{text}"
+        no_blank_parts(body, "236.2", f"a plan review's comment with no question left and no issue found ({judged!r})")
+    words = plain(visible(run("reviewer", "plan", dict(APPROVE, assumptions=[dict(DOUBT_B, question=QA["question"])],
+                                                       issues_found=FOUND))[0]))
+    for said in (QA["question"], "Retries are missing zq"):
+        assert said in words, f"236.2: a plan review does not show {said!r}, which it has:\n{words}"
 
 
 def test_a_review_comment_drops_the_previous_step_details_and_notes(record_property, run):
@@ -290,6 +315,57 @@ def test_a_review_comment_drops_the_previous_step_details_and_notes(record_prope
             assert img("note") not in visible(body), f"236.2: the {name} {stage} review's comment still shows the note icon"
     body = run("reviewer", "pr", dict(BLOCK, verdict="escalate"))[0]
     assert BLOCK["summary"] in plain(visible(body)), f"236.2: an escalation lost its summary, the reason it reaches you:\n{body}"
+
+
+def section(text, field, label):
+    """The part of a comment one field draws: its fold, or its heading and lines.
+
+    A field drawn in a fold gives that whole fold; one drawn open gives its heading line and the lines under it, up
+    to the next blank line. Empty when the field's icon and label show nowhere."""
+    head = re.compile(re.escape(img(field)) + r"\s*(?:\*\*|<b>)?\s*" + re.escape(label))
+    for fold in DETAILS.findall(text):
+        summary = re.search(r"<summary>(.*?)</summary>", fold, re.S)
+        if summary and head.search(summary.group(1)):
+            return fold
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if head.search(line):
+            part = [line]
+            for rest in lines[i + 1:]:
+                if not rest.strip():
+                    break
+                part.append(rest)
+            return "\n".join(part)
+    return ""
+
+
+def test_a_field_two_agents_show_looks_the_same_from_both(record_property, run):
+    """A field two agents show has the same icon, label and layout from both.
+
+    Draws the worker's change outside its scope beside a plan review's and a code review's change outside the plan,
+    with the same file and words, and checks all three draw the very same Outside the plan part; then draws a plan
+    with one question beside a plan review that could not confirm that question's assumption, and checks both draw
+    the very same Questions for you part, holding the question and its assumption. Proves 236.2."""
+    record_property("proves", "236.2")
+    parts = [("the worker", section(visible(run("worker", "", dict(WORK, outside_scope=[{"file": "app/extra.py", "why": OUTSIDE}]))[0]),
+                                    "outside the plan", "Outside the plan"))]
+    for stage in ("plan", "pr"):
+        body = run("reviewer", stage, dict(APPROVE, outside_plan=[{"file": "app/extra.py", "change": OUTSIDE}]))[0]
+        parts.append((f"a {stage} review", section(visible(body), "outside the plan", "Outside the plan")))
+    for who, part in parts:
+        assert "app/extra.py" in part and OUTSIDE in part, \
+            f"236.2: {who}'s comment has no Outside the plan part, behind its icon, naming the file and why:\n{part}"
+    for who, part in parts[1:]:
+        assert part == parts[0][1], \
+            f"236.2: {who} draws Outside the plan unlike the worker:\n--- worker\n{parts[0][1]}\n--- {who}\n{part}"
+    planner = section(visible(run("planner", "", dict(PLAN, questions=[QB]))[0]), "question", "Questions for you")
+    assert QB["question"] in planner and QB["assumption"] in planner, \
+        f"236.2: the plan's comment has no Questions for you part, behind its icon, with its question:\n{planner}"
+    (run.pack / "plan.json").write_text(json.dumps(dict(PLAN, questions=[QA, QB])))
+    review = section(visible(run("reviewer", "plan", dict(APPROVE, assumptions=[ACCEPT_A, DOUBT_B]))[0]),
+                     "question", "Questions for you")
+    assert review == planner, \
+        f"236.2: the plan review draws Questions for you unlike the planner:\n--- planner\n{planner}\n--- review\n{review}"
 
 
 # 236.3: the planner's criteria with their circle, Verified by and Source
@@ -382,6 +458,44 @@ def test_a_code_review_and_a_pass_list_nothing_that_passed(record_property, run)
             assert passed not in text, f"236.4: a passing {stage} review lists {passed!r}:\n{text}"
 
 
+VERDICT_WORDS = ("passed", "blocked", "escalated")
+
+
+def test_a_review_comment_opens_with_its_verdict_then_the_owners_order(record_property, run):
+    """A review's comment opens with its verdict, then shows its parts in the owner's order.
+
+    Draws a plan review and a code review that pass, block and escalate, and checks each opens saying passed,
+    blocked or escalated and neither of the others, while a rejected one claims no verdict. Then draws a blocking
+    plan review with two failing criteria, an ask nothing covers, a change outside the plan, one assumption it
+    accepted and one it could not confirm, and an issue found, and checks they show in that order (failing
+    criteria, the ask, the change, the unconfirmed question, the issue) and the accepted question not at all.
+    Proves 236.4."""
+    record_property("proves", "236.4")
+    for stage in ("plan", "pr"):
+        for verdict, word in (("approve", "passed"), ("block", "blocked"), ("escalate", "escalated")):
+            first = first_line(run("reviewer", stage, APPROVE if verdict == "approve" else dict(BLOCK, verdict=verdict))[0])
+            assert re.search(rf"\b{word}\b", first), f"236.4: a {stage} review that says {verdict} does not open with {word!r}: {first!r}"
+            for other in VERDICT_WORDS:
+                assert other == word or not re.search(rf"\b{other}\b", first), \
+                    f"236.4: a {stage} review that says {verdict} opens saying {other!r}: {first!r}"
+        first = first_line(run("reviewer", stage, BLOCK, passed=False, problems="a problem\n")[0])
+        assert not any(re.search(rf"\b{w}\b", first) for w in VERDICT_WORDS), \
+            f"236.4: a {stage} review code rejected opens with a verdict it never gave: {first!r}"
+    (run.pack / "plan.json").write_text(json.dumps(dict(PLAN, questions=[QA, QB])))
+    hb = dict(BLOCK, outside_plan=[{"file": "app/extra.py", "change": OUTSIDE}], assumptions=[ACCEPT_A, DOUBT_B],
+              issues_found=FOUND)
+    text = visible(run("reviewer", "plan", hb)[0])
+    order = [("the first failing criterion", SENTENCES[1]), ("the second failing criterion", SENTENCES[3]),
+             ("the ask nothing covers", "Email me when a job fails"), ("the change outside the plan", OUTSIDE),
+             ("the question it could not confirm", QB["question"]), ("the issue it found", "Retries are missing zq")]
+    for name, words in order:
+        assert text.count(words) == 1, f"236.4: the review's comment does not show {name} ({words!r}) exactly once:\n{text}"
+    for (a, wa), (b, wb) in zip(order, order[1:]):
+        assert text.index(wa) < text.index(wb), f"236.4: the review's comment shows {b} before {a}:\n{text}"
+    for gone in (QA["question"], "Accepted on your words", "expire after a day zq", "Not accepted"):
+        assert gone not in text, f"236.4: the review's comment shows {gone!r}, from an assumption it accepted or its judging:\n{text}"
+
+
 # 236.5: the worker's files on one line
 
 def test_the_files_the_worker_changed_show_on_one_line(record_property, run):
@@ -422,7 +536,7 @@ def test_the_files_the_worker_changed_show_on_one_line(record_property, run):
 # 236.6: stats folded at the bottom
 
 def test_the_stats_sit_in_a_fold_at_the_bottom_of_every_run_comment(record_property, run):
-    """The stats sit in a fold right above the full record, not in an open footnote.
+    """The stats sit in a fold right above the full record, not a footnote.
 
     Draws the comment of a plan, a build, a plan review, a code review, a rejected run, a cancelled run and a filed
     split, and checks the last fold before the full record opens with the stats icon and holds the stats, and that
