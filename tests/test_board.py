@@ -56,7 +56,12 @@ class FakeGitHub:
         if query.startswith("query") and "repository" in query:
             kind = "issue" if "issue(" in query else "pullRequest"
             items = [{"id": "ITEM", "project": {"id": "P"}}] if self.on_board else []
-            return {"repository": {kind: {"id": "C", "projectItems": {"nodes": items}}}}
+            # The issue or PR carries no labels and has no open PR, as GitHub answers for them (#210).
+            return {"repository": {kind: {"id": "C", "projectItems": {"nodes": items}, "labels": {"nodes": []}},
+                                   "pullRequests": {"nodes": []}}}
+        if query.startswith("query") and "node(" in query:
+            # The card has no Action pill yet, as GitHub answers for it (#210).
+            return {"node": {"fieldValueByName": None, "fieldValues": {"nodes": []}}}
         if "addProjectV2ItemById" in query:
             return {"addProjectV2ItemById": {"item": {"id": "NEW"}}}
         return {}

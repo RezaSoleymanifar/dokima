@@ -1,7 +1,8 @@
 """The board shows what runs on autopilot: an Autopilot pill, Needs you in its place when the river stops, one view (#210).
 
-The board is faked at the size of dokima.board.Board, so these tests read the board's end state, never the GraphQL
-queries that reach it. The fake keeps, in memory, one world shared with a fake `gh`:
+The first ten tests fake dokima.board.Board itself, so they read the board's end state, never the GraphQL queries
+that reach it. The tests at the end run the real Board against a faked GitHub, so the new reads and writes below truly
+reach GitHub. The fake keeps, in memory, one world shared with a fake `gh`:
 
 - cards: each card's Status and Action (the single-select field holding "Needs you" and now "Autopilot");
 - labels: the labels each issue and pull request carries; `autopilot` is autopilot's state (story 1, #209);
@@ -408,3 +409,271 @@ def test_without_a_board_autopilot_still_works_and_nothing_fails(record_property
     assert split_main(monkeypatch, w) == 0, "210.5: filing a split failed without a board"
     for n in (201, 202):
         assert w.has("issue", n), f"210.5: without a board, story #{n} under #139 on autopilot was not labeled autopilot"
+
+
+# The real dokima.board.Board, against a faked GitHub (B1, B2 of the plan review)
+#
+# The tests above fake the Board itself. These run the real Board, so its new reads and writes must truly reach GitHub.
+# Only GitHub is faked: `q` answers GraphQL the way GitHub does, and `rest` answers the REST calls. The real Board is
+#     Board(spec, repo, q=gql, rest=api)   and   sync(event, payload, spec, repo, q=gql, rest=api)
+# where rest(method, path, **fields) sends one REST call (as `gh api -X METHOD path -f k=v`), returns its parsed JSON,
+# and raises subprocess.CalledProcessError when GitHub refuses it.
+# GitHub has a call that adds a view: POST orgs/{org}/projectsV2/{number}/views with name, layout ("table") and filter
+# (https://docs.github.com/en/rest/projects/views). The board's views are read in GraphQL: projectV2 { views { nodes {
+# name layout filter } } }. Labels may be read and written either in GraphQL (labels, label(name:),
+# addLabelsToLabelable, removeLabelsFromLabelable) or in REST (repos/{repo}/issues/{n} and its /labels); the fake
+# answers both. A card's current option is read in GraphQL from the item: node(id:) { ... on ProjectV2Item {
+# fieldValueByName(name:) { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } (fieldValues is answered too).
+# An issue's open pull request is read from repository { pullRequests(headRefName: "try/issue-N", states: OPEN) }.
+
+import subprocess  # noqa: E402
+
+
+class FakeGitHub:
+    """GitHub as the real Board sees it: one project with Status and Action, issues, pull requests, labels and views."""
+
+    def __init__(self, labels=None, prs=None, closed_prs=None, cards=None, views=("Needs you",), refuse_views=False):
+        self.labels = {n: set(v) for n, v in (labels or {}).items()}  # issue and PR numbers share one space, as on GitHub
+        self.prs = dict(prs or {})  # issue number -> open PR number
+        self.closed_prs = dict(closed_prs or {})  # issue number -> a closed PR on the same branch
+        self.kinds = {**{n: "pr" for n in list(self.prs.values()) + list(self.closed_prs.values())}}
+        self.cards = {}  # item id -> {field: option}
+        self.items = {}  # (kind, n) -> item id
+        for (kind, n), fields in (cards or {}).items():
+            self.items[(kind, n)] = f"ITEM_{kind}_{n}"
+            self.cards[f"ITEM_{kind}_{n}"] = dict(fields)
+        self.views = [{"name": v, "layout": "TABLE_LAYOUT", "filter": ""} for v in views]
+        self.refuse_views = refuse_views
+        self.rest_calls = []
+
+    def kind(self, n):
+        return self.kinds.get(n, "issue")
+
+    def action(self, kind, n):
+        return self.cards.get(self.items.get((kind, n)), {}).get("Action")
+
+    def put(self, n, on):
+        s = self.labels.setdefault(n, set())
+        s.add(LABEL) if on else s.discard(LABEL)
+
+    def content(self, node_id):
+        """The number behind a node id like I_57 or PR_60."""
+        return int(str(node_id).split("_")[-1])
+
+    def item_node(self, kind, n):
+        iid = self.items.get((kind, n))
+        card = self.cards.get(iid, {})
+        nodes = [{"id": iid, "project": {"id": "P"},
+                  "fieldValueByName": {"name": card["Action"]} if card.get("Action") else None}] if iid else []
+        return {"id": ("I_" if kind == "issue" else "PR_") + str(n), "number": n, "projectItems": {"nodes": nodes},
+                "labels": {"nodes": [{"name": l} for l in sorted(self.labels.get(n, set()))]}}
+
+    def q(self, query, **v):
+        """Answer one GraphQL call the way GitHub would."""
+        text = " ".join(query.split())
+        values = [str(x) for x in v.values()]
+        if "organization" in text:
+            return {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
+                {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
+                {"id": "W", "name": "Action", "options": [{"id": "w-you", "name": "Needs you"}, {"id": "w-auto", "name": "Autopilot"}]}]},
+                "views": {"nodes": [dict(x) for x in self.views]}}}}
+        if "addProjectV2ItemById" in text:
+            n = self.content(v.get("c") or next(x for x in values if x.startswith(("I_", "PR_"))))
+            kind = "issue" if str(v.get("c", "I_")).startswith("I_") else "pr"
+            self.items[(kind, n)] = f"ITEM_{kind}_{n}"
+            self.cards.setdefault(f"ITEM_{kind}_{n}", {})
+            return {"addProjectV2ItemById": {"item": {"id": f"ITEM_{kind}_{n}"}}}
+        if "updateProjectV2ItemPosition" in text:
+            return {}
+        if "updateProjectV2ItemFieldValue" in text or "clearProjectV2ItemFieldValue" in text:
+            iid = next(x for x in values if x.startswith("ITEM_"))
+            field = {"S": "Status", "W": "Action"}[v.get("f") or next(x for x in values if x in ("S", "W"))]
+            if "clearProjectV2ItemFieldValue" in text:
+                self.cards[iid].pop(field, None)
+            else:
+                opt = v.get("o") or next(x for x in values if x.startswith(("s-", "w-")))
+                self.cards[iid][field] = {"w-you": "Needs you", "w-auto": "Autopilot"}.get(opt, opt[2:])
+            return {}
+        if "addLabelsToLabelable" in text or "removeLabelsFromLabelable" in text:
+            assert "LA_autopilot" in text + " ".join(values), "the label call names no autopilot label id"
+            n = self.content(next(x for x in values if x.startswith(("I_", "PR_"))))
+            self.put(n, "addLabelsToLabelable" in text)
+            return {}
+        if "node(" in text:
+            iid = next(x for x in values if x.startswith("ITEM_"))
+            card = self.cards.get(iid, {})
+            field = next((f for f in ("Action", "Status") if f in values or f'"{f}"' in text), None)
+            return {"node": {"id": iid,
+                             "fieldValueByName": {"name": card[field]} if field and card.get(field) else None,
+                             "fieldValues": {"nodes": [{"name": o, "field": {"name": f}} for f, o in card.items()]}}}
+        if "repository" in text:
+            repo = {}
+            if "pullRequests(" in text:
+                head = next((x for x in values if x.startswith("try/issue-")), None) or re.search(r"try/issue-\d+", text).group(0)
+                n = int(head.rsplit("-", 1)[1])
+                nodes = []
+                if n in self.closed_prs and "OPEN" not in text:
+                    nodes.append({"number": self.closed_prs[n], "state": "CLOSED"})
+                if n in self.prs:
+                    nodes.append({"number": self.prs[n], "state": "OPEN"})
+                repo["pullRequests"] = {"nodes": nodes}
+            if "label(" in text:
+                repo["label"] = {"id": "LA_autopilot", "name": LABEL} if LABEL in text + " ".join(values) else None
+            for field, kind in (("issue(", "issue"), ("pullRequest(", "pr")):
+                if field in text:
+                    n = next((x for x in v.values() if isinstance(x, int)), None)
+                    if n is None:
+                        n = int(re.search(field.replace("(", r"\(") + r"\s*number:\s*(\d+)", text).group(1))
+                    repo[field[:-1]] = self.item_node(kind, n)
+            return {"repository": repo}
+        return {}
+
+    def rest(self, method, path, **fields):
+        """Answer one REST call the way GitHub would; refuse the view call when told to."""
+        method, path = method.upper(), path.lstrip("/")
+        self.rest_calls.append((method, path, fields))
+        if path == "orgs/dokima-dev/projectsV2/1/views" and method == "POST":
+            if self.refuse_views:
+                raise subprocess.CalledProcessError(1, ["gh", "api", path], output="", stderr="Resource not accessible by integration")
+            self.views.append({"name": fields.get("name"), "layout": {"table": "TABLE_LAYOUT"}.get(fields.get("layout"), fields.get("layout")),
+                               "filter": fields.get("filter")})
+            return {"id": 9, "name": fields.get("name")}
+        m = re.fullmatch(r"repos/dokima-dev/dokima/issues/(\d+)(/labels(?:/(.+))?)?", path)
+        if m:
+            n = int(m.group(1))
+            if m.group(2) and method == "DELETE" and m.group(3) == LABEL:
+                self.put(n, False)
+            elif m.group(2) and method in ("POST", "PUT") and LABEL in " ".join(str(x) for x in fields.values()):
+                self.put(n, True)
+            return {"number": n, "labels": [{"name": l} for l in sorted(self.labels.get(n, set()))]}
+        return {}
+
+
+def ready(criterion, *methods, sync=False):
+    """Fail in plain words, naming the criterion, while the real Board lacks what these tests run."""
+    import inspect
+    if "rest" not in inspect.signature(board.Board).parameters:
+        pytest.fail(f"{criterion}: the real Board takes no rest= call yet, so it cannot reach GitHub's REST API")
+    if sync and "rest" not in inspect.signature(board.sync).parameters:
+        pytest.fail(f"{criterion}: board.sync takes no rest= call yet")
+    missing = [m for m in methods if not callable(getattr(board.Board, m, None))]
+    if missing:
+        pytest.fail(f"{criterion}: the real Board has no {', '.join(missing)} yet")
+
+
+def real_board(gh):
+    return board.Board(SPEC, REPO, q=gh.q, rest=gh.rest)
+
+
+def test_the_real_board_reads_whether_an_issue_or_pull_request_is_on_autopilot(record_property):
+    """The board tells an issue or pull request on autopilot from one that is not, by reading its labels on GitHub.
+
+    Runs the real Board against a faked GitHub: issue #57 (labels autopilot and bug) and PR #60 (autopilot) are on
+    autopilot; issue #58 (bug) and PR #61 (no labels) are not."""
+    record_property("proves", "210.1")
+    ready("210.1", "autopilot")
+    gh = FakeGitHub(labels={57: {LABEL, "bug"}, 60: {LABEL}, 58: {"bug"}, 61: set()}, prs={57: 60, 58: 61})
+    b = real_board(gh)
+    for kind, n, on in (("issue", 57, True), ("pr", 60, True), ("issue", 58, False), ("pr", 61, False)):
+        assert b.autopilot(kind, n) is on, f"210.1: the board read {kind} #{n} as {'off' if on else 'on'} autopilot"
+
+
+def test_the_real_board_finds_the_open_pull_request_of_an_issue(record_property):
+    """The board finds the open pull request built for an issue, and none when there is none.
+
+    Issue #57 has open PR #60 and an older closed PR #55 on the same branch; issue #58 has none."""
+    record_property("proves", "210.1")
+    ready("210.1", "open_pr")
+    gh = FakeGitHub(prs={57: 60}, closed_prs={57: 55})
+    b = real_board(gh)
+    assert b.open_pr(57) == 60, f"210.1: the open pull request of #57 read as {b.open_pr(57)!r}, not #60"
+    assert b.open_pr(58) is None, f"210.1: #58 has no pull request, but the board found {b.open_pr(58)!r}"
+
+
+def test_the_real_board_reads_back_the_pill_it_sets(record_property):
+    """The board reads a card's current pill, Needs you, Autopilot or none, so it never writes over Needs you blindly.
+
+    The real Board reads #57's card (Needs you), #58's (Autopilot) and #59's (no pill), then sets Autopilot on #59 and
+    clears #58, and reads both back."""
+    record_property("proves", "210.3")
+    ready("210.3", "value")
+    gh = FakeGitHub(cards={("issue", 57): {"Status": "Plan", "Action": "Needs you"},
+                           ("issue", 58): {"Status": "Work", "Action": "Autopilot"}, ("issue", 59): {"Status": "Work"}})
+    b = real_board(gh)
+    i57, i58, i59 = (b.item("issue", n) for n in (57, 58, 59))
+    assert b.value(i57, "Action") == "Needs you", f"210.3: #57's card read as {b.value(i57, 'Action')!r}, not Needs you"
+    assert b.value(i58, "Action") == "Autopilot", f"210.3: #58's card read as {b.value(i58, 'Action')!r}, not Autopilot"
+    assert b.value(i59, "Action") is None, f"210.3: #59's card has no pill but read as {b.value(i59, 'Action')!r}"
+    b.set(i59, "Action", "Autopilot")
+    b.set(i58, "Action", None)
+    assert (b.value(i59, "Action"), b.value(i58, "Action")) == ("Autopilot", None), "210.3: the board did not read back what it set"
+
+
+def test_the_real_board_puts_the_autopilot_label_on_and_off_a_pull_request(record_property):
+    """The board puts the autopilot label on a pull request and takes it off, leaving its other labels alone.
+
+    The real Board labels PR #60 (which carries bug) and then unlabels it; #61 is never touched."""
+    record_property("proves", "210.4")
+    ready("210.4", "label")
+    gh = FakeGitHub(labels={60: {"bug"}, 61: {"bug"}}, prs={57: 60, 58: 61})
+    b = real_board(gh)
+    b.label("pr", 60, True)
+    assert gh.labels[60] == {"bug", LABEL}, f"210.4: labelling PR #60 left it with {sorted(gh.labels[60])}"
+    b.label("pr", 60, False)
+    assert gh.labels[60] == {"bug"}, f"210.4: unlabelling PR #60 left it with {sorted(gh.labels[60])}"
+    assert gh.labels[61] == {"bug"}, "210.4: labelling PR #60 changed PR #61"
+
+
+def test_the_real_board_lists_its_views_and_adds_the_autopilot_table_view(record_property):
+    """The board reads its views from GitHub and adds the Autopilot view with GitHub's create-view call.
+
+    The real Board reads the views (only Needs you), adds one named Autopilot, table layout, filter label:autopilot,
+    with exactly one POST to orgs/dokima-dev/projectsV2/1/views, and then reads both views back."""
+    record_property("proves", "210.4")
+    ready("210.4", "views", "add_view")
+    gh = FakeGitHub()
+    b = real_board(gh)
+    assert b.views() == ["Needs you"], f"210.4: the board read its views as {b.views()}"
+    b.add_view("Autopilot", "table", f"label:{LABEL}")
+    sent = [c for c in gh.rest_calls if c[1].endswith("/views")]
+    assert sent == [("POST", "orgs/dokima-dev/projectsV2/1/views", {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"})], \
+        f"210.4: adding the view sent {sent}, not one create-view call with name, table layout and filter"
+    assert real_board(gh).views() == ["Needs you", "Autopilot"], "210.4: the added view is not read back"
+
+
+def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
+    """Switching #57 on autopilot, through the real board sync, gives #57 and its PR the pill, the PR the label, and one view.
+
+    Runs board.sync with the real Board against a faked GitHub. #57 (on Plan) and its PR #60 get Autopilot, PR #60
+    carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot. A second
+    issue switched on adds no second view. #58, already showing Needs you when switched on, keeps Needs you."""
+    record_property("proves", "210.1")
+    ready("210.1", sync=True)
+    gh = FakeGitHub(labels={57: {LABEL}, 58: {LABEL}, 101: {LABEL}}, prs={57: 60},
+                    cards={("issue", 57): {"Status": "Plan"}, ("pr", 60): {"Status": "Review"},
+                           ("issue", 58): {"Status": "Plan", "Action": "Needs you"}})
+    for n in (57, 58, 101):
+        board.sync("issues", label_event("labeled", LABEL, [LABEL], n), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert (gh.action("issue", 57), gh.action("pr", 60), gh.action("issue", 101)) == ("Autopilot",) * 3, \
+        f"210.1: on GitHub the cards show {gh.action('issue', 57)!r}, {gh.action('pr', 60)!r}, {gh.action('issue', 101)!r}"
+    assert gh.action("issue", 58) == "Needs you", f"210.3: switching #58 on replaced Needs you with {gh.action('issue', 58)!r}"
+    assert LABEL in gh.labels.get(60, set()), "210.4: on GitHub PR #60 does not carry the autopilot label"
+    assert [x["name"] for x in gh.views].count("Autopilot") == 1, f"210.4: the board has views {[x['name'] for x in gh.views]}"
+    view = next(x for x in gh.views if x["name"] == "Autopilot")
+    assert (view["layout"], view["filter"]) == ("TABLE_LAYOUT", f"label:{LABEL}"), f"210.4: the Autopilot view is {view}"
+
+
+def test_a_refused_view_never_stops_the_pills_and_says_why(record_property):
+    """If GitHub refuses to add the Autopilot view, the pills are still set and the board run fails naming the view.
+
+    The faked GitHub refuses the create-view call. Switching #57 on autopilot still gives #57 and PR #60 the
+    Autopilot pill and labels PR #60, then the sync raises an error whose message names the Autopilot view."""
+    record_property("proves", "210.4")
+    ready("210.4", sync=True)
+    gh = FakeGitHub(labels={57: {LABEL}}, prs={57: 60}, cards={("issue", 57): {"Status": "Plan"}}, refuse_views=True)
+    with pytest.raises(Exception) as failed:
+        board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert "Autopilot view" in str(failed.value), f"210.4: the failure does not say the Autopilot view could not be added: {failed.value}"
+    assert (gh.action("issue", 57), gh.action("pr", 60)) == ("Autopilot", "Autopilot"), \
+        "210.4: a refused view stopped the Autopilot pills from being set"
+    assert LABEL in gh.labels.get(60, set()), "210.4: a refused view stopped PR #60 from being labelled"
