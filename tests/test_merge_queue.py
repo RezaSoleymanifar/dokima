@@ -247,16 +247,26 @@ def commit_expressions():
     return refs, heads
 
 
+def suite_refs():
+    """The `ref:` of every checkout in full-suite.yml, the commit the all tests check runs."""
+    return [line.split(":", 1)[1].strip() for line in workflow("full-suite.yml") if re.match(r"^\s+ref:\s", line)]
+
+
 def test_both_required_workflows_run_in_the_merge_queue_on_the_queued_commit(record_property):
     """The all-tests and done-whens workflows run on the merge queue's event, testing the queued commit.
 
     Reads the `on:` of full-suite.yml and done-whens.yml and checks each lists merge_group; then evaluates the commit
     the done-whens check checks out and the commit its annotations link to for a merge_group event, and checks both are
-    the queue's commit (the pull request on top of the latest main), not empty and not main's."""
+    the queue's commit (the pull request on top of the latest main), not empty and not main's; and does the same for
+    the commit the all tests check checks out."""
     record_property("proves", "191.1")
     for name in ("full-suite.yml", "done-whens.yml"):
         assert "merge_group" in triggers(workflow(name)), \
             f"191.1: {name} does not run on the merge queue's merge_group event; its `on:` is {sorted(triggers(workflow(name)))}"
+    for expr in suite_refs():
+        got = evaluate(expr, queue_event(12), QUEUE_SHA)
+        assert got == QUEUE_SHA, \
+            f"191.1: in the merge queue the all tests checkout `{expr}` gives {got!r}, not the queued commit {QUEUE_SHA}"
     refs, heads = commit_expressions()
     assert refs and heads, "191.1: done-whens.yml has no `ref:` on the checkout with `path: pr` or no HEAD_SHA"
     for what, exprs in (("checkout ref", refs), ("HEAD_SHA", heads)):
@@ -322,15 +332,16 @@ def test_queued_pr_with_no_linked_issue_fails_the_gate_with_the_same_reason(reco
 def test_pull_request_checks_behave_exactly_as_before(record_property, run_matrix):
     """Pull request checks are unchanged: the queue is added beside them, with the same names, list and commit.
 
-    Checks the triggers are exactly what they were plus merge_group (full-suite.yml: pull_request, push to main,
-    merge_group; done-whens.yml: pull_request_target, merge_group), so nothing was dropped, swapped or added beyond the
-    queue; that the required check names 'all tests' and 'all done-whens passed' are unchanged; that
-    `dokima.checks matrix` on a pull request lists its issue's plan exactly; and that on a pull request the done-whens
-    check out and annotate the pull request's head commit, not main's."""
+    Checks the triggers are exactly main's plus merge_group (full-suite.yml: pull_request_target, push to main,
+    merge_group, as #263 left it; done-whens.yml: pull_request_target, merge_group), so nothing was dropped, swapped or
+    added beyond the queue; that the required check names 'all tests' and 'all done-whens passed' are unchanged; that
+    `dokima.checks matrix` on a pull request lists its issue's plan exactly; that on a pull request the done-whens
+    check out and annotate the pull request's head commit, not main's; and that the all tests check still checks out
+    the pull request's head on a pull request and main's commit on a push to main."""
     record_property("proves", "191.4")
     suite, dw = workflow("full-suite.yml"), workflow("done-whens.yml")
-    assert triggers(suite) == {"pull_request", "push", "merge_group"}, \
-        f"191.4: full-suite.yml should run on pull_request, push and merge_group only, but runs on {sorted(triggers(suite))}"
+    assert triggers(suite) == {"pull_request_target", "push", "merge_group"}, \
+        f"191.4: full-suite.yml should run on pull_request_target, push and merge_group only, but runs on {sorted(triggers(suite))}"
     assert "branches: [main]" in [x.strip() for x in suite], "191.4: full-suite.yml no longer runs on pushes to main"
     assert triggers(dw) == {"pull_request_target", "merge_group"}, \
         f"191.4: done-whens.yml should run on pull_request_target and merge_group only, but runs on {sorted(triggers(dw))}"
@@ -344,3 +355,10 @@ def test_pull_request_checks_behave_exactly_as_before(record_property, run_matri
     for expr in refs + heads:
         got = evaluate(expr, pr_event(12), BASE_SHA)
         assert got == PR_SHA, f"191.4: on a pull request `{expr}` gives {got!r}, not the pull request's head {PR_SHA}"
+    assert suite_refs(), "191.4: full-suite.yml no longer names the commit it checks out, so it tests main's own copy"
+    for expr in suite_refs():
+        got = evaluate(expr, pr_event(12), BASE_SHA)
+        assert got == PR_SHA, \
+            f"191.4: on a pull request the all tests checkout `{expr}` gives {got!r}, not the pull request's head {PR_SHA}"
+        got = evaluate(expr, {"ref": "refs/heads/main"}, BASE_SHA)
+        assert got == BASE_SHA, f"191.4: on a push to main the all tests checkout `{expr}` gives {got!r}, not main's {BASE_SHA}"
