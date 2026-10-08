@@ -107,6 +107,9 @@ def check_stories(stories, issue=None):
                 if not isinstance(c.get(key), str) or not c[key].strip():
                     raise Garbled(f"story {n}: non-functional requirement {k} needs its text and why as non-empty "
                                   f"text, and its {key} is not")
+        if len(ac) + len(nfr) > 5:
+            raise Garbled(f"story {n} has more than five criteria ({len(ac) + len(nfr)}, acceptance and non-functional "
+                          f"together): split it")
         if not isinstance(s.get("depends_on"), list):
             raise Garbled(f"story {n} needs depends_on as a list (empty for no dependencies)")
     last = len(stories) - 1
@@ -141,6 +144,12 @@ def from_kind(p, issue=None):
     every criterion's source must be it or one of its comment links.
     """
     kind = p["kind"]
+    if "concerns" in p:
+        raise Garbled("plan.json has concerns, which are no longer part of a plan: a doubt about the ask goes in as a "
+                      "question")
+    if "replies" in p:
+        raise Garbled("plan.json has replies: replies are no longer part of a plan; the reviewer resolves or keeps each "
+                      "open blocker itself")
     if kind in ("feature", "user_story") and (not isinstance(p.get("summary"), str) or not p["summary"].strip()):
         raise Garbled("plan.json needs a summary: one plain sentence saying what the issue is about")
     if kind == "feature":
@@ -176,6 +185,9 @@ def from_kind(p, issue=None):
             if not isinstance(c.get(key), str) or not c[key].strip():
                 raise Garbled(f"non-functional requirement {k} needs its text and why as non-empty text, "
                               f"and its {key} is not")
+    if len(ac) + len(nfr) > 5:
+        raise Garbled(f"a story has more than five criteria ({len(ac) + len(nfr)}, acceptance and non-functional "
+                      f"together): split it")
     if not strings(p.get("scope")) or not p["scope"]:
         raise Garbled("a story needs scope as a non-empty list of files")
     if not strings(p.get("out_of_scope", [])):

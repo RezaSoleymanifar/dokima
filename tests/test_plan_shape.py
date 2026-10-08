@@ -31,7 +31,8 @@ def test_prompt_teaches_the_terms_voice_and_every_example(record_property):
     """The planner's prompt teaches the agreed terms, the product voice and an example for every rule.
 
     Reads the prompt and looks for each term, each of the owner's six approved examples, and one
-    example per rule (user story, feature, bug fix, non-functional, scope, docstring, question, concern).
+    example per rule (user story, feature, bug fix, non-functional, scope, docstring, question). Concerns are gone
+    (#241): a doubt about the ask goes in as a question.
     """
     record_property("proves", "138.1")
     for term in ["User story", "Feature", "Acceptance criteria", "Non-functional requirements", "Definition of Done",
@@ -42,7 +43,7 @@ def test_prompt_teaches_the_terms_voice_and_every_example(record_property):
                      "A rejected plan never fails silently", "Repos without a board are left alone"]:
         assert approved in PROMPT, f"138.1: the owner's approved example is missing: {approved!r}"
     for rule in ["- User story:", "- Feature:", "- Bug fix as a criterion:", "- Non-functional with reason",
-                 "- Scope:", "- Test docstring:", "- Question:", "- Concern:"]:
+                 "- Scope:", "- Test docstring:", "- Question:"]:
         assert rule in PROMPT, f"138.1: no example for {rule!r}"
     assert "Objective:" not in PROMPT and "Non-goals:" not in PROMPT, "138.1: the prompt still uses Objective or Non-goals"
 

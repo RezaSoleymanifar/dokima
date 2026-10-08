@@ -130,7 +130,8 @@ def blockers_for(recs, role):
 
 
 def problems_round(role, h, pack_dir):
-    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one."""
+    """The worker must answer every open blocker of the newest review by id; the reviewer must resolve or keep each one.
+    The planner answers none: replies are no longer part of a plan."""
     path = os.path.join(pack_dir, "open_blockers.json")
     blockers = {b.get("id") for b in (json.load(open(path)) if os.path.exists(path) else []) if isinstance(b, dict)}
     bad = []
@@ -144,6 +145,8 @@ def problems_round(role, h, pack_dir):
             listed = listed if isinstance(listed, list) else []
         carried = set(resolved) | {b.get("id") for b in listed if isinstance(b, dict)}
         return bad + [f"earlier blocker {b} is neither resolved nor still listed" for b in sorted(blockers - carried)]
+    if role == "planner":
+        return bad
     replies = h.get("replies", [])
     if not isinstance(replies, list) or not all(isinstance(r, dict) for r in replies):
         bad.append("replies must be a list of objects")
