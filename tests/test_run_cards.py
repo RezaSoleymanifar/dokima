@@ -87,7 +87,7 @@ OPENINGS = [
     ("plan", lambda: rec("planner", handback=PLAN), r"\bplan", r"question|split"),
     ("plan with questions", lambda: rec("planner", handback=dict(PLAN, questions=QUESTIONS)), r"question", None),
     ("split", lambda: rec("planner", handback=SPLIT), r"split", r"question"),
-    ("work", lambda: rec("worker", handback=WORK), r"\bbuilt\b", r"reject"),
+    ("work", lambda: rec("worker", handback=WORK), r"They now run as jobs-zq\.", r"reject|\bbuilt\b|server-zq"),
     ("plan review that passes", lambda: rec("reviewer", "plan", APPROVE), r"\bpass", r"block|escalat"),
     ("code review that blocks", lambda: rec("reviewer", "pr", BLOCK), r"\bblock", r"\bpass|escalat"),
     ("escalation", lambda: rec("reviewer", "pr", review("escalate")), r"escalat", r"\bpass|\bblock"),
@@ -191,23 +191,35 @@ def shown(body):
     return [l for l in top(body).split(agent.MARK, 1)[-1].splitlines() if l.strip()]
 
 
-def test_the_worker_card_shows_one_sentence_with_its_pull_request_and_no_test_result(record_property):
-    """The worker's card shows on top only one sentence saying what it built, with a link to its pull request.
+def plain(line):
+    """A line as plain words: no images, bold, code marks, and links reduced to their text."""
+    line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", re.sub(r"<[^>]+>", "", line))
+    return re.sub(r"\s+", " ", line.replace("**", "").replace("`", "")).strip()
 
-    Draws a build's comment with its pull request known and checks the short part on top is exactly one line: one
-    sentence that says the worker built, links the pull request and shows no test result (no passed or
-    failed, no test count). The worker's own test run stays only in a fold."""
+
+def test_the_worker_card_shows_one_sentence_with_its_pull_request_and_no_test_result(record_property):
+    """The worker's card shows on top only its own sentence on what it changed, with a link to its pull request.
+
+    Draws a build's comment with its pull request known and checks the short part on top is exactly one line holding
+    the change sentence of the worker's own summary word for word, not its cause sentence and not a generic line
+    from code (no "built"), with a link to the pull request and no test result (no passed or failed, no test count).
+    A worker whose summary is a single sentence shows that sentence. The worker's own test run stays only in a fold."""
     record_property("proves", "182.3")
-    body = agent.render(rec("worker", handback=WORK), pr=PR)
-    lines = shown(body)
-    assert len(lines) == 1, f"182.3: the top of a finished worker card should hold only its one sentence:\n{top(body)}"
-    first = opening(body)
-    assert re.search(r"\bbuilt\b", first, re.I), f"182.3: the worker card's sentence does not say what it built: {first!r}"
-    assert f"]({PR})" in lines[0], f"182.3: the worker card's sentence does not link its pull request {PR}:\n{lines[0]}"
-    words = re.sub(r"<[^>]+>", "", top(body))
-    assert not re.search(r"\b(passed|failed|tests?)\b|\d+ passed", words, re.I), \
-        f"182.3: the worker card shows a test result on top; the criteria and their verdicts belong on the main card:\n{top(body)}"
-    assert "12 passed in 3.1s" in folds(body), f"182.3: the worker's own test run is in no fold:\n{body}"
+    for summary, said, unsaid in ((WORK["summary"], "They now run as jobs-zq.", "The calls blocked the server-zq."),
+                                  ("Slow calls now return a job id-zq.", "Slow calls now return a job id-zq.", None)):
+        body = agent.render(rec("worker", handback=dict(WORK, summary=summary)), pr=PR)
+        lines = shown(body)
+        assert len(lines) == 1, f"182.3: the top of a finished worker card should hold only its one sentence:\n{top(body)}"
+        words = plain(lines[0])
+        assert said in words, f"182.3: the worker card's sentence is not the worker's own words on what it changed ({said!r}): {words!r}"
+        if unsaid:
+            assert unsaid not in words, f"182.3: the worker card's sentence holds the cause, not only what it changed: {words!r}"
+        assert not re.search(r"\bbuilt\b", words, re.I), \
+            f"182.3: the worker card's sentence is a generic line from code, not the worker's own words: {words!r}"
+        assert f"]({PR})" in lines[0], f"182.3: the worker card's sentence does not link its pull request {PR}:\n{lines[0]}"
+        assert not re.search(r"\b(passed|failed|tests?)\b|\d+ passed", words, re.I), \
+            f"182.3: the worker card shows a test result on top; the criteria and their verdicts belong on the main card:\n{top(body)}"
+        assert "12 passed in 3.1s" in folds(body), f"182.3: the worker's own test run is in no fold:\n{body}"
 
 
 def test_the_worker_card_says_why_it_stopped_when_it_stopped_early(record_property):
@@ -261,7 +273,7 @@ def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record
 def test_the_worker_card_folds_what_it_built_found_and_raised(record_property):
     """What the worker built, what it found and any blocker it raised are in folds, not on top.
 
-    Draws a build's comment and checks its summary and per-criterion lines (built), its out-of-scope change (found),
+    Draws a build's comment and checks the cause sentence of its summary and its per-criterion lines (built), its out-of-scope change (found),
     and its suspect test and disagreement (raised) are each absent from the top and present in a fold."""
     record_property("proves", "182.3")
     body = agent.render(rec("worker", handback=WORK))
