@@ -1012,6 +1012,7 @@ def autopilot_comment(number, switch, switched, started=(), picked=""):
 
 
 AUTOPILOT_LINE = "Autopilot: blockers merged, starting plan"
+AUTOPILOT_START_LINE = "Autopilot: switched on, starting plan"
 
 
 def sub_issues(repo, number):
@@ -1032,21 +1033,21 @@ def started_before(repo, number):
     for c in d.get("comments") or []:
         body = c.get("body") or ""
         if (c.get("author") or {}).get("login") in (BOT, f"{BOT}[bot]") and (
-                MARK in body or LIVE in body or body.strip() == AUTOPILOT_LINE):
+                MARK in body or LIVE in body or body.strip() in (AUTOPILOT_LINE, AUTOPILOT_START_LINE)):
             return True
     return False
 
 
-def start_planner(repo, number):
+def start_planner(repo, number, line=AUTOPILOT_LINE):
     """Start the issue's planner with the river's own signal, after one Autopilot line where the owner would have said /plan.
 
     The line goes first: it is the record that this issue was started, so no later close starts it again."""
-    gh("issue", "comment", str(number), "-R", repo, "--body", AUTOPILOT_LINE)
+    gh("issue", "comment", str(number), "-R", repo, "--body", line)
     gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=dokima-next", "-f", "client_payload[role]=planner",
        "-f", "client_payload[stage]=plan", "-f", f"client_payload[issue]={number}")
 
 
-def start_waiting(repo, numbers, need_blocker=False):
+def start_waiting(repo, numbers, need_blocker=False, line=AUTOPILOT_LINE):
     """Start the planner of every open issue among `numbers` with no sub-issues, nothing open blocking it and nothing
     started on it yet; with need_blocker, only those blocked by at least one issue (all now closed). Returns those started."""
     started = []
@@ -1058,7 +1059,7 @@ def start_waiting(repo, numbers, need_blocker=False):
             continue
         if started_before(repo, n):
             continue
-        start_planner(repo, n)
+        start_planner(repo, n, line)
         started.append(n)
     return started
 
@@ -1599,8 +1600,12 @@ def main(argv):
                 open(os.path.join(argv[4], "next.txt"), "w").write(pick + "\n")
         picked = {"worker": f"#{number}'s approved plan goes to the worker now.",
                   "split": f"#{number}'s approved split files its stories now."}.get(pick, "")
-        # `/autopilot start` picks up every issue under the issue, at every level, that waits on nothing open.
-        started = start_waiting(repo, issue_tree(repo, number)[1:]) if switch == "start" else []
+        started = []
+        if switch == "start":
+            # The issue itself starts its planner when it waits on nothing open and nothing started on it yet.
+            started = start_waiting(repo, [int(number)], line=AUTOPILOT_START_LINE)
+            # `/autopilot start` picks up every issue under the issue, at every level, that waits on nothing open.
+            started += start_waiting(repo, issue_tree(repo, number)[1:])
         sys.stdout.write(autopilot_comment(number, switch, switched, started, picked))
         if switch == "start":
             # What its code review already approved anywhere in the tree merges now, as on autopilot.
