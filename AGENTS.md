@@ -71,7 +71,7 @@ Only the planner asks the owner, as a plain list inside its plan, and only where
 
 - Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
 - "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes.
-- The river moves each card to the stage now running. Priority (Blocker) is a field, not a label.
+- The river moves each card to the stage now running. Priority is a field (Blocker, High, Parked) that follows the issue's blocker, high or parked label; with two, the higher wins.
 
 ## The issue body
 
