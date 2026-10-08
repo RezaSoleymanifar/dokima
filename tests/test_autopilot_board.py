@@ -360,7 +360,7 @@ def test_the_board_gets_one_autopilot_table_view(record_property, make):
     """The first issue switched on autopilot gives the board an Autopilot view, a table showing only what carries the label.
 
     On a board with only the Needs you view, switching #57 on autopilot adds exactly one view: named Autopilot, laid
-    out as a table, filtered to label:autopilot. Switching #101 on afterwards adds no second view, and a stage moment
+    out as a table, filtered to label:autopilot is:open. Switching #101 on afterwards adds no second view, and a stage moment
     on a board without the view adds none."""
     record_property("proves", "210.4")
     w = make(labels={("issue", 57): {LABEL}, ("issue", 101): {LABEL}, ("issue", 58): set()})
@@ -368,8 +368,8 @@ def test_the_board_gets_one_autopilot_table_view(record_property, make):
     assert [v["name"] for v in w.view_list] == ["Needs you"], "210.4: a board change unrelated to autopilot added a view"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
     added = [v for v in w.view_list if v["name"] != "Needs you"]
-    assert added == [{"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"}], \
-        f"210.4: switching autopilot on added {added}, not one Autopilot table view filtered to label:{LABEL}"
+    assert added == [{"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL} is:open"}], \
+        f"210.4: switching autopilot on added {added}, not one Autopilot table view filtered to label:{LABEL} is:open"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 101), SPEC, REPO)
     assert [v["name"] for v in w.view_list].count("Autopilot") == 1, "210.4: the Autopilot view was added twice"
 
@@ -670,7 +670,7 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
     """Switching #57 on autopilot, through the real board sync, gives #57 and its PR the pill, the PR the label, and one view.
 
     Runs board.sync with the real Board against a faked GitHub. #57 (on Plan) and its PR #60 get Autopilot, PR #60
-    carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot. A second
+    carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot is:open. A second
     issue switched on adds no second view. #58, already showing Needs you when switched on, keeps Needs you."""
     record_property("proves", "210.1")
     ready("210.1", sync=True)
@@ -685,7 +685,7 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
     assert LABEL in gh.labels.get(60, set()), "210.4: on GitHub PR #60 does not carry the autopilot label"
     assert [x["name"] for x in gh.views].count("Autopilot") == 1, f"210.4: the board has views {[x['name'] for x in gh.views]}"
     view = next(x for x in gh.views if x["name"] == "Autopilot")
-    assert (view["layout"], view["filter"]) == ("TABLE_LAYOUT", f"label:{LABEL}"), f"210.4: the Autopilot view is {view}"
+    assert (view["layout"], view["filter"]) == ("TABLE_LAYOUT", f"label:{LABEL} is:open"), f"210.4: the Autopilot view is {view}"
 
 
 def test_a_refused_view_never_stops_the_pills_and_says_why(record_property):
@@ -758,7 +758,7 @@ def test_switching_a_whole_tree_on_adds_the_view_once_even_when_runs_overlap(rec
     each parent before its sub-issues. The faked GitHub then answers every read of the views with the board as it was
     before (only Needs you), the way parallel runs all read before any adds. The board sync runs for each label event,
     sub-issues first: none of theirs adds a view, #70's sends exactly one create-view call (Autopilot, table,
-    label:autopilot), and all cards show Autopilot. A story filed later under #70 (#74) adds no second view."""
+    label:autopilot is:open), and all cards show Autopilot. A story filed later under #70 (#74) adds no second view."""
     record_property("proves", "210.4")
     ready("210.4", "parent", sync=True)
     parents = {71: 70, 72: 70, 73: 71, 74: 70}
@@ -772,8 +772,8 @@ def test_switching_a_whole_tree_on_adds_the_view_once_even_when_runs_overlap(rec
     assert creates(gh) == [], f"210.4: a sub-issue whose parent is on autopilot added the Autopilot view: {creates(gh)}"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 70), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert len(creates(gh)) == 1, f"210.4: switching the tree of #70 on sent {len(creates(gh))} create-view calls, not exactly one"
-    assert creates(gh)[0][2] == {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"}, \
-        f"210.4: the top of the tree added {creates(gh)[0][2]}, not the Autopilot table view filtered to label:{LABEL}"
+    assert creates(gh)[0][2] == {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL} is:open"}, \
+        f"210.4: the top of the tree added {creates(gh)[0][2]}, not the Autopilot table view filtered to label:{LABEL} is:open"
     gh.put(74, True)
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 74), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert len(creates(gh)) == 1, "210.4: a story filed later under #70 on autopilot added the Autopilot view a second time"
