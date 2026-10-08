@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from dokima import card
+from dokima import card, words
 from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
@@ -129,8 +129,50 @@ def blockers_for(recs, role):
     return open_blockers(recs, "plan")
 
 
+LINKS = ("blocked_by", "blocks", "relates_to")
+
+
+def open_issues(repo):
+    """Every open issue of the repo, every page, with its number, title and body; pull requests are left out."""
+    items = [i for p in pages(gh("api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate")) for i in p]
+    return [{"number": i["number"], "title": i["title"], "body": i.get("body") or ""} for i in items
+            if "pull_request" not in i]
+
+
+def problems_links(h, pack_dir):
+    """Everything wrong with a plan's links: three lists of open issue numbers from the pack, never the issue itself,
+    and no issue in two lists."""
+    path = os.path.join(pack_dir, "open_issues.json")
+    if not os.path.exists(path):
+        return ["open_issues.json is missing from the pack, so the links cannot be checked"]
+    links = h.get("links")
+    if not isinstance(links, dict):
+        return ["links must be an object with three lists: " + ", ".join(LINKS)]
+    issue = os.path.join(pack_dir, "issue.md")
+    m = re.match(r"# Issue #(\d+)", open(issue).read()) if os.path.exists(issue) else None
+    me = int(m.group(1)) if m else None
+    known = {i.get("number") for i in json.load(open(path)) if isinstance(i, dict)}
+    bad, seen = [], {}
+    for k in LINKS:
+        v = links.get(k)
+        if not isinstance(v, list) or not all(isinstance(n, int) and not isinstance(n, bool) for n in v):
+            bad.append(f"links.{k} must be a list of issue numbers")
+            continue
+        for n in v:
+            if n == me:
+                bad.append(f"links.{k} links #{n}, the issue itself")
+            elif n not in known:
+                bad.append(f"links.{k} links #{n}, which is not an open issue")
+            seen.setdefault(n, [])
+            if k not in seen[n]:
+                seen[n].append(k)
+    bad += [f"#{n} sits in more than one list of links: {', '.join(ks)}" for n, ks in seen.items() if len(ks) > 1]
+    return bad
+
+
 def problems_round(role, h, pack_dir):
-    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one."""
+    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one, and
+    the planner's links must name open issues in the pack."""
     path = os.path.join(pack_dir, "open_blockers.json")
     blockers = {b.get("id") for b in (json.load(open(path)) if os.path.exists(path) else []) if isinstance(b, dict)}
     bad = []
@@ -149,6 +191,8 @@ def problems_round(role, h, pack_dir):
         bad.append("replies must be a list of objects")
         replies = replies if isinstance(replies, list) else []
     replied = {r.get("blocker") for r in replies if isinstance(r, dict)}
+    if role == "planner":
+        bad += problems_links(h, pack_dir)
     return bad + [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
 
 
@@ -310,17 +354,6 @@ def role_icon(repo, role, stage):
 HEADS = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker", "split": "Code"}
 
 
-def sentences(text):
-    """Text cut into its sentences: a sentence ends at a full stop, question or exclamation mark followed by a space."""
-    return [x for x in re.split(r"(?<=[.?!])\s+", text.strip() if isinstance(text, str) else "") if x]
-
-
-def change_sentence(summary):
-    """The worker's own words on what it changed: its summary after the cause sentence, or all of it when it is one."""
-    said = sentences(summary)
-    return " ".join(said[1:] if len(said) > 1 else said)
-
-
 def bullets(items, show):
     """One line per item, drawn by `show`; non-dict items, and a malformed field that is no list, are shown as they are."""
     items = items if isinstance(items, list) else [items] if items not in (None, "", {}) else []
@@ -348,9 +381,7 @@ def details(rec):
                   ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
                   ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
     elif role == "worker":
-        cause = sentences(h.get("summary"))
-        parts += [("What it built", ([f"- {cause[0]}"] if len(cause) > 1 else [])
-                   + pairs(h.get("criteria"))
+        parts += [("What it built", pairs(h.get("criteria"))
                    + ([f"- Its own test run: {h['evidence']}"] if h.get("evidence") else [])),
                   ("What it found", bullets(h.get("outside_scope"), lambda o: f"{mark('outside the plan')} Outside the plan: {o.get('file', '')}: {o.get('why', '')}")),
                   ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
@@ -396,7 +427,7 @@ def opening(rec):
                 "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
     if role == "split":
         return f"Code filed the split as {len(h.get('stories') or [])} stories."
-    return change_sentence(h.get("summary"))
+    return h["summary"].strip() if filled(h.get("summary")) else ""
 
 
 def record_fold(rec):
@@ -404,10 +435,11 @@ def record_fold(rec):
     return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
 
 
-def render(rec, pr=None):
+def render(rec, pr=None, plan=None):
     """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
     needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
-    worker's pull request, once it exists."""
+    worker's pull request, once it exists; `plan` is the plan a plan review judged, whose assumptions answer its
+    questions."""
     role, h = rec["role"], rec["handback"]
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
@@ -424,6 +456,14 @@ def render(rec, pr=None):
                 else f"{who} run was cancelled before its agent started.")
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
         lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "updater":
+        # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
+        by = f" (#{h['merged_pr']})" if h.get("merged_pr") else ""
+        lines = [MARK, f"Pull request #{h.get('pr')} clashes with `{h.get('base') or 'main'}` since {str(h.get('merge', ''))[:7]}{by} "
+                       "merged, so the planner re-plans against the new main. The files that clashed:", ""]
+        lines += [f"- `{f}`" for f in h.get("files") or []] or [f"- {h.get('why') or 'none listed'}"]
+        lines += record_fold(rec) + ["", f"<sub>Found by code, no model" + (f" · [run]({rec['run']})" if rec.get("run") else "") + "</sub>"]
         return "\n".join(lines) + "\n"
     passed = rec["check"]["passed"]
     first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
@@ -448,6 +488,16 @@ def render(rec, pr=None):
         if blocks:
             lines += [""] + blocks
         judged = [a for a in h.get("assumptions") or [] if isinstance(a, dict)]
+        answers = {q.get("question"): q.get("assumption") for q in (plan or {}).get("questions") or []
+                   if isinstance(q, dict) and q.get("assumption")}
+        answered = [a for a in judged if a.get("accepted") is True and a.get("matched") and a.get("source")
+                    and a.get("question") in answers]
+        if answered:
+            lines += ["", f"{field_icon(repo, 'question')} **Answered from your words:**"]
+            for a in answered:
+                lines += [f"- {escape_line(a['question'])}", f"  - {escape_line(answers[a['question']])}",
+                          f"  - Your words: [\"{escape_line(a['matched']).replace(']', '\\]')}\"]({words_link(a['source'])})"]
+        judged = [a for a in judged if a not in answered]
         if judged:
             lines += ["", "**The plan's assumptions:**"]
             lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
@@ -461,12 +511,22 @@ def render(rec, pr=None):
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
                          for f in h.get("stories", [])]
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
+    related = card.link_lines(repo, h.get("links")) if passed and role == "planner" else []
+    if related:
+        lines += [""] + related
     if passed and role == "planner" and h.get("questions"):
         lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
     lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
+
+
+def words_link(source):
+    """Where the owner said the words: the issue or comment link as given, or AGENTS.md on the repo's main branch."""
+    if source == "AGENTS.md":
+        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/blob/main/AGENTS.md"
+    return source
 
 
 def escape_line(text):
@@ -560,10 +620,13 @@ def models_used(log_dir):
 
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
-    and the newest passed plan. The pull request review also gets the worker's session log from its run."""
+    the newest passed plan and, for the planner, every open issue of the repo. The pull request review also gets the worker's session log from its run."""
     d, items = conversation(repo, number)
     recs = records(items)
+    listed = open_issues(repo) if role == "planner" else None
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
+    if listed is not None:
+        json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
     answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
     json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
@@ -786,7 +849,7 @@ def problems_shape(kind, h):
             bad.append("resolved must be a list of blocker ids")
         return bad
     if not filled(h.get("summary")):
-        bad.append("summary must be two non-empty sentences")
+        bad.append("summary must be one non-empty sentence")
     crit = h.get("criteria")
     if not isinstance(crit, dict) or not crit:
         bad.append("criteria must be an object giving one line per criterion")
@@ -856,6 +919,13 @@ def check(kind, path, plan_path=None, number=None):
         print(err)
         return 1
     bad = problems_shape(kind, data) or (problems_review if kind == "review" else problems_work)(data)
+    listed = []
+    if filled(data.get("summary")):
+        listed, too_long = words.summary_caps(data["summary"])
+        bad += too_long
+    if kind == "work" and os.environ.get("PLANNER_BASE"):
+        more, too_long = worker_docstring_caps(os.environ["PLANNER_BASE"])
+        listed, bad = listed + more, bad + too_long
     if plan_path is not None:
         plan, err = load(plan_path, "plan.json")
         if err:
@@ -867,9 +937,22 @@ def check(kind, path, plan_path=None, number=None):
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
                 bad += problems_assumptions(data, plan, number)
-    for b in bad:
-        print(b)
+    for line in listed + bad:
+        print(line)
     return 1 if bad else 0
+
+
+def worker_docstring_caps(base):
+    """(listed, rejected) for each Python docstring added or rewritten since `base`.
+
+    Older docstrings whose first line is unchanged are left alone; a base git cannot read fails closed.
+    """
+    from dokima import planner  # planner imports this module, so it is read only when needed
+    try:
+        paths = [p for p in planner.changed_files(base) if p.endswith(".py")]
+    except subprocess.CalledProcessError as e:
+        return [], [f"the docstrings the worker added can't be read: git can't compare with {base} ({e.stderr.strip()})"]
+    return planner.docstring_caps(paths, planner.read_at(base), planner.read_now)
 
 
 NEEDS = {
@@ -1285,6 +1368,9 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         return ("start", "reviewer", "plan")
     if role == "worker":
         return ("start", "reviewer", "pr")
+    if role == "updater":
+        # A clash with main goes to the planner by itself: the plan may not fit main anymore.
+        return ("start", "planner", "")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
@@ -1441,7 +1527,14 @@ def main(argv):
         text = open(check_file).read() if os.path.exists(check_file) else ""
         rec = build_record(role, stage, out, text, passed == "true", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
-        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        reviewed = os.path.join(os.environ.get("PACK", ""), "plan.json")
+        plan = None
+        if role == "reviewer" and stage == "plan" and os.environ.get("PACK") and os.path.exists(reviewed):
+            try:
+                plan = json.load(open(reviewed))
+            except (OSError, json.JSONDecodeError):
+                plan = None
+        open(os.path.join(out, "comment.md"), "w").write(render(rec, plan=plan if isinstance(plan, dict) else None))
         return 0
     if argv[1] == "not-started":
         role, stage, out, why_file = argv[2:6]

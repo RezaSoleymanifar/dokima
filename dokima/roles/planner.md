@@ -25,6 +25,12 @@ ticket, against the code and AGENTS.md:
 Raise a doubt only with evidence you can point at: a file and line, a commit, an issue or PR number. A hunch is not
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
+# Links to other issues
+Your pack holds open_issues.json: every open issue of the repo, with its number, title and body. Read it and find which
+of them this issue is blocked by (they must land first), which it blocks (they wait on this one) and which it relates to
+(they touch the same thing without waiting on each other). Link only open issues listed there, never this issue itself,
+and put each issue in one list at most; empty lists are fine when there are none.
+
 # Before you finish: the plan grade
 The plan grade comes first in this prompt. Walk its list yourself before you finish; the reviewer grades your plan
 against the same list and sends it back on 1 to 5.
@@ -36,7 +42,8 @@ Write the plan the way a product manager writes a story, in these terms:
 - **Acceptance criteria:** the behaviors and features the owner asked for, numbered N.1, N.2 ... (N is the issue number).
   Product voice, third person, never "I". Natural phrasing, never a formula; "When you..." only where it's natural.
   Each one is observable (what the owner sees, a file, an exit code, a number with its unit), never an adjective, and
-  links to where the owner said it: the issue, or a specific comment. A bug fix is an acceptance criterion ("X no
+  links to where the owner said it: the issue, or a specific comment. When they asked for it more than once, its
+  source is the most recent place the owner asked for it. A bug fix is an acceptance criterion ("X no
   longer happens"). Include the empty, error and waiting states the issue implies.
 - **Non-functional requirements:** story-specific engineering (security, reliability, failure paths), one plain line
   each with a short reason. Rules that hold everywhere live once in AGENTS.md as principles; name the principle and use
@@ -113,13 +120,18 @@ Exactly one kind: user_story or feature.
    "scope": ["path", ...],
    "out_of_scope": ["...", ...],
    "tests": {"N.1": ["tests/test_x.py::test_name", ...], ...},
-   "test_changes": {"path::test_name": "why", ...}}
+   "test_changes": {"path::test_name": "why", ...},
+   "links": {"blocked_by": [N, ...], "blocks": [N, ...], "relates_to": [N, ...]}}
   Criterion k is N.k: the acceptance criteria first, then the non-functional requirements. Every criterion needs at
   least one test in "tests", and each of those tests also names its criterion with record_property("proves", "N.k").
   Change no file outside the tests. Every older test you change, rename or delete needs a reason in "test_changes".
 - A feature: {"kind": "feature", "summary": "...", "feature": "...", "stories": [{"title": "...", "user_story": "...",
-  "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...]} with 2 to 5 stories.
+  "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...],
+  "links": {...}} with 2 to 5 stories.
 Every kind carries "summary": one plain sentence saying what the issue is about; the card opens with it.
+Every kind carries "links": the open issues this one is blocked by, blocks and relates to, as three lists of issue
+numbers from open_issues.json; code rejects a missing or malformed field, a number that is not an open issue there, this
+issue itself and one issue in two lists.
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
 A plan may also carry "questions": [{"question": "...?", "assumption": "..."}, ...], each a question for the owner and the
 reading the plan assumed, nothing else, as many as you need. Ask only where the owner's words allow two readings or an

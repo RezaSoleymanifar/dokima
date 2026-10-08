@@ -134,8 +134,16 @@ jobs:
         run: |
           if git ls-remote --exit-code --heads origin "try/issue-$N" >/dev/null; then
             git fetch -q origin "try/issue-$N" && git checkout -q -B "try/issue-$N" FETCH_HEAD
-            if [ "$ROLE" = worker ]; then
-              git -c user.name=dokima -c user.email=dokima@users.noreply.github.com merge -q --no-edit origin/main
+            # A worker's branch that clashes with main still starts: the merge is committed with its conflict markers,
+            # the clashed files are listed for the fence, and the worker resolves them. Main's changes are in BASE.
+            if [ "$ROLE" = worker ] && ! git -c user.name=dokima -c user.email=dokima@users.noreply.github.com merge -q --no-edit origin/main; then
+              git diff --name-only --diff-filter=U > /tmp/clashed.txt
+              if [ ! -s /tmp/clashed.txt ]; then
+                echo "Merging main into try/issue-$N failed with no clashed file to resolve." > /tmp/why.txt
+                echo "::error title=Merge failed::$(cat /tmp/why.txt)"; exit 1
+              fi
+              git add -A && git -c user.name=dokima -c user.email=dokima@users.noreply.github.com commit -q --no-edit
+              echo "::notice title=Clash with main::the worker resolves $(paste -sd, /tmp/clashed.txt)"
             fi
           elif [ "$ROLE" = planner ] || [ "$STAGE" = plan ]; then
             # A plan review needs no branch: a split never makes one, so it reviews from main.
@@ -259,7 +267,11 @@ jobs:
       - name: Fence - only in-scope changes, the planner's tests as committed
         if: env.ROLE == 'worker'
         run: |
-          python3 -m dokima.fence "$BASE" "$PACK/plan.json" > "$OUT/dropped.txt"
+          # A clashed file still holding conflict markers fails the hand-back, saying which, so nothing is pushed.
+          if ! python3 -m dokima.fence "$BASE" "$PACK/plan.json" /tmp/clashed.txt > "$OUT/dropped.txt" 2> /tmp/fence-err.txt; then
+            cat /tmp/fence-err.txt | tee -a "$OUT/check.txt"; echo "PASSED=false" >> "$GITHUB_ENV"
+            echo "::error title=Fence::$(paste -sd' ' /tmp/fence-err.txt)"
+          fi
           [ -s "$OUT/dropped.txt" ] && echo "::warning title=Dropped by the fence::$(paste -sd, "$OUT/dropped.txt")" || true
       - name: Write this run's record
         if: always()
