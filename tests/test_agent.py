@@ -216,7 +216,10 @@ def test_each_round_answers_every_open_blocker(record_property, tmp_path):
     record_property("proves", "agent.14")
     (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}, {"id": "B2"}]))
     assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}, {"blocker": "B2"}]}, str(tmp_path)) == []
-    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}]}, str(tmp_path)) == ["blocker B2 is not answered"]
+    (tmp_path / "issue.md").write_text("# Issue #9: T\n\n## Comments\n")
+    (tmp_path / "open_issues.json").write_text("[]")
+    links = {"blocked_by": [], "blocks": [], "relates_to": []}
+    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}], "links": links}, str(tmp_path)) == ["blocker B2 is not answered"]
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": [{"id": "B2"}]}, str(tmp_path)) == []
     assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": []}, str(tmp_path)) == ["earlier blocker B2 is neither resolved nor still listed"]
     assert agent.problems_round("worker", {}, str(tmp_path / "none")) == []
