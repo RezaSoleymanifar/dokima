@@ -10,7 +10,7 @@
   "open": []
  },
  "verdict": "approve",
- "summary": "A failed run now always leaves its card, and its open pull request's, in its stage's column with Needs you, even when the run's own last steps fail; all three tests fail on main and pass here, with the full suite green.",
+ "summary": "A failed run now always leaves its card, and its open pull request's, in its stage's column with Needs you.",
  "blockers": [],
  "notes": [
   {

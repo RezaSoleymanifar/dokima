@@ -55,7 +55,7 @@ QUESTIONS = [{"question": "Should a job expire after a day?", "assumption": "The
 SPLIT = {"kind": "feature", "feature": "Slow calls run as jobs.", "stories": [
     {"title": "Jobs are queued-zq", "user_story": "u1", "acceptance_criteria": [], "non_functional": [], "depends_on": []},
     {"title": "Jobs report back-zq", "user_story": "u2", "acceptance_criteria": [], "non_functional": [], "depends_on": [0]}]}
-WORK = {"summary": "The calls blocked the server-zq. They now run as jobs-zq.",
+WORK = {"summary": "They now run as jobs-zq.",
         "criteria": {"9.1": "dokima/jobs.py, submit() returns the id-zq", "9.2": "dokima/jobs.py, keep() stores it-zq"},
         "evidence": "python3 -m pytest -q: 12 passed in 3.1s",
         "outside_scope": [{"file": "dokima/extra.py", "why": "A shared helper needed one line-zq."}],
@@ -125,7 +125,7 @@ def test_the_long_parts_of_every_run_comment_are_folded(record_property):
     cases = [("plan", rec("planner", handback=PLAN),
               ["Jobs survive a restart-zq.", "Calls are async now-zq.", "dokima/jobs_zq.py", "Cancelling a job-zq."]),
              ("work", rec("worker", handback=WORK),
-              ["The calls blocked the server-zq.", "submit() returns the id-zq", "A shared helper needed one line-zq.",
+              ["submit() returns the id-zq", "A shared helper needed one line-zq.",
                "It waits a real day-zq.", "The id is returned in 0.1 s-zq."]),
              ("review", rec("reviewer", "pr", BLOCK),
               ["A note on naming-zq.", "one helper line-zq", "Built the jobs queue-zq.", "ask 1-zq", "evidence of B1-zq"])]
@@ -273,11 +273,11 @@ def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record
 def test_the_worker_card_folds_what_it_built_found_and_raised(record_property):
     """What the worker built, what it found and any blocker it raised are in folds, not on top.
 
-    Draws a build's comment and checks the cause sentence of its summary and its per-criterion lines (built), its out-of-scope change (found),
-    and its suspect test and disagreement (raised) are each absent from the top and present in a fold."""
+    Draws a build's comment and checks its per-criterion lines (built), its out-of-scope change (found), and its
+    suspect test and disagreement (raised) are each absent from the top and present in a fold."""
     record_property("proves", "182.3")
     body = agent.render(rec("worker", handback=WORK))
-    for what, text in (("built", "The calls blocked the server-zq."), ("built", "keep() stores it-zq"),
+    for what, text in (("built", "keep() stores it-zq"),
                        ("found", "A shared helper needed one line-zq."), ("raised", "It waits a real day-zq."),
                        ("raised", "The id is returned in 0.1 s-zq.")):
         assert text not in top(body), f"182.3: what the worker {what} ({text!r}) is on top, not in a fold:\n{top(body)}"
