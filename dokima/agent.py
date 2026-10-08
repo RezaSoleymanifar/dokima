@@ -470,6 +470,14 @@ def render(rec, pr=None, plan=None):
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
         lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
+    if role == "updater":
+        # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
+        by = f" (#{h['merged_pr']})" if h.get("merged_pr") else ""
+        lines = [MARK, f"Pull request #{h.get('pr')} clashes with `{h.get('base') or 'main'}` since {str(h.get('merge', ''))[:7]}{by} "
+                       "merged, so the planner re-plans against the new main. The files that clashed:", ""]
+        lines += [f"- `{f}`" for f in h.get("files") or []] or [f"- {h.get('why') or 'none listed'}"]
+        lines += record_fold(rec) + ["", f"<sub>Found by code, no model" + (f" · [run]({rec['run']})" if rec.get("run") else "") + "</sub>"]
+        return "\n".join(lines) + "\n"
     passed = rec["check"]["passed"]
     first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
     if role == "worker" and pr:
@@ -1353,6 +1361,9 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         return ("start", "reviewer", "plan")
     if role == "worker":
         return ("start", "reviewer", "pr")
+    if role == "updater":
+        # A clash with main goes to the planner by itself: the plan may not fit main anymore.
+        return ("start", "planner", "")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
