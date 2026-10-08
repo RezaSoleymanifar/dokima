@@ -437,6 +437,8 @@ class Machine:
         # The repo: Dokima's code from this checkout, owned by owner-person, pushed to a local origin.
         src = f"{t}/src"
         shutil.copytree(os.path.join(ROOT, "dokima"), f"{src}/dokima", ignore=shutil.ignore_patterns("__pycache__"))
+        # AGENTS.md too, as on main: the river checks the owner's words a plan reviewer quotes from it.
+        shutil.copy(os.path.join(ROOT, "AGENTS.md"), f"{src}/AGENTS.md")
         os.makedirs(f"{src}/.github")
         open(f"{src}/.github/CODEOWNERS", "w").write(f"* @{OWNER}\n")
         sh(t, "git", "init", "-q", "--bare", "-b", "main", f"{t}/origin.git")
