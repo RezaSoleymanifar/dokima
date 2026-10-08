@@ -1,9 +1,10 @@
 name: full suite
-# Every test in the repo, on every pull request and on main.
+# Every test in the repo, on every pull request, in the merge queue and on main.
 on:
   pull_request:
   push:
     branches: [main]
+  merge_group:
 permissions:
   contents: read
 jobs:
