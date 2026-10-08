@@ -173,10 +173,13 @@ def file_split(repo, parent, recs):
     if done:
         return done
     plan = latest(recs, "planner")["handback"]
-    title = json.loads(gh("issue", "view", str(parent), "-R", repo, "--json", "title"))["title"]
+    info = json.loads(gh("issue", "view", str(parent), "-R", repo, "--json", "title,labels"))
+    title = info["title"]
+    # Stories of a parent on autopilot are on autopilot too.
+    extra = ["--label", AUTOPILOT] if any(l["name"] == AUTOPILOT for l in info.get("labels") or []) else []
     filed = []
     for i, st in enumerate(plan["stories"], 1):
-        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title)).strip()
+        url = gh("issue", "create", "-R", repo, "--title", st["title"], "--body", story_body(parent, i, st, title), *extra).strip()
         number = int(url.rstrip("/").split("/")[-1])
         node = json.loads(gh("api", f"repos/{repo}/issues/{number}"))["id"]
         gh("api", "-X", "POST", f"repos/{repo}/issues/{parent}/sub_issues", "-F", f"sub_issue_id={node}")
@@ -902,9 +905,11 @@ def board_place(rec, step):
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
-    """Put the issue and its open pull request in that column, with or without the Needs you pill."""
+    """Put the issue and its open pull request in that column, with the Needs you pill, or else the Autopilot pill while
+    the issue is on autopilot."""
     from dokima import board
     b = board.Board(spec, repo, q or board.gql)
+    on = not needs_you and b.autopilot("issue", int(number))
     targets = [("issue", int(number))]
     pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
     if pr:
@@ -912,7 +917,7 @@ def move_card(repo, number, column, needs_you, spec, q=None):
     for kind, n in targets:
         iid = b.item(kind, n)
         b.set(iid, "Status", column)
-        b.set(iid, "Action", "Needs you" if needs_you else None)
+        b.set(iid, "Action", board.pill(needs_you, on))
     return targets
 
 
@@ -1020,10 +1025,10 @@ def main(argv):
             for f in rec["handback"]["stories"]:
                 iid = b.item("issue", f["issue"])
                 b.set(iid, "Status", "Backlog")
-                b.set(iid, "Action", None)
+                b.set(iid, "Action", board.pill(False, b.autopilot("issue", f["issue"])))
             iid = b.item("issue", int(parent))
             b.set(iid, "Status", "Work")
-            b.set(iid, "Action", None)
+            b.set(iid, "Action", board.pill(False, b.autopilot("issue", int(parent))))
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
