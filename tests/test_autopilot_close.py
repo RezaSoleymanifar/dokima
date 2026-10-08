@@ -18,6 +18,8 @@ The fake GitHub knows an issue tree and keeps it in tree.json, labels.json, stat
   - labels change through `gh issue edit N --add-label/--remove-label` or the REST labels API, as in test_autopilot.
   - `gh issue view N` shows issue N (number, title, body, state, stateReason, labels, comments); `gh issue close N`
     closes it (--reason, -r, and --comment/-c, which posts that comment); `gh issue comment N` comments on it.
+  - `gh api repos/o/r/issues` (GET, with labels= and state= in the query string or as -f fields) and
+    `gh issue list --label L --state S --json ...` list the issues it knows, filtered the same way (no --jq).
   - `gh api repos/o/r/actions/runs/ID` says whether run ID is still going (in_progress) or completed.
   - a signal to start a stage is `gh api repos/o/r/dispatches` with -f/-F event_type=... client_payload[...]=...,
     or --input with that JSON; every one is kept with the key it was sent with. Only Dokima's app key (the token an
@@ -89,7 +91,28 @@ def jq(obj):
         print(json.dumps(obj))
     sys.exit(0)
 API = next((x.lstrip("/") for x in a[1:] if x.lstrip("/").startswith("repos/o/r/")), None) if a[:1] == ["api"] else None
+RAW = API or ""
 API = API.split("?")[0] if API else None
+def known():
+    nums = {int(k) for k in list(TREE) + list(LABELS) + list(STATES) + list(DEPS)}
+    nums |= {int(c) for cs in list(TREE.values()) + list(DEPS.values()) for c in cs}
+    return sorted(nums)
+def listed(want, st):
+    return [issue_obj(n) for n in known()
+            if all(l in LABELS.get(str(n), []) for l in want) and st in ("all", issue_obj(n)["state"])]
+if API == "repos/o/r/issues" and method() == "GET":
+    import urllib.parse
+    q = dict(urllib.parse.parse_qsl(RAW.split("?", 1)[1])) if "?" in RAW else {}
+    q.update({k: v[0] for k, v in fields().items()})
+    print(json.dumps(listed([l for l in (q.get("labels") or "").split(",") if l], (q.get("state") or "open").lower())))
+    sys.exit(0)
+if a[:2] == ["issue", "list"]:
+    want = [l.strip() for i, x in enumerate(a[:-1]) if x in ("--label", "-l") for l in a[i + 1].split(",") if l.strip()]
+    rows = listed(want, (flag("--state", "-s") or "open").lower())
+    print(json.dumps([{"number": o["number"], "title": o["title"], "state": o["state"].upper(),
+                       "stateReason": (o["state_reason"] or "").upper(), "labels": o["labels"], "url": o["html_url"]}
+                      for o in rows]))
+    sys.exit(0)
 if API == "repos/o/r/dispatches":
     f = fields()
     payload = {k[len("client_payload["):-1]: v[0] for k, v in f.items() if k.startswith("client_payload[")}
@@ -244,7 +267,7 @@ class Repo(ts.Machine):
         json.dump(list(seed), open(f"{t}/gh/comments.json", "w"))
         self.seeded = len(seed)
         self.closed_at_start = {int(n) for n in closed}
-        self.runs, self.failures = 0, []
+        self.runs, self.failures, self.acted = 0, [], []
 
     listen = ta.Tree.listen
 
@@ -274,18 +297,38 @@ class Repo(ts.Machine):
                 "parent_issue_url": f"https://api.github.com/repos/o/r/issues/{parent}" if parent else None,
                 "labels": [{"name": l} for l in self.labels().get(int(n), [])], "user": {"login": OWNER, "type": "User"}}
 
-    def close(self, n):
-        """Issue n closes as completed (its pull request merged); every workflow GitHub starts on that runs.
-
-        Returns the names of the jobs that ran (were not skipped)."""
+    def close_quietly(self, n):
+        """Issue n closes as completed, but its close workflows never run: GitHub cancelled them while they waited."""
         states = self._json("states.json")
         states[str(n)] = {"state": "closed", "reason": "completed"}
         json.dump(states, open(f"{self.tmp}/gh/states.json", "w"))
+
+    def close_context(self, n):
+        """The contexts a workflow sees when issue n closes, as GitHub gives them: {github, inputs, vars, secrets}."""
         event = {"action": "closed", "issue": self.issue_event(n), "sender": {"login": OWNER, "type": "User"},
                  "repository": {"full_name": "o/r", "default_branch": "main", "name": "r", "owner": {"login": "o"}}}
-        open(f"{self.tmp}/event.json", "w").write(json.dumps(event))
         github = Ctx(event_name="issues", actor=OWNER, event=event, run_id="42", run_attempt="1", ref="refs/heads/main",
                      server_url="https://github.com", repository="o/r", repository_owner="o", token="fake-github-token")
+        return {"github": github, "inputs": Ctx(), "vars": Ctx(DOKIMA_APP_ID="1"),
+                "secrets": Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k")}
+
+    def _effects(self):
+        """Everything a job can change on GitHub, as text: signals, comments, labels and states."""
+        out = []
+        for name in ("dispatches.jsonl", "comments.json", "labels.json", "states.json"):
+            path = f"{self.tmp}/gh/{name}"
+            out.append(open(path).read() if os.path.exists(path) else "")
+        return out
+
+    def close(self, n):
+        """Issue n closes as completed (its pull request merged); every workflow GitHub starts on that runs.
+
+        Returns the names of the jobs that ran (were not skipped). Every job that changed something on GitHub (sent a
+        signal, wrote a comment, changed a label or closed an issue) is kept in self.acted as (file, job name, job, workflow)."""
+        self.close_quietly(n)
+        base = self.close_context(n)
+        github = base["github"]
+        open(f"{self.tmp}/event.json", "w").write(json.dumps(github["event"]))
         ran = []
         for fname in sorted(os.listdir(WORKFLOWS)):
             if not fname.endswith((".yml", ".yaml")):
@@ -316,8 +359,11 @@ class Repo(ts.Machine):
                         continue
                     self.runs += 1
                     label = f"close{self.runs}-{fname}-{name}"
+                    before = self._effects()
                     results[name], outputs[name] = self.run_job(label, job, ctx, "issues",
                                                                 [("/tmp/", f"{self.tmp}/jobs/{label}/tmp/")], wf.get("defaults"))
+                    if self._effects() != before:
+                        self.acted.append((fname, name, job, wf))
                     if results[name] == "failure":
                         self.failures.append(f"{fname}:{name}")
                 assert progressed, f"test setup: the jobs of {fname} wait on each other"
@@ -563,6 +609,88 @@ def test_a_child_planned_running_or_done_is_never_started_again(record_property,
     m.close(108)
     assert not m.failed, f"213.5: a workflow failed when #108 closed: {m.failures}\n{m.tail()}"
     assert_started_exactly(m, "213.5", "second close", {102}, {104, 106, 107})
+
+
+
+def queue_of(m, wf, job, n):
+    """The concurrency group a job waits in when issue n closes, and whether a newer run cancels a running one.
+
+    A job waits in its own group when it has one, else in its workflow's. GitHub cancels the running run when any
+    level it sits in says cancel-in-progress true."""
+    ctx = {**m.close_context(n), "needs": Ctx()}
+    status = {"failed": False}
+    levels = [c for c in (wf.get("concurrency"), job.get("concurrency")) if c]
+    levels = [{"group": c} if isinstance(c, str) else c for c in levels]
+    if not levels:
+        return None, False
+    group = ts.fill(levels[-1].get("group") or "", ctx, status).strip()
+    cancels = any(ts.fill(c.get("cancel-in-progress") or "false", ctx, status).strip().lower() == "true" for c in levels)
+    return group, cancels
+
+
+def test_closes_that_land_together_are_handled_one_at_a_time(record_property, tmp_path):
+    """Two merges that close together never act at the same moment: GitHub runs their autopilot work one after the other.
+
+    On GitHub two closes start their workflows at the same moment, and each could read the tree before the other has
+    written, so both would start the same waiting child. The guard is GitHub's own queue: every job that acts on a
+    close must wait in one concurrency group shared by the whole repo, which a newer run never cancels. #57 is on
+    autopilot with #101 and #102 (#102 blocked by #101); #58, another tree, holds #201. Closing #101 must start #102
+    once. Then every job that changed anything on GitHub during that close must, for a close of #101, of #102, of #201
+    (another tree) and of #58 (no parent), sit in the same non-empty group, with cancel-in-progress never true."""
+    record_property("proves", "213.5")
+    labels = {n: [LABEL] for n in (57, 101, 102)}
+    m = Repo(tmp_path / "queue", {57: [101, 102], 58: [201]}, labels, deps={102: [101]})
+    m.close(101)
+    assert not m.failed, f"213.5 (together): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
+    assert m.planners_started("213.5") == {102: 1}, \
+        f"213.5 (together): #102 should start once when #101 closes: {m.planners_started('213.5')}\n{m.tail()}"
+    assert m.acted, "213.5 (together): no job changed anything on GitHub when #101 closed"
+    groups = {}
+    for fname, name, job, wf in m.acted:
+        for n in (101, 102, 201, 58):
+            group, cancels = queue_of(m, wf, job, n)
+            assert group, (f"213.5 (together): {fname}:{name} acts on a close but waits in no concurrency group, so two "
+                           f"closes together run it at the same moment and can start the same planner twice")
+            assert not cancels, (f"213.5 (together): {fname}:{name} sets cancel-in-progress, so a second close would cancel "
+                                 f"the first one's work halfway")
+            groups[(fname, name, n)] = group
+    assert len(set(groups.values())) == 1, (f"213.5 (together): the jobs that act on a close do not all wait in one group "
+                                            f"for the whole repo, so closes in different groups still run at once: {groups}")
+
+
+def test_a_close_whose_run_github_drops_from_the_queue_still_counts(record_property, tmp_path):
+    """A close whose run GitHub cancels while it waits in the queue still has its effect, done by the run that goes next.
+
+    GitHub's queue keeps one waiting run: when a third close arrives, the one waiting is cancelled. So the run that goes
+    must do the work of every close before it, in any tree. Three trees are on autopilot: #57 (#101, #102 blocked by
+    #101), #58 (#201, #202 blocked by #201) and #59 (#301), plus #60 alone. #101 closes and its run goes: #102 starts.
+    Then #201 and #60 close but their runs are dropped, and #301 closes and its run goes. After it, #202 must have
+    started once with one Autopilot line, #102 must not have started again, #59 must be closed as completed with one
+    comment saying its tree is done, #59, #301 and #60 must be off autopilot, and #57, #58, #102 and #202 must still be
+    open and on autopilot."""
+    record_property("proves", "213.5")
+    tree = {57: [101, 102], 58: [201, 202], 59: [301]}
+    labels = {n: [LABEL] for n in (57, 101, 102, 58, 201, 202, 59, 301, 60)}
+    m = Repo(tmp_path / "dropped", tree, labels, deps={102: [101], 202: [201]})
+    m.close(101)
+    assert not m.failed, f"213.5 (dropped): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
+    assert_started_exactly(m, "213.5", "#101's run", {102}, {202})
+    m.close_quietly(201)
+    m.close_quietly(60)
+    m.close(301)
+    assert not m.failed, f"213.5 (dropped): a workflow failed when #301 closed: {m.failures}\n{m.tail()}"
+    assert_started_exactly(m, "213.5", "#201's run was dropped, #301's went", {102, 202}, {57, 58, 59, 101, 201, 301, 60})
+    assert m.state(59) == ("closed", "completed"), \
+        f"213.5 (dropped): #59 is {m.state(59)} after its only sub-issue #301 closed, expected closed as completed\n{m.tail()}"
+    said = m.new_comments(59)
+    assert len(said) == 1 and "tree" in said[0].lower() and "done" in said[0].lower(), \
+        f"213.5 (dropped): #59 should get exactly one comment saying its tree is done: {said}"
+    left = m.on_autopilot() & {59, 301, 60}
+    assert left == set(), (f"213.5 (dropped): these closed issues are still on autopilot, so the dropped close of #60 "
+                           f"or the done tree of #59 was lost: {sorted(left)}")
+    for n in (57, 58, 102, 202):
+        assert m.state(n)[0] == "open", f"213.5 (dropped): #{n} closed though work under it or on it is still open"
+        assert n in m.on_autopilot(), f"213.5 (dropped): #{n} went off autopilot though its tree is not done"
 
 
 DEEP = {57: [101, 102], 101: [201, 202], 201: [301, 302]}
