@@ -50,7 +50,7 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 3. **Plan review.** A block sends it back to the planner by itself. An approval stops for the owner.
 4. **`/work`.** The owner's approval. An approved split files its stories as sub-issues with blocked-by links; each story then goes through the flow on its own. Otherwise the worker builds on a fresh machine and opens the PR.
 5. **Code review.** The reviewer starts by itself when the worker finishes. Every blocker names who fixes it: the worker for code, the planner for a test shown too weak. A block sends it back to the worker by itself, or to the planner when any blocker is the planner's; that test fix goes planner, plan review, worker, code review, and an approved re-plan whose criteria are unchanged goes straight to the worker, while one that changes any criterion, or comes after the owner spoke, waits for `/work`. An approval stops for the owner.
-6. **Merge.** The owner approves and merges.
+6. **Merge.** The owner approves and merges. On autopilot, the reviewer's approval with every check green on the pull request's head merges it by itself, and the issue gets one line, `Autopilot: merged PR #N`; a pull request that changes a workflow file, or a merge that is refused, stops for the owner and says why on the pull request.
 
 On autopilot, the river runs a whole issue tree end to end and stops for the owner only where the owner must decide (planned, story 2 of #205); `/autopilot start` and `/autopilot stop` only switch it on and off.
 
@@ -61,7 +61,7 @@ Agents work things out between themselves. The river stops and mentions the owne
 A command is the first word of an owner's comment on the issue or its PR, or of a PR review's summary submitted as a comment or a change request. Everything after it, and every other comment, review and line note, reaches the agent.
 
 - `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
-- `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It starts no stage, and leaves one comment where it was said naming every issue it switched.
+- `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It starts no stage, `/autopilot start` merges every pull request in the tree already approved by its code review (step 6), and leaves one comment where it was said naming every issue it switched.
 - `/issue`: file the reviewer's proposed issues (planned).
 - No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
 - Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.

@@ -826,6 +826,106 @@ def autopilot_comment(number, switch, switched):
     return said + " No stage was started.\n"
 
 
+WORKFLOWS = ".github/workflows/"
+PASSING = {"success", "neutral", "skipped"}
+
+
+def on_autopilot(repo, number):
+    """True when the issue carries the `autopilot` label."""
+    return AUTOPILOT in {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("labels", [])}
+
+
+def approves_work(rec):
+    """True when a record is a code review, passed by code, that approves the pull request."""
+    return (rec.get("role") == "reviewer" and (rec.get("stage") or "") == "pr" and rec.get("check", {}).get("passed")
+            and (rec.get("handback") or {}).get("verdict") == "approve")
+
+
+def work_approved(recs):
+    """True when the issue's newest planner, worker or reviewer record is a code review approving the pull request."""
+    newest = next((r for r in reversed(recs) if r.get("role") in HANDBACK), None)
+    return bool(newest) and approves_work(newest)
+
+
+def unproven(repo, sha):
+    """Why the commit is not proven by every check on it, or None when every check on it has passed."""
+    runs = json.loads(gh("api", f"repos/{repo}/commits/{sha}/check-runs?per_page=100")).get("check_runs", [])
+    status = json.loads(gh("api", f"repos/{repo}/commits/{sha}/status"))
+    if not runs and not status.get("total_count"):
+        return f"there are no checks on its head commit {sha[:7]}"
+    running = [r["name"] for r in runs if r.get("status") != "completed"]
+    red = [f"{r['name']} ({r.get('conclusion')})" for r in runs if r.get("status") == "completed" and r.get("conclusion") not in PASSING]
+    red += [f"{s.get('context')} ({s.get('state')})" for s in status.get("statuses") or [] if s.get("state") != "success"]
+    if red:
+        return f"not every check passed on its head commit {sha[:7]}: {', '.join(red)}"
+    if running:
+        return f"a check is still running on its head commit {sha[:7]}: {', '.join(running)}"
+    return None
+
+
+def try_merge(repo, pr):
+    """Merge the pull request at the head whose checks were read, only when every check on that head has passed and it
+    changes no workflow file. Returns (True, merged head) or (False, why it was not merged, in GitHub's words when GitHub refused)."""
+    try:
+        files = gh("api", f"repos/{repo}/pulls/{pr}/files?per_page=100", "--paginate", "--jq", ".[].filename").split()
+        flows = [f for f in files if f.startswith(WORKFLOWS)]
+        if flows:
+            return False, f"it changes a workflow file ({', '.join(flows)}), and only the owner merges those"
+        head = gh("pr", "view", str(pr), "-R", repo, "--json", "headRefOid", "-q", ".headRefOid").strip()
+        if not head:
+            return False, "GitHub did not say which commit is its head"
+        why = unproven(repo, head)
+        if why:
+            return False, why
+        # Pinned to the head whose checks passed: a commit pushed since makes GitHub refuse.
+        gh("pr", "merge", str(pr), "-R", repo, "--squash", "--match-head-commit", head)
+        return True, head
+    except subprocess.CalledProcessError as e:
+        return False, " ".join((e.stderr or str(e)).split())
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        return False, f"GitHub's answer could not be read: {e}"
+
+
+def automerge(repo, number):
+    """On autopilot, merge the open pull request built for the issue; when it merges, the issue gets one Autopilot
+    line. Returns (pull request or None, merged, why)."""
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+            "-q", ".[0].number").strip()
+    if not pr:
+        return None, False, "there is no open pull request built for it"
+    merged, why = try_merge(repo, pr)
+    if merged:
+        gh("issue", "comment", str(number), "-R", repo, "--body", f"Autopilot: merged PR #{pr}")
+    return pr, merged, why
+
+
+def owners_of(repo):
+    """The code owners: from OWNERS when the workflow gives them, else from CODEOWNERS."""
+    owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+    if owners:
+        return owners
+    from dokima.plan import repo_approvers
+    return sorted(repo_approvers(os.environ.get("GITHUB_REPOSITORY_OWNER") or repo.split("/")[0]))
+
+
+def merge_tree(repo, number):
+    """`/autopilot start`: merge every open pull request in the issue's tree whose newest record is the code review's
+    approval. One that cannot merge says why on itself and mentions the owner. Returns what merged, as (issue, pr)."""
+    done, mention = [], " ".join(f"@{o}" for o in owners_of(repo))
+    for n in issue_tree(repo, number):
+        pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{n}", "--state", "open", "--json", "number",
+                "-q", ".[0].number").strip()
+        if not pr or not work_approved(records(conversation(repo, n)[1])):
+            continue
+        pr, merged, why = automerge(repo, n)
+        if merged:
+            done.append((n, pr))
+        elif pr:
+            gh("pr", "comment", pr, "-R", repo, "--body",
+               f"Autopilot did not merge this pull request: {why}. {mention} It waits for you to merge it.")
+    return done
+
+
 def next_step(items, rec, owners, rounds=3):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
@@ -898,6 +998,8 @@ def board_place(rec, step):
     the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
+    if step[0] == "merged":
+        return "Done", False
     return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
 
 
@@ -921,7 +1023,7 @@ def next_line(step, owners):
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
-    if step[0] == "cancelled":
+    if step[0] in ("cancelled", "merged"):
         return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
@@ -1039,6 +1141,12 @@ def main(argv):
         # so it is not read.
         items = [] if rec.get("role") in ("not-started", "cancelled") else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
         step = next_step(items, rec, owners)
+        repo = os.environ["GITHUB_REPOSITORY"]
+        if approves_work(rec) and on_autopilot(repo, number):
+            _, merged, why = automerge(repo, number)
+            step = ("merged", "Autopilot merged the pull request; nothing else starts.") if merged else \
+                ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
+                         "with a command to send it back.")
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
@@ -1067,6 +1175,8 @@ def main(argv):
         switch, number = argv[2], argv[3]
         switched = switch_autopilot(os.environ["GITHUB_REPOSITORY"], number, switch)
         sys.stdout.write(autopilot_comment(number, switch, switched))
+        if switch == "start":
+            merge_tree(os.environ["GITHUB_REPOSITORY"], number)
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

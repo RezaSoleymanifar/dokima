@@ -299,11 +299,13 @@ jobs:
           git -C "$W" -c user.name="${SLUG}[bot]" -c user.email="${BOT_ID}+${SLUG}[bot]@users.noreply.github.com" add -A
           git -C "$W" -c user.name="${SLUG}[bot]" -c user.email="${BOT_ID}+${SLUG}[bot]@users.noreply.github.com" commit -qm "Conversation of run ${{ github.run_id }}"
           for i in 1 2 3; do git -C "$W" push -q origin HEAD:logs && break; git -C "$W" pull -q --rebase origin logs || true; done
-      - name: Decide what follows, and say it on the card
+      # On autopilot, a code review's approval with every check green merges the pull request here, so this step
+      # holds the app's key (minted after the agent finished).
+      - name: Decide what follows, merge on autopilot, and say it on the card
         id: next
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           export OWNERS=$(python3 -m dokima.plan approvers)
           NEXT=$(python3 -m dokima.agent next "$N" "$OUT") || NEXT=stop
