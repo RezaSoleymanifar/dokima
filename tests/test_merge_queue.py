@@ -215,7 +215,9 @@ def triggers(lines):
 
 
 def evaluate(expr, event, sha):
-    """Evaluate a `${{ a || b }}` commit expression for an event, the way GitHub would; None when not understood."""
+    """Evaluate a `${{ a || b }}` commit expression the way GitHub would.
+
+    Returns None when the expression is not understood."""
     m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", expr.strip().strip("'\""))
     if not m:
         return None
@@ -253,9 +255,9 @@ def suite_refs():
 
 
 def test_both_required_workflows_run_in_the_merge_queue_on_the_queued_commit(record_property):
-    """The all-tests and done-whens workflows run on the merge queue's event, testing the queued commit.
+    """Both required workflows run in the merge queue, testing the queued commit.
 
-    Reads the `on:` of full-suite.yml and done-whens.yml and checks each lists merge_group; then evaluates the commit
+    Proves 191.1. Reads the `on:` of full-suite.yml and done-whens.yml and checks each lists merge_group; then evaluates the commit
     the done-whens check checks out and the commit its annotations link to for a merge_group event, and checks both are
     the queue's commit (the pull request on top of the latest main), not empty and not main's; and does the same for
     the commit the all tests check checks out."""
@@ -280,9 +282,9 @@ def test_both_required_workflows_run_in_the_merge_queue_on_the_queued_commit(rec
 @pytest.mark.parametrize("pr, issue", [(12, 191), (34, 77), (56, 88)],
                          ids=["linked-by-branch", "linked-by-closes-in-body", "linked-by-github-closing-reference"])
 def test_queued_pr_gets_the_same_checks_as_on_the_pr(record_property, run_matrix, pr, issue):
-    """In the merge queue, the done-whens find the PR's issue from the queue's branch and list the same checks as on the PR.
+    """In the queue, the done-whens find the PR's issue and list its same checks.
 
-    Runs `dokima.checks matrix` for a merge_group event whose branch names the pull request, for three pull requests
+    Proves 191.2. Runs `dokima.checks matrix` for a merge_group event whose branch names the pull request, for three pull requests
     linked to three different issues (by try/issue-N branch, by 'Closes #N' in the body, and by GitHub's closing
     reference only), and checks the list is exactly the one-check-per-criterion list of that issue's approved plan,
     and the same list the pull request event gives."""
@@ -297,9 +299,9 @@ def test_queued_pr_gets_the_same_checks_as_on_the_pr(record_property, run_matrix
 
 
 def test_queue_branch_on_another_base_still_finds_the_pr(record_property, run_matrix):
-    """A queue for a base branch with a slash in its name still finds the pull request's issue.
+    """A queue on a base branch with a slash still finds the PR's issue.
 
-    Runs `dokima.checks matrix` for a merge_group event on gh-readonly-queue/release/2.0/pr-34-<sha> and checks it
+    Proves 191.2. Runs `dokima.checks matrix` for a merge_group event on gh-readonly-queue/release/2.0/pr-34-<sha> and checks it
     lists issue #77's checks."""
     record_property("proves", "191.2")
     code, rows, err = run_matrix(queue_event(34, base="release/2.0"))
@@ -308,9 +310,9 @@ def test_queue_branch_on_another_base_still_finds_the_pr(record_property, run_ma
 
 
 def test_queued_pr_with_no_linked_issue_fails_the_gate_with_the_same_reason(record_property, run_matrix):
-    """A queued PR with no linked issue fails 'all done-whens passed' with the same reason as on the PR.
+    """A queued PR with no linked issue fails the gate as on the PR.
 
-    Runs `dokima.checks matrix` for a pull request with no issue link (no try/issue-N branch, no 'Closes #N', no
+    Proves 191.3. Runs `dokima.checks matrix` for a pull request with no issue link (no try/issue-N branch, no 'Closes #N', no
     closing reference), on the PR and in the queue, and checks both give the one failing check 'No approved plan found:
     no issue linked' with no tests; then checks done-whens.yml still fails a check with no tests and makes the gate
     need every check to pass."""
@@ -330,9 +332,9 @@ def test_queued_pr_with_no_linked_issue_fails_the_gate_with_the_same_reason(reco
 
 
 def test_pull_request_checks_behave_exactly_as_before(record_property, run_matrix):
-    """Pull request checks are unchanged: the queue is added beside them, with the same names, list and commit.
+    """Pull request checks are unchanged: same triggers, names, list and commit.
 
-    Checks the triggers are exactly main's plus merge_group (full-suite.yml: pull_request_target, push to main,
+    Proves 191.4. Checks the triggers are exactly main's plus merge_group (full-suite.yml: pull_request_target, push to main,
     merge_group, as #263 left it; done-whens.yml: pull_request_target, merge_group), so nothing was dropped, swapped or
     added beyond the queue; that the required check names 'all tests' and 'all done-whens passed' are unchanged; that
     `dokima.checks matrix` on a pull request lists its issue's plan exactly; that on a pull request the done-whens
