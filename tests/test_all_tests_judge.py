@@ -241,12 +241,16 @@ def test_all_tests_runs_mains_workflow_on_the_pull_requests_code(record_property
     """The all tests check runs main's copy of its workflow, and the code it tests is the pull request's.
 
     Plays out GitHub opening a pull request that leaves the workflow alone. Main's copy must be among the all tests
-    runs GitHub starts. A pull request whose code is right passes; one whose code is broken fails, though main's code
-    is right, so the check tests the pull request's code and not main's."""
+    runs GitHub starts, and it must be the only one: GitHub may not also start the pull request's own copy, which the
+    pull request could rewrite. A pull request whose code is right passes; one whose code is broken fails, though
+    main's code is right, so the check tests the pull request's code and not main's."""
     record_property("proves", "260.1")
     runs, _ = pull_request(tmp_path / "good", APP_GOOD)
     assert any(who.startswith("main's") for who, _, _ in runs), \
         f"260.1: GitHub would not run main's copy of the all tests workflow on a pull request, only:\n{show(runs)}"
+    theirs = [who for who, _, _ in runs if not who.startswith("main's")]
+    assert not theirs, \
+        f"260.1: GitHub also runs {', '.join(theirs)}, so the pull request's own copy still judges it:\n{show(runs)}"
     assert green(runs), f"260.1: a pull request with working code did not pass all tests:\n{show(runs)}"
     runs, _ = pull_request(tmp_path / "bad", APP_BAD)
     assert any(who.startswith("main's") for who, _, _ in runs), \
