@@ -16,14 +16,16 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 
+from dokima import body as issue_body
 from dokima.checks import PROVES, TEST_DEF
 from dokima.agent import problems_questions  # noqa: E402
 
-ORIGINAL_START = "<!-- dokima-original -->"
-ORIGINAL_END = "<!-- /dokima-original -->"
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 
 
@@ -317,33 +319,54 @@ def unsummarized(added):
     return out
 
 
-def passing_today(added):
-    """Run each new test (path::name) on today's code; the ones that pass or are skipped, or run past the limit."""
+def main_with_tests(base, into):
+    """Lay main's code (`base`) into the folder `into`, with the branch's tests/ as they stand now on top.
+
+    On a re-plan the branch may already hold the worker's code, so new tests are judged on main's code instead. The
+    copy lives outside the repo, so the branch, its worktrees and its files stay exactly as they were.
+    """
+    tar = subprocess.run(["git", "archive", "--format=tar", base], check=True, capture_output=True).stdout
+    with tempfile.TemporaryFile() as f:
+        f.write(tar)
+        f.seek(0)
+        with tarfile.open(fileobj=f) as t:
+            t.extractall(into, filter="data")
+    shutil.rmtree(os.path.join(into, "tests"), ignore_errors=True)
+    listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "tests"],
+                            check=True, capture_output=True, text=True).stdout.split("\n")
+    for p in listed:
+        if p and os.path.isfile(p):
+            os.makedirs(os.path.dirname(os.path.join(into, p)), exist_ok=True)
+            shutil.copyfile(p, os.path.join(into, p))
+
+
+def passing_today(added, base="HEAD"):
+    """Run each new test (path::name) on main's code (`base`) with the planner's tests on top; the ones that pass or
+    are skipped, or run past the limit."""
     out = []
-    for t in sorted(added):
-        try:
-            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", t],
-                               capture_output=True, text=True, timeout=NEW_TEST_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            out.append(f"{t} is a new test still running after {NEW_TEST_TIMEOUT} s on today's code; it was stopped")
-            continue
-        if r.returncode in (0, 5):  # 0: passed or skipped, 5: nothing ran
-            out.append(f"{t} is a new test that passes today (or is skipped); every new test must fail on today's code")
+    if not added:
+        return out
+    with tempfile.TemporaryDirectory() as into:
+        main_with_tests(base, into)
+        for t in sorted(added):
+            try:
+                r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", t], cwd=into,
+                                   capture_output=True, text=True, timeout=NEW_TEST_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                out.append(f"{t} is a new test still running after {NEW_TEST_TIMEOUT} s on today's code; it was stopped")
+                continue
+            if r.returncode in (0, 5):  # 0: passed or skipped, 5: nothing ran
+                out.append(f"{t} is a new test that passes today (or is skipped); every new test must fail on today's code")
     return out
 
 
-def original(body):
-    """The owner's own text: kept from an earlier plan's fold, else the body as it is."""
-    body = body or ""
-    if ORIGINAL_START in body and ORIGINAL_END in body:
-        inner = body.split(ORIGINAL_START, 1)[1].split(ORIGINAL_END, 1)[0]
-        lines = [l for l in inner.splitlines() if l.startswith(">")]
-        return "\n".join(l[2:] if l.startswith("> ") else l[1:] for l in lines)
-    return body.strip()
-
-
 def render(number, body, plan, tags, older=()):
-    """The issue body for a plan, in the format dokima.plan reads, with the owner's text folded below."""
+    """The issue body for a plan, in the format dokima.plan reads, with the owner's part kept below the marker."""
+    return issue_body.redraw(body, plan_text(number, plan, tags, older))
+
+
+def plan_text(number, plan, tags, older=()):
+    """The plan's part of the issue body, written above the marker."""
     lines = [f"- [ ] Objective: {plan['objective'].strip()}"]
     for k, c in enumerate(plan["criteria"], 1):
         tests = sorted(t for t, ks in tags.items() if f"{number}.{k}" in ks)
@@ -359,10 +382,6 @@ def render(number, body, plan, tags, older=()):
         lines.append("")
     lines.append("**Scope:**")
     lines += [f"- `{s.strip()}`" for s in plan["scope"]]
-    text = original(body)
-    lines += ["", "<details><summary>Original issue</summary>", "", ORIGINAL_START]
-    lines += [f"> {l}" if l else ">" for l in text.splitlines()]
-    lines += [ORIGINAL_END, "</details>"]
     return "\n".join(lines) + "\n"
 
 
@@ -415,7 +434,7 @@ def main(argv):
             own = changed_files(run_base) if run_base else files
             bad = problems(number, result, own, tc, result.get("declared"))
             bad += problems_questions(result["raw"].get("questions", []))
-            bad += unsummarized(tc["added"]) + passing_today(tc["added"])
+            bad += unsummarized(tc["added"]) + passing_today(tc["added"], base)
             if bad:
                 raise Garbled("; ".join(bad))
     except Garbled as e:
@@ -429,7 +448,10 @@ def main(argv):
         else:
             older = sorted(t for t in tc["changed"] if not set(tc["changed"][t][0]) <= {f"{number}.{k}" for k in range(1, len(result["criteria"]) + 1)}) + sorted(tc["deleted"])
             body = gh("issue", "view", number, "-R", repo, "--json", "body", "-q", ".body")
-            gh("issue", "edit", number, "-R", repo, "--body-file", "-", input=render(number, body, result, dict(proving(tc), **declared_by_test(result["declared"])), older))
+            body = body[:-1] if body.endswith("\n") else body  # gh ends its output with a newline of its own
+            tags = dict(proving(tc), **declared_by_test(result["declared"]))
+            if not issue_body.save(repo, number, body, plan_text(number, result, tags, older)):
+                return 1
             gh("issue", "comment", number, "-R", repo, "--body",
                f"Plan written above, tests on `work/issue-{number}`. Add `work` to approve it.")
     print(kind)

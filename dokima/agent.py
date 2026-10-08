@@ -214,14 +214,32 @@ def not_started(role, stage, why, meta):
             "check": {"passed": False, "problems": lines}}
 
 
-def live_card(role, stage, state):
-    """The run's card while it is still running: getting ready, then working since the agent started.
+def cancelled(role, stage, started, meta):
+    """The record of a run someone cancelled: what it was and whether its agent had started. Nothing it handed back
+    is used, and the river starts nothing after it."""
+    return {"role": "cancelled", "attempt": role, "stage": stage or None, "agent_started": started, **meta,
+            "handback": {}, "check": {"passed": False, "problems": []}}
+
+
+def live_card(role, stage, state, ahead=None):
+    """The run's card while it is still running: queued (or waiting for the run `ahead` of it), getting ready, then
+    working since the agent started.
 
     It carries its own marker and no JSON fold, so it never reads as a record; at the end of the run code edits this
-    same comment into the run's record."""
-    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker"}.get(role, "Command")
+    same comment into the run's record. A hand-off's queued card is put up before its run exists, so it links none."""
+    head = {"planner": "Planner", "reviewer": f"Reviewer ({stage})", "worker": "Worker",
+            "split": "Filing the split"}.get(role, "Command")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    if state in ("queued", "handoff"):
+        if ahead:
+            line = f"{icon(repo, 'queued')} **{head}** · waiting for [this run]({ahead})"
+            what = (f"Queued, and waiting for [this run]({ahead}) on the same issue to end; this run starts after it. "
+                    "This card says working when the agent starts, then becomes the run's record.")
+        else:
+            line = f"{icon(repo, 'queued')} **{head}** · queued"
+            what = "Queued: the run starts in a moment. This card says working when the agent starts, then becomes the run's record."
+        return "\n".join([LIVE, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
     if state == "working":
         line = f"{icon(repo, 'running')} **{head}** · working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
         what = "The agent is working. This card becomes the run's record when it ends."
@@ -229,6 +247,46 @@ def live_card(role, stage, state):
         line = f"{icon(repo, 'queued')} **{head}** · getting ready"
         what = "The machine is getting ready. This card says working when the agent starts, then becomes the run's record."
     return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
+
+
+GOING = {"queued", "in_progress", "waiting", "requested", "pending"}
+
+
+def where_card(repo, number, role, stage):
+    """Where a run's card and record go: the open pull request for the worker and the code review, else the issue."""
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+            "-q", ".[0].number").strip()
+    return pr if pr and (role == "worker" or stage == "pr") else str(number)
+
+
+def run_ahead(repo, number):
+    """The link of another run still going on the issue or its pull request, found from GitHub's records: a live card
+    the bot put up there, which links its run, and GitHub's word that the run has not completed. None when there is none."""
+    own = os.environ.get("GITHUB_RUN_ID", "")
+    places = {str(number), where_card(repo, number, "worker", "")}
+    for n in sorted(places):
+        for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/comments", "--paginate") or "[]"):
+            body = c.get("body") or ""
+            if (c.get("user") or {}).get("login") not in (BOT, f"{BOT}[bot]") or LIVE not in body or MARK in body:
+                continue
+            for rid in dict.fromkeys(re.findall(r"/actions/runs/(\d+)", body)):
+                if rid == own:
+                    continue
+                if gh("api", f"repos/{repo}/actions/runs/{rid}", "--jq", ".status").strip() in GOING:
+                    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{rid}"
+    return None
+
+
+def queue(role, stage, number, state):
+    """Put up a run's queued card where its record will go, saying so when it waits for another run; returns its id."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    try:
+        ahead = run_ahead(repo, number)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        ahead = None
+    body = live_card(role, stage, state, ahead)
+    return gh("api", "-X", "POST", f"repos/{repo}/issues/{where_card(repo, number, role, stage)}/comments",
+              "-f", f"body={body}", "--jq", ".id").strip()
 
 
 def render(rec):
@@ -242,6 +300,15 @@ def render(rec):
         lines = [MARK, f"{icon(repo, 'failed')} **{head}** · stopped before any agent started", ""] + [f"- {p}" for p in rec["check"]["problems"]]
         lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
                   "", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "cancelled":
+        a = rec.get("attempt")
+        head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker"}.get(a, "Command")
+        what = ("The run was cancelled after its agent started; nothing it handed back is used." if rec.get("agent_started")
+                else "The run was cancelled before its agent started.")
+        lines = [MARK, f"{icon(repo, 'cancelled')} **{head}** · cancelled", "", what]
+        lines += ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>",
+                  "", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
     head = {"planner": "Planner", "reviewer": f"Reviewer ({rec.get('stage')})", "worker": "Worker", "split": "Split filed"}[role]
     lines = [MARK, f"{icon(repo, 'passed' if rec['check']['passed'] else 'failed')} **{head}**"
@@ -451,6 +518,26 @@ def problems_review(r):
     return bad
 
 
+def problems_asks(r, ids):
+    """Everything wrong with a plan review's asks list: every ask the owner made, in their words, with a link to where
+    they said it and the plan's criterion (one of ids) that keeps it, or "missing"; an approve keeps every ask."""
+    asks = r.get("asks")
+    if not isinstance(asks, list) or not asks:
+        return ["asks must list every ask in the owner's issue and comments, each {\"ask\": \"the owner's words\", "
+                "\"source\": \"a link to where they said it\", \"criterion\": \"N.k\" or \"missing\"}"]
+    bad = problems_items(r, "asks", ("ask", "source", "criterion"), name="ask")
+    good = [a for a in asks if isinstance(a, dict) and all(filled(a.get(k)) for k in ("ask", "source", "criterion"))]
+    for a in good:
+        c = a["criterion"].strip()
+        if c != "missing" and c not in ids:
+            bad.append(f"the ask \"{a['ask']}\" is matched to {c}, which is not a criterion of the plan "
+                       f"({', '.join(ids) or 'none'})")
+    gone = [a["ask"] for a in good if a["criterion"].strip() == "missing"]
+    if r.get("verdict") == "approve" and gone:
+        bad.append("an approve keeps every ask, but these are marked missing: " + "; ".join(f'"{g}"' for g in gone))
+    return bad
+
+
 def problems_work(w):
     """Everything wrong with a work.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -598,6 +685,8 @@ def check(kind, path, plan_path=None, number=None):
             bad.append(f"the issue number {number!r} is not a number: the hand-back can't be checked against the plan")
         else:
             bad += problems_plan(kind, data, plan, number)
+            if kind == "review" and os.environ.get("STAGE") == "plan":
+                bad += problems_asks(data, plan_criteria(plan, number))
     for b in bad:
         print(b)
     return 1 if bad else 0
@@ -670,18 +759,71 @@ def issue_of_pr(head, body):
     return m.group(1) if m else None
 
 
+def autopilot_of(body):
+    """"start" or "stop" when a comment's first line begins `/autopilot start` or `/autopilot stop`; otherwise None."""
+    first = (body or "").strip().splitlines()[0].split() if (body or "").strip() else []
+    if len(first) >= 2 and first[0].lower() == "/autopilot" and first[1].lower() in ("start", "stop"):
+        return first[1].lower()
+    return None
+
+
 def route(body, on_pr, number, head="", pr_body=""):
     """What a code owner's comment starts: {role, stage, issue}, or None when it starts nothing.
 
-    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue."""
-    role = command_of(body)
-    if not role:
+    /review on an issue grades the plan; on a pull request it grades the work. A pull request routes to its issue.
+    `/autopilot start|stop` starts no stage: it routes to {autopilot, issue}, the issue whose tree it switches."""
+    role, switch = command_of(body), autopilot_of(body)
+    if not role and not switch:
         return None
     issue = issue_of_pr(head, pr_body) if on_pr else str(number)
     if not issue:
         return None
+    if switch:
+        return {"autopilot": switch, "issue": issue}
     stage = ("pr" if on_pr else "plan") if role == "reviewer" else ""
     return {"role": role, "stage": stage, "issue": issue}
+
+
+AUTOPILOT = "autopilot"
+
+
+def issue_tree(repo, number):
+    """The issue and every sub-issue under it, at every level, from GitHub's native sub-issues; parents first."""
+    tree, todo = [], [int(number)]
+    while todo:
+        n = todo.pop(0)
+        if n in tree:
+            continue
+        tree.append(n)
+        # GitHub allows at most 100 sub-issues per parent, so one page holds them all.
+        todo += [c["number"] for c in json.loads(gh("api", f"repos/{repo}/issues/{n}/sub_issues?per_page=100") or "[]")]
+    return tree
+
+
+def switch_autopilot(repo, number, switch):
+    """Put the issue's tree on autopilot ("start") or take it off ("stop"), touching no other label; returns the
+    issues switched: those whose `autopilot` label was added or removed."""
+    switched = []
+    for n in issue_tree(repo, number):
+        labels = {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("labels", [])}
+        if switch == "start" and AUTOPILOT not in labels:
+            # Adding a label GitHub does not have yet creates it.
+            gh("api", "-X", "POST", f"repos/{repo}/issues/{n}/labels", "-f", f"labels[]={AUTOPILOT}")
+            switched.append(n)
+        elif switch == "stop" and AUTOPILOT in labels:
+            gh("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/{AUTOPILOT}")
+            switched.append(n)
+    return switched
+
+
+def autopilot_comment(number, switch, switched):
+    """The one comment `/autopilot start|stop` leaves where it was said: every issue it switched."""
+    names = ", ".join(f"#{n}" for n in switched)
+    if switch == "start":
+        said = f"Autopilot is on for {names}." if switched else f"#{number} and every issue under it were already on autopilot."
+    else:
+        said = f"Autopilot is off for {names}." if switched else f"No issue in #{number}'s tree was on autopilot."
+    return said + " No stage was started.\n"
 
 
 def next_step(items, rec, owners, rounds=3):
@@ -689,8 +831,11 @@ def next_step(items, rec, owners, rounds=3):
 
     A planner hands to the reviewer unless it has questions for the owner. A worker hands to the reviewer. A blocking
     review sends the work back, until three blocks in a row at that stage since the owner last spoke; then it is the
-    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner."""
+    owner's call. An approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
+    cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
+    if role == "cancelled":
+        return ("cancelled", "Nothing starts by itself after a cancel. Give the command again to start this stage.")
     if role == "not-started":
         return ("stop", "Nothing ran, see why above. Fix the cause, then give the command again.")
     if not rec.get("check", {}).get("passed"):
@@ -750,10 +895,10 @@ STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker"
 
 def board_place(rec, step):
     """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
-    the owner, and the Needs you pill exactly when the river stops for the owner."""
+    the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
     if step[0] == "start":
         return STAGE_COLUMN[(step[1], step[2] if step[1] == "reviewer" else "")], False
-    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), True
+    return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
 
 
 def move_card(repo, number, column, needs_you, spec, q=None):
@@ -776,6 +921,8 @@ def next_line(step, owners):
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
+    if step[0] == "cancelled":
+        return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
 
@@ -784,7 +931,10 @@ def main(argv):
     """agent pack N ROLE STAGE DIR | agent check-pack ROLE STAGE DIR | agent check review|work FILE PLAN N |
     agent record ROLE STAGE OUT CHECK_FILE PASSED LOG_DIR  (writes OUT/record.json and OUT/comment.md) |
     agent not-started ROLE STAGE OUT WHY_FILE  (the same, for a run or command that failed before its agent started) |
-    agent card ROLE STAGE queued|working  (prints the run's live card, which is not a record)"""
+    agent cancelled ROLE STAGE OUT STARTED LOG_DIR  (the same, for a run someone cancelled) |
+    agent card ROLE STAGE ready|working  (prints the run's live card, which is not a record) |
+    agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
+    agent autopilot start|stop N  (switches N's issue tree on or off autopilot, prints the comment naming what switched)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -817,8 +967,22 @@ def main(argv):
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         open(os.path.join(out, "comment.md"), "w").write(render(rec))
         return 0
+    if argv[1] == "cancelled":
+        role, stage, out, started, log_dir = argv[2:7]
+        meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
+        if started == "true":
+            meta.update({"models": models_used(log_dir), "report": run_report(os.path.join(out, "claude.json")),
+                         "log": os.environ.get("LOG_URL")})
+        rec = cancelled(role, stage, started == "true", meta)
+        json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
+        open(os.path.join(out, "comment.md"), "w").write(render(rec))
+        return 0
     if argv[1] == "card":
         sys.stdout.write(live_card(argv[2], argv[3], argv[4]))
+        return 0
+    if argv[1] == "queue":
+        print(queue(argv[2], argv[3], argv[4], argv[5] if len(argv) > 5 else "queued"))
         return 0
     if argv[1] == "check-round":
         try:
@@ -843,7 +1007,11 @@ def main(argv):
             return 1
         rec = file_split(repo, parent, recs)
         rec["run"] = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
-        if not any(r.get("role") == "split" for r in recs):
+        card = os.environ.get("CARD_ID", "")
+        if card:
+            # The command's queued card becomes the Split filed record, edited in place.
+            gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{card}", "-f", f"body={render(rec)}", "--silent")
+        elif not any(r.get("role") == "split" for r in recs):
             gh("issue", "comment", parent, "-R", repo, "--body", render(rec))
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
         if spec:
@@ -867,8 +1035,9 @@ def main(argv):
         number, out = argv[2], argv[3]
         owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
         rec = json.load(open(os.path.join(out, "record.json")))
-        # A run that never started stops for the owner whatever the conversation says, so it is not read.
-        items = [] if rec.get("role") == "not-started" else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
+        # A run that never started stops for the owner, and a cancelled one stops, whatever the conversation says,
+        # so it is not read.
+        items = [] if rec.get("role") in ("not-started", "cancelled") else conversation(os.environ["GITHUB_REPOSITORY"], number)[1]
         step = next_step(items, rec, owners)
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
@@ -893,6 +1062,11 @@ def main(argv):
             needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+        return 0
+    if argv[1] == "autopilot":
+        switch, number = argv[2], argv[3]
+        switched = switch_autopilot(os.environ["GITHUB_REPOSITORY"], number, switch)
+        sys.stdout.write(autopilot_comment(number, switch, switched))
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"

@@ -1,4 +1,4 @@
-"""Keep the project board's Status and Action ("Needs you") current, from GitHub events.
+"""Keep the project board's Status, Action ("Needs you") and Priority current, from GitHub events.
 
     python3 -m dokima.board     # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number")
 
@@ -12,6 +12,7 @@ import sys
 
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
+PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
 
 
 def linked(body):
@@ -47,6 +48,14 @@ def decide(event, p):
         for pr in p["workflow_run"].get("pull_requests") or []:
             out.append(("pr", pr["number"], "Review", True))
     return out
+
+
+def priority(event, p):
+    """(number, option) when a priority label was added or removed: the highest priority label left, or None to clear."""
+    if event != "issues" or p["action"] not in ("labeled", "unlabeled") or p["label"]["name"] not in PRIORITY:
+        return None
+    names = {label["name"] for label in p["issue"].get("labels") or []}
+    return p["issue"]["number"], next((option for label, option in PRIORITY.items() if label in names), None)
 
 
 def gql(query, **variables):
@@ -87,14 +96,17 @@ class Board:
 
 
 def sync(event, payload, spec, repo, q=gql):
-    changes = decide(event, payload)
-    if not spec or not changes:
+    changes, pill = decide(event, payload), priority(event, payload)
+    if not spec or not (changes or pill):
         return []
     board = Board(spec, repo, q)
     for kind, number, status, needs_you in changes:
         iid = board.item(kind, number)
         board.set(iid, "Status", status)
         board.set(iid, "Action", "Needs you" if needs_you else None)
+    if pill and "Priority" in board.fields:
+        number, option = pill
+        board.set(board.item("issue", number), "Priority", option)
     return changes
 
 

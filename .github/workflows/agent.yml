@@ -17,6 +17,8 @@ on:
       role: {type: string, required: true}
       stage: {type: string, default: plan}
       issue: {type: string, required: true}
+      # The id of the run's queued card, put up by the listener; the run updates it instead of putting up its own.
+      card: {type: string, default: ''}
   workflow_dispatch:
     inputs:
       role:
@@ -53,6 +55,8 @@ jobs:
       PYTHONSAFEPATH: "1"
       OUT: /tmp/dokima-out
       MODEL: claude-opus-5-5
+      # A card already up for this run: queued by the listener, or by the hand-off that started it.
+      CARD_ID: ${{ (inputs.card || github.event.client_payload.card) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -89,8 +93,12 @@ jobs:
           # Where the record will go: the PR once there is one, for the worker and the PR reviewer.
           PR=$(gh pr list -R "$GITHUB_REPOSITORY" --head "try/issue-$N" --state open --json number -q '.[0].number' || true)
           WHERE=$N; if [ -n "$PR" ] && { [ "$ROLE" = worker ] || [ "$STAGE" = pr ]; }; then WHERE=$PR; fi
-          python3 -m dokima.agent card "$ROLE" "$STAGE" queued > /tmp/card.md
-          if ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
+          python3 -m dokima.agent card "$ROLE" "$STAGE" ready > /tmp/card.md
+          if [ -n "$CARD_ID" ]; then
+            # The queued card is this run's: it now says getting ready, no longer waiting.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$CARD_ID" -F body=@/tmp/card.md --silent \
+              || echo "::warning title=Card not updated::the card could not say getting ready"
+          elif ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$WHERE/comments" -F body=@/tmp/card.md --jq .id); then
             echo "CARD_ID=$ID" >> "$GITHUB_ENV"
           else
             echo "::warning title=No live card::the card could not be put up; the record is posted at the end"
@@ -211,8 +219,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$STARTED" = true ]; then
+          if [ "$JOB_STATUS" = cancelled ]; then
+            # Someone cancelled the run: its card says so, mentions no one, and nothing starts after it.
+            mkdir -p "$OUT"
+            python3 -m dokima.agent cancelled "$ROLE" "$STAGE" "$OUT" "${STARTED:-false}" /home/runner/.claude/projects
+          elif [ "$STARTED" = true ]; then
             python3 -m dokima.agent record "$ROLE" "$STAGE" "$OUT" "$OUT/check.txt" "${PASSED:-false}" /home/runner/.claude/projects
           else
             # No agent started: a step with no reason of its own is named by GitHub's record of this run.
@@ -318,14 +331,19 @@ jobs:
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 -m dokima.agent board "$N" "$OUT" || echo "::warning title=Board not moved::the card could not be moved"
       - name: Start the next stage
-        if: always() && startsWith(steps.next.outputs.next, 'start ')
+        if: always() && !cancelled() && startsWith(steps.next.outputs.next, 'start ')
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           NEXT: ${{ steps.next.outputs.next }}
         run: |
           set -- $NEXT
+          # The next run's queued card goes up now, where its record will go, and its id travels with the signal.
+          NEXT_STAGE=$([ "$2" = reviewer ] && echo "${3:-plan}" || true)
+          NEXT_CARD=$(python3 -m dokima.agent queue "$2" "$NEXT_STAGE" "$N" handoff) \
+            || { NEXT_CARD=; echo "::warning title=No queued card::the next run puts up its own"; }
           gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=dokima-next \
-            -f "client_payload[role]=$2" -f "client_payload[stage]=${3:-plan}" -f "client_payload[issue]=$N"
+            -f "client_payload[role]=$2" -f "client_payload[stage]=${3:-plan}" -f "client_payload[issue]=$N" \
+            -f "client_payload[card]=$NEXT_CARD"
           echo "Started the $2${3:+ ($3)} for #$N"
       - name: Fail closed on a bad hand-back or the wrong model
         if: always()

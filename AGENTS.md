@@ -52,6 +52,8 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 5. **Code review.** The reviewer starts by itself when the worker finishes. Every blocker names who fixes it: the worker for code, the planner for a test shown too weak. A block sends it back to the worker by itself, or to the planner when any blocker is the planner's; that test fix goes planner, plan review, worker, code review, and an approved re-plan whose criteria are unchanged goes straight to the worker, while one that changes any criterion, or comes after the owner spoke, waits for `/work`. An approval stops for the owner.
 6. **Merge.** The owner approves and merges.
 
+On autopilot, the river runs a whole issue tree end to end and stops for the owner only where the owner must decide (planned, story 2 of #205); `/autopilot start` and `/autopilot stop` only switch it on and off.
+
 Agents work things out between themselves. The river stops and mentions the owner only on questions, approvals, an escalation, a hand-back code rejected, or three blocking reviews in a row at one stage since the owner last spoke. Every card ends with a **Next** line saying what happens next or what is the owner's to do.
 
 ## Commands
@@ -59,6 +61,7 @@ Agents work things out between themselves. The river stops and mentions the owne
 A command is the first word of an owner's comment on the issue or its PR, or of a PR review's summary submitted as a comment or a change request. Everything after it, and every other comment, review and line note, reaches the agent.
 
 - `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
+- `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It starts no stage, and leaves one comment where it was said naming every issue it switched.
 - `/issue`: file the reviewer's proposed issues (planned).
 - No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
 - Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.
@@ -71,11 +74,11 @@ Only the planner asks the owner, as a plain list inside its plan, and only where
 
 - Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
 - "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes.
-- The river moves each card to the stage now running. Priority (Blocker) is a field, not a label.
+- The river moves each card to the stage now running. Priority is a field (Blocker, High, Parked) that follows the issue's blocker, high or parked label; with two, the higher wins.
 
 ## The issue body
 
-The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses and says why (planned).
+The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, folded, exactly as written. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses, leaves the body as it was and says why in a comment on the issue. A fresh ask gets the marker on its first redraw, with its whole body kept below it. The card and the planner both save through `dokima/body.py`.
 
 ## Agent records and cards
 
