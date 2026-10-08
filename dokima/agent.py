@@ -829,6 +829,7 @@ def main(argv):
             iid = b.item("issue", int(parent))
             b.set(iid, "Status", "Work")
             b.set(iid, "Action", None)
+            board.refresh(b, repo, columns=False)
         return 0
     if argv[1] == "kind":
         _, items = conversation(os.environ["GITHUB_REPOSITORY"], argv[2])
@@ -866,6 +867,14 @@ def main(argv):
             needs = "needs" if needs else "none"
         for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
             print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+        from dokima import board
+        try:
+            for kind, n, _, needs_you in board.refresh(board.Board(spec, os.environ["GITHUB_REPOSITORY"]), os.environ["GITHUB_REPOSITORY"], columns=False):
+                print(f"board: {kind} #{n}{' · Needs you' if needs_you else ''} (recounted from its latest record)")
+        except Exception as e:
+            # This run's own card has moved; a failed recount of the others must not hide the run's own outcome.
+            why = (e.stderr or str(e)).strip() if isinstance(e, subprocess.CalledProcessError) else f"{type(e).__name__}: {e}"
+            print(f"::warning title=Needs you not recounted::{why}")
         return 0
     if argv[1] == "route":
         on_pr = os.environ.get("ON_PR") == "true"
