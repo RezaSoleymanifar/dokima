@@ -192,7 +192,8 @@ def test_real_hand_backs_are_kept_as_samples_and_pass_their_checkers(record_prop
     to the record comment on GitHub it was copied from. Across all folders there is at least one plan, one work and
     one review. Each plan passes the plan checker's reading of plan.json for issue N in dokima-dev/dokima, with its
     questions; each work.json passes `agent check work` against its plan; each review passes the workflow's review
-    check in the pack and STAGE of its stage, a plan review's or a code review's."""
+    check in the pack and STAGE of its stage, a plan review's or a code review's. The format is the settled one: each
+    review sample, graded as a review of its plan with its asks list taken away, is rejected for the missing list."""
     record_property("proves", "158.4")
     folders = sorted(d for d in os.listdir(SAMPLES) if os.path.isdir(os.path.join(SAMPLES, d))) if os.path.isdir(SAMPLES) else []
     assert folders, "158.4: tests/samples/ holds no samples: keep real hand-backs there, one folder per issue"
@@ -231,5 +232,12 @@ def test_real_hand_backs_are_kept_as_samples_and_pass_their_checkers(record_prop
                 assert (code, out.strip()) == (0, ""), \
                     f"158.4: the sample tests/samples/{n}/review-{stage}.json fails its checker: {out}{err[-400:]}"
                 kinds.add("review")
+                # The samples are graded in the settled format: the same review, graded as a review of this plan with
+                # no asks list, is turned away for it, so a sample recorded before asks existed cannot pass as a plan review.
+                bare = {k: v for k, v in review.items() if k != "asks"}
+                code, out, err = check_review(tmp_path, bare, plan=plan, stage="plan", number=n)
+                assert code != 0 and "asks" in out, \
+                    f"158.4: tests/samples/{n}/review-{stage}.json graded as a plan review with no asks list passes; " \
+                    f"the samples are not checked in the settled format: {out}{err[-400:]}"
     lacking = sorted({"plan", "work", "review"} - kinds)
     assert not lacking, f"158.4: tests/samples/ keeps no real {', '.join(lacking)} hand-back; it needs a plan, a work and a review"

@@ -1,0 +1,24 @@
+{
+ "previous_step": {
+  "did": [
+   "Made the board step place the card when the run never wrote down what follows: the card goes to the run's own stage column with Needs you.",
+   "When the run left no record either, the board step takes the stage from the run it was started as, marks Needs you, and still exits 0."
+  ],
+  "decided": [
+   "Treats a missing or unreadable decision as the river stopping for the owner, so a run that handed on keeps the pill cleared."
+  ],
+  "open": []
+ },
+ "verdict": "approve",
+ "summary": "A failed run now always leaves its card, and its open pull request's, in its stage's column with Needs you, even when the run's own last steps fail; all three tests fail on main and pass here, with the full suite green.",
+ "blockers": [],
+ "notes": [
+  {
+   "text": "The new fallback also catches a damaged board.txt (wrong number of words), not only a missing one, and treats it as a stop for the owner. That fits failing closed but no test covers it.",
+   "evidence": "dokima/agent.py main() 'board': except (OSError, ValueError)."
+  }
+ ],
+ "outside_plan": [],
+ "resolved": [],
+ "issues_found": []
+}
