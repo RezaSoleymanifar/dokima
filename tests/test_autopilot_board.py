@@ -22,6 +22,8 @@ What the fake Board offers, and the code is expected to use:
     .label(kind, n, on)                put the `autopilot` label on (True) or off (False) that issue or pull request
     .views() -> [name, ...]            the board's views
     .add_view(name, layout, filter)    add a view to the board
+    .view(name) -> {"id", "filter"}    the view of that name with its id and filter, or None (#278)
+    .set_view_filter(view_id, filter)  change that view's filter on GitHub (#278)
 
 The fake `gh` answers `pr list` (the issue's open pull request), `issue view` and `api repos/o/r/issues/N` (with
 labels), `issue create`, sub-issue and blocked-by links, and labels added through `issue create --label`,
@@ -112,6 +114,13 @@ def fake_board(world):
 
         def add_view(self, name, layout, filter):
             world.view_list.append({"name": name, "layout": layout, "filter": filter})
+
+        def view(self, name):
+            found = next((v for v in world.view_list if v["name"] == name), None)
+            return {"id": name, "filter": found["filter"]} if found else None
+
+        def set_view_filter(self, view_id, filter):
+            next(v for v in world.view_list if v["name"] == view_id)["filter"] = filter
 
     return FakeBoard
 
@@ -360,7 +369,7 @@ def test_the_board_gets_one_autopilot_table_view(record_property, make):
     """The first issue switched on autopilot gives the board an Autopilot view, a table showing only what carries the label.
 
     On a board with only the Needs you view, switching #57 on autopilot adds exactly one view: named Autopilot, laid
-    out as a table, filtered to label:autopilot. Switching #101 on afterwards adds no second view, and a stage moment
+    out as a table, filtered to label:autopilot is:open (#278). Switching #101 on afterwards adds no second view, and a stage moment
     on a board without the view adds none."""
     record_property("proves", "210.4")
     w = make(labels={("issue", 57): {LABEL}, ("issue", 101): {LABEL}, ("issue", 58): set()})
@@ -368,8 +377,8 @@ def test_the_board_gets_one_autopilot_table_view(record_property, make):
     assert [v["name"] for v in w.view_list] == ["Needs you"], "210.4: a board change unrelated to autopilot added a view"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
     added = [v for v in w.view_list if v["name"] != "Needs you"]
-    assert added == [{"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"}], \
-        f"210.4: switching autopilot on added {added}, not one Autopilot table view filtered to label:{LABEL}"
+    assert added == [{"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL} is:open"}], \
+        f"210.4: switching autopilot on added {added}, not one Autopilot table view filtered to label:{LABEL} is:open"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 101), SPEC, REPO)
     assert [v["name"] for v in w.view_list].count("Autopilot") == 1, "210.4: the Autopilot view was added twice"
 
@@ -445,7 +454,7 @@ class FakeGitHub:
     """GitHub as the real Board sees it: one project with Status and Action, issues, pull requests, labels and views."""
 
     def __init__(self, labels=None, prs=None, closed_prs=None, cards=None, views=("Needs you",), refuse_views=False,
-                 parents=None, stale_views=False):
+                 parents=None, stale_views=False, filters=None, refuse_updates=False):
         self.labels = {n: set(v) for n, v in (labels or {}).items()}  # issue and PR numbers share one space, as on GitHub
         self.parents = dict(parents or {})  # sub-issue number -> parent issue number
         self.prs = dict(prs or {})  # issue number -> open PR number
@@ -456,7 +465,9 @@ class FakeGitHub:
         for (kind, n), fields in (cards or {}).items():
             self.items[(kind, n)] = f"ITEM_{kind}_{n}"
             self.cards[f"ITEM_{kind}_{n}"] = dict(fields)
-        self.views = [{"name": v, "layout": "TABLE_LAYOUT", "filter": ""} for v in views]
+        self.views = [{"id": f"PVTV_{i}", "name": v, "layout": "TABLE_LAYOUT", "filter": (filters or {}).get(v, "")}
+                      for i, v in enumerate(views)]
+        self.refuse_updates, self.updates = refuse_updates, []  # updateProjectV2View calls: (view id, filter)
         self.before = [dict(x) for x in self.views]
         self.refuse_views, self.stale_views = refuse_views, stale_views
         self.rest_calls = []
@@ -496,6 +507,21 @@ class FakeGitHub:
                 {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
                 {"id": "W", "name": "Action", "options": [{"id": "w-you", "name": "Needs you"}, {"id": "w-auto", "name": "Autopilot"}]}]},
                 "views": {"nodes": [dict(x) for x in (self.before if self.stale_views else self.views)]}}}}
+        if "updateProjectV2View" in text:
+            view_id = v.get("viewId") or v.get("v") or next((x for x in values if x.startswith("PVTV_")), None) \
+                or re.search(r'viewId:\s*"([^"]+)"', text).group(1)
+            new = v.get("filter")
+            if new is None:
+                new = next((x for x in values if x.startswith("label:")), None)
+            if new is None:
+                new = re.search(r'filter:\s*"([^"]*)"', text).group(1)
+            if self.refuse_updates:
+                raise subprocess.CalledProcessError(1, ["gh", "api", "graphql"], output="", stderr="Resource not accessible by integration")
+            self.updates.append((view_id, new))
+            for x in self.views:
+                if x["id"] == view_id:
+                    x["filter"] = new
+            return {"updateProjectV2View": {"projectV2View": {"id": view_id, "filter": new}}}
         if "addProjectV2ItemById" in text:
             n = self.content(v.get("c") or next(x for x in values if x.startswith(("I_", "PR_"))))
             kind = "issue" if str(v.get("c", "I_")).startswith("I_") else "pr"
@@ -554,7 +580,7 @@ class FakeGitHub:
         if path == "orgs/dokima-dev/projectsV2/1/views" and method == "POST":
             if self.refuse_views:
                 raise subprocess.CalledProcessError(1, ["gh", "api", path], output="", stderr="Resource not accessible by integration")
-            self.views.append({"name": fields.get("name"), "layout": {"table": "TABLE_LAYOUT"}.get(fields.get("layout"), fields.get("layout")),
+            self.views.append({"id": f"PVTV_{len(self.views)}", "name": fields.get("name"), "layout": {"table": "TABLE_LAYOUT"}.get(fields.get("layout"), fields.get("layout")),
                                "filter": fields.get("filter")})
             return {"id": 9, "name": fields.get("name")}
         m = re.fullmatch(r"repos/dokima-dev/dokima/issues/(\d+)/parent", path)
@@ -670,7 +696,7 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
     """Switching #57 on autopilot, through the real board sync, gives #57 and its PR the pill, the PR the label, and one view.
 
     Runs board.sync with the real Board against a faked GitHub. #57 (on Plan) and its PR #60 get Autopilot, PR #60
-    carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot. A second
+    carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot is:open. A second
     issue switched on adds no second view. #58, already showing Needs you when switched on, keeps Needs you."""
     record_property("proves", "210.1")
     ready("210.1", sync=True)
@@ -685,7 +711,7 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
     assert LABEL in gh.labels.get(60, set()), "210.4: on GitHub PR #60 does not carry the autopilot label"
     assert [x["name"] for x in gh.views].count("Autopilot") == 1, f"210.4: the board has views {[x['name'] for x in gh.views]}"
     view = next(x for x in gh.views if x["name"] == "Autopilot")
-    assert (view["layout"], view["filter"]) == ("TABLE_LAYOUT", f"label:{LABEL}"), f"210.4: the Autopilot view is {view}"
+    assert (view["layout"], view["filter"]) == ("TABLE_LAYOUT", f"label:{LABEL} is:open"), f"210.4: the Autopilot view is {view}"
 
 
 def test_a_refused_view_never_stops_the_pills_and_says_why(record_property):
@@ -758,7 +784,7 @@ def test_switching_a_whole_tree_on_adds_the_view_once_even_when_runs_overlap(rec
     each parent before its sub-issues. The faked GitHub then answers every read of the views with the board as it was
     before (only Needs you), the way parallel runs all read before any adds. The board sync runs for each label event,
     sub-issues first: none of theirs adds a view, #70's sends exactly one create-view call (Autopilot, table,
-    label:autopilot), and all cards show Autopilot. A story filed later under #70 (#74) adds no second view."""
+    label:autopilot is:open), and all cards show Autopilot. A story filed later under #70 (#74) adds no second view."""
     record_property("proves", "210.4")
     ready("210.4", "parent", sync=True)
     parents = {71: 70, 72: 70, 73: 71, 74: 70}
@@ -772,8 +798,8 @@ def test_switching_a_whole_tree_on_adds_the_view_once_even_when_runs_overlap(rec
     assert creates(gh) == [], f"210.4: a sub-issue whose parent is on autopilot added the Autopilot view: {creates(gh)}"
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 70), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert len(creates(gh)) == 1, f"210.4: switching the tree of #70 on sent {len(creates(gh))} create-view calls, not exactly one"
-    assert creates(gh)[0][2] == {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL}"}, \
-        f"210.4: the top of the tree added {creates(gh)[0][2]}, not the Autopilot table view filtered to label:{LABEL}"
+    assert creates(gh)[0][2] == {"name": "Autopilot", "layout": "table", "filter": f"label:{LABEL} is:open"}, \
+        f"210.4: the top of the tree added {creates(gh)[0][2]}, not the Autopilot table view filtered to label:{LABEL} is:open"
     gh.put(74, True)
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 74), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert len(creates(gh)) == 1, "210.4: a story filed later under #70 on autopilot added the Autopilot view a second time"
@@ -794,3 +820,101 @@ def test_a_sub_issue_switched_on_alone_still_gets_the_view(record_property):
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 91), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert len(creates(gh)) == 1, f"210.4: #91, switched on with no parent, sent {len(creates(gh))} create-view calls"
 
+
+
+# #278: the Autopilot view lists only open issues and pull requests. Its filter is label:autopilot is:open, so anything
+# merged or closed, which keeps its label, leaves the view. A board whose Autopilot view still has the old filter
+# label:autopilot gets it fixed with GraphQL's updateProjectV2View(input: {viewId, filter}) the next time a tree goes
+# on autopilot. The board's views are read in GraphQL with their id: projectV2 { views { nodes { id name filter } } }.
+
+OPEN = f"label:{LABEL} is:open"
+
+
+def updates(gh):
+    """The filter changes the board sent to GitHub: (view id, new filter)."""
+    return list(gh.updates)
+
+
+def autopilot_views(gh):
+    return [x for x in gh.views if x["name"] == "Autopilot"]
+
+
+def test_a_new_autopilot_view_lists_only_open_issues_and_pull_requests(record_property):
+    """A new Autopilot view lists only open issues and pull requests.
+
+    Proves 278.1. Runs the real board sync against a faked GitHub with only the Needs you view. Switching #57 on autopilot sends
+    exactly one create-view call, named Autopilot, table layout, filter label:autopilot is:open, and changes no view."""
+    record_property("proves", "278.1")
+    gh = FakeGitHub(labels={57: {LABEL}}, cards={("issue", 57): {"Status": "Plan"}})
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert creates(gh) == [("POST", "orgs/dokima-dev/projectsV2/1/views", {"name": "Autopilot", "layout": "table", "filter": OPEN})], \
+        f"278.1: switching autopilot on sent {creates(gh)}, not one Autopilot table view filtered to {OPEN}"
+    assert updates(gh) == [], f"278.1: adding the new view also changed a view: {updates(gh)}"
+
+
+def test_the_existing_autopilot_view_is_fixed_to_open_items_only(record_property):
+    """The old Autopilot view is fixed to open items once a tree goes on autopilot.
+
+    Proves 278.2. The faked board already has an Autopilot view filtered to label:autopilot. Switching #57 on autopilot changes that
+    same view's filter to label:autopilot is:open with one update call, adds no second Autopilot view and leaves the
+    Needs you view alone. #57 still gets its Autopilot pill."""
+    record_property("proves", "278.2")
+    gh = FakeGitHub(labels={57: {LABEL}}, cards={("issue", 57): {"Status": "Plan"}},
+                    views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"})
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert updates(gh) == [("PVTV_1", OPEN)], \
+        f"278.2: the old Autopilot view (PVTV_1, label:{LABEL}) was changed by {updates(gh)}, not one update to {OPEN}"
+    assert creates(gh) == [] and len(autopilot_views(gh)) == 1, \
+        f"278.2: fixing the view added another: the board has {[x['name'] for x in gh.views]}"
+    assert next(x for x in gh.views if x["name"] == "Needs you")["filter"] == "", "278.2: fixing the view changed the Needs you view"
+    assert gh.action("issue", 57) == "Autopilot", f"278.2: #57 shows {gh.action('issue', 57)!r}, not the Autopilot pill"
+
+
+def test_a_view_already_showing_open_items_only_is_left_alone(record_property):
+    """An Autopilot view already showing only open items is never rewritten or duplicated.
+
+    Proves 278.2. The faked board's Autopilot view has the old filter: switching #57 on fixes it with one update, and
+    switching #101 on afterwards sends no second update and no create-view call. A second board whose view already
+    has label:autopilot is:open gets no update and no create-view call at all."""
+    record_property("proves", "278.2")
+    gh = FakeGitHub(labels={57: {LABEL}, 101: {LABEL}}, views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"})
+    for n in (57, 101):
+        board.sync("issues", label_event("labeled", LABEL, [LABEL], n), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert updates(gh) == [("PVTV_1", OPEN)] and creates(gh) == [], \
+        f"278.2: two switches on sent updates {updates(gh)} and creates {creates(gh)}, not one fix to {OPEN}"
+    right = FakeGitHub(labels={57: {LABEL}}, views=("Needs you", "Autopilot"), filters={"Autopilot": OPEN})
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=right.q, rest=right.rest)
+    assert updates(right) == [] and creates(right) == [], \
+        f"278.2: a view already filtered to {OPEN} was touched: updates {updates(right)}, creates {creates(right)}"
+
+
+def test_the_fix_happens_through_the_fake_board_too(record_property, make):
+    """Switching an issue on autopilot fixes the old view; a stage moment never touches it.
+
+    Proves 278.2. Uses the stand-in Board: the board has an Autopilot view filtered to label:autopilot. Moving #58 to Work leaves
+    the filter as it was; switching #57 on autopilot sets it to label:autopilot is:open, with still one Autopilot view."""
+    record_property("proves", "278.2")
+    w = make(labels={("issue", 57): {LABEL}, ("issue", 58): set()}, views=("Needs you", "Autopilot"))
+    next(v for v in w.view_list if v["name"] == "Autopilot")["filter"] = f"label:{LABEL}"
+    board.sync("issues", label_event("labeled", "work", ["work"], 58), SPEC, REPO)
+    assert [v["filter"] for v in w.view_list if v["name"] == "Autopilot"] == [f"label:{LABEL}"], \
+        "278.2: a board change unrelated to autopilot changed the Autopilot view"
+    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
+    assert [v["filter"] for v in w.view_list if v["name"] == "Autopilot"] == [OPEN], \
+        f"278.2: after switching #57 on, the Autopilot views are {[v for v in w.view_list if v['name'] == 'Autopilot']}"
+
+
+def test_a_refused_fix_never_stops_the_pills_and_says_why(record_property):
+    """A refused fix still sets the pills, and the run fails naming the Autopilot view.
+
+    Proves 278.3. The faked GitHub refuses updateProjectV2View. Switching #57 on autopilot still gives #57 and its PR #60 the
+    Autopilot pill and labels PR #60, then the sync raises an error whose message names the Autopilot view."""
+    record_property("proves", "278.3")
+    gh = FakeGitHub(labels={57: {LABEL}}, prs={57: 60}, cards={("issue", 57): {"Status": "Plan"}},
+                    views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"}, refuse_updates=True)
+    with pytest.raises(Exception) as failed:
+        board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert "Autopilot view" in str(failed.value), f"278.3: the failure does not name the Autopilot view: {failed.value!r}"
+    assert (gh.action("issue", 57), gh.action("pr", 60)) == ("Autopilot", "Autopilot"), \
+        "278.3: a refused fix stopped the Autopilot pills from being set"
+    assert LABEL in gh.labels.get(60, set()), "278.3: a refused fix stopped PR #60 from being labelled"
