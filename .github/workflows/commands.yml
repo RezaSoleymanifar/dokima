@@ -46,7 +46,8 @@ jobs:
           # /work on an approved split files its stories; no worker runs.
           if grep -qx "role=worker" /tmp/route.txt; then
             N=$(sed -n 's/^issue=//p' /tmp/route.txt)
-            [ "$(python3 -m dokima.agent kind "$N")" = feature ] && sed -i 's/^role=worker$/role=split/' /tmp/route.txt
+            KIND=$(python3 -m dokima.agent kind "$N" 2> /tmp/why.txt) || { cat /tmp/why.txt >&2; exit 1; }
+            [ "$KIND" = feature ] && sed -i 's/^role=worker$/role=split/' /tmp/route.txt
           fi
           cat /tmp/route.txt >> "$GITHUB_OUTPUT"
       - id: why
