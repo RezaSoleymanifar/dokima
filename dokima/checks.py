@@ -81,7 +81,7 @@ def annotations(junit_xml, repo, sha, done_when):
 
 
 def event_pr(repo, event):
-    """The pull request this event is about: the PR itself, or in the merge queue the PR its queue branch names."""
+    """This event's pull request; in the merge queue, the one its branch names."""
     if "merge_group" not in event:
         return event["pull_request"]
     ref = event["merge_group"]["head_ref"]
