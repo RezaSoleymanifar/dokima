@@ -104,16 +104,21 @@ def test_a_docstring_the_planner_adds_is_held_to_15_words_in_its_first_line(reco
     """Every docstring the planner adds, helpers included, opens with at most 15 words.
 
     Proves 239.2. Docstrings of 15 words pass unlisted. A 19-word first line is rejected by name in a new test, a
-    helper and the module docstring; the words of the paragraph below never count.
+    helper and the module docstring; the words of the paragraph below never count. A docstring that opens with a line
+    break is measured by its first line of text, so a helper or module docstring written that way is held to 15 too.
     """
     record_property("proves", "239.2")
-    good = jobs(id_doc=words(15), id_rest=words(40) + " Proves 9.1.", helper_doc=words(15), module_doc=words(15))
-    rc, why, printed = run(check, capsys, STORY, good, "239.2")
-    assert rc == 0 and not why, f"239.2: docstrings of 15 words, with long paragraphs below, were rejected: {why!r}"
-    assert "tests/test_jobs.py" not in printed, f"239.2: a docstring within its cap was listed: {printed!r}"
+    for good in (jobs(id_doc=words(15), id_rest=words(40) + " Proves 9.1.", helper_doc=words(15), module_doc=words(15)),
+                 jobs(helper_doc="\n    " + words(15) + "\n    " + words(40) + "\n    ",
+                      module_doc="\n" + words(15) + "\n\n" + words(40) + "\n")):
+        rc, why, printed = run(check, capsys, STORY, good, "239.2")
+        assert rc == 0 and not why, f"239.2: docstrings of 15 words, with long paragraphs below, were rejected: {why!r}"
+        assert "tests/test_jobs.py" not in printed, f"239.2: a docstring within its cap was listed: {printed!r}"
     cases = [(jobs(id_doc=words(19)), "tests/test_jobs.py::test_id"),
              (jobs(helper_doc=words(19)), "tests/test_jobs.py::make_job"),
-             (jobs(module_doc=words(19)), "tests/test_jobs.py")]
+             (jobs(module_doc=words(19)), "tests/test_jobs.py"),
+             (jobs(helper_doc="\n    " + words(19) + "\n    "), "tests/test_jobs.py::make_job"),
+             (jobs(module_doc="\n" + words(19) + "\n"), "tests/test_jobs.py")]
     for text, where in cases:
         rc, why, _ = run(check, capsys, STORY, text, "239.2")
         assert rc == 1, f"239.2: {where} with a 19-word docstring first line was accepted; the cap is 15 (18 at most)"
