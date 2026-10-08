@@ -771,6 +771,10 @@ def main(argv):
         return check(argv[2], argv[3], argv[4], argv[5])
     if argv[1] == "check-pack":
         bad = problems_pack(argv[2], argv[3], argv[4])
+        if argv[2] == "worker" and not bad:
+            # Red before work (#81): the plan's tests must fail an assert on main's code before the worker starts.
+            from dokima import red
+            bad = red.problems(os.path.join(argv[4], "plan.json"))
         for b in bad:
             print(b)
         return 1 if bad else 0
