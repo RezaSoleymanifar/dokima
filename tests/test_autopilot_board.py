@@ -22,8 +22,6 @@ What the fake Board offers, and the code is expected to use:
     .label(kind, n, on)                put the `autopilot` label on (True) or off (False) that issue or pull request
     .views() -> [name, ...]            the board's views
     .add_view(name, layout, filter)    add a view to the board
-    .view(name) -> {"id", "filter"}    the view of that name with its id and filter, or None (#278)
-    .set_view_filter(view_id, filter)  change that view's filter on GitHub (#278)
 
 The fake `gh` answers `pr list` (the issue's open pull request), `issue view` and `api repos/o/r/issues/N` (with
 labels), `issue create`, sub-issue and blocked-by links, and labels added through `issue create --label`,
@@ -114,13 +112,6 @@ def fake_board(world):
 
         def add_view(self, name, layout, filter):
             world.view_list.append({"name": name, "layout": layout, "filter": filter})
-
-        def view(self, name):
-            found = next((v for v in world.view_list if v["name"] == name), None)
-            return {"id": name, "filter": found["filter"]} if found else None
-
-        def set_view_filter(self, view_id, filter):
-            next(v for v in world.view_list if v["name"] == view_id)["filter"] = filter
 
     return FakeBoard
 
@@ -498,6 +489,14 @@ class FakeGitHub:
             node["parent"] = self.item_node("issue", up, parent=False) if up else None
         return node
 
+    def view_nodes(self, text):
+        """The board's views with only the fields the query selects, as GitHub answers (#278).
+
+        Real GitHub returns only what a query names: a query of views{nodes{name}} gets no id or filter back."""
+        m = re.search(r"views\s*\([^)]*\)\s*\{\s*nodes\s*\{([^{}]*)\}", text)
+        asked = set(re.findall(r"\w+", m.group(1))) if m else set()
+        return [{k: x[k] for k in x if k in asked} for x in (self.before if self.stale_views else self.views)]
+
     def q(self, query, **v):
         """Answer one GraphQL call the way GitHub would."""
         text = " ".join(query.split())
@@ -506,8 +505,12 @@ class FakeGitHub:
             return {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
                 {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
                 {"id": "W", "name": "Action", "options": [{"id": "w-you", "name": "Needs you"}, {"id": "w-auto", "name": "Autopilot"}]}]},
-                "views": {"nodes": [dict(x) for x in (self.before if self.stale_views else self.views)]}}}}
+                "views": {"nodes": self.view_nodes(text)}}}}
         if "updateProjectV2View" in text:
+            # GitHub's UpdateProjectV2ViewInput takes the view as viewId and the new filter as filter.
+            if not re.search(r"\bviewId\s*:", text) or not re.search(r"\bfilter\s*:", text):
+                raise subprocess.CalledProcessError(1, ["gh", "api", "graphql"], output="",
+                                                    stderr="updateProjectV2View needs input {viewId, filter}")
             view_id = v.get("viewId") or v.get("v") or next((x for x in values if x.startswith("PVTV_")), None) \
                 or re.search(r'viewId:\s*"([^"]+)"', text).group(1)
             new = v.get("filter")
@@ -821,13 +824,14 @@ def test_a_sub_issue_switched_on_alone_still_gets_the_view(record_property):
     assert len(creates(gh)) == 1, f"210.4: #91, switched on with no parent, sent {len(creates(gh))} create-view calls"
 
 
-
-# #278: the Autopilot view lists only open issues and pull requests. Its filter is label:autopilot is:open, so anything
-# merged or closed, which keeps its label, leaves the view. A board whose Autopilot view still has the old filter
-# label:autopilot gets it fixed with GraphQL's updateProjectV2View(input: {viewId, filter}) the next time a tree goes
-# on autopilot. The board's views are read in GraphQL with their id: projectV2 { views { nodes { id name filter } } }.
+# #278: the Autopilot view lists only open issues and pull requests. A new view is filtered to label:autopilot is:open,
+# so anything merged or closed, which keeps its label, leaves it. A view still filtered to the old label:autopilot is
+# fixed by the board run of the next merge, so the board's view is fixed right after #278 merges. Views are read in
+# GraphQL with their id and filter (projectV2 { views { nodes { id name filter } } }); the faked GitHub, like the real
+# one, returns only the fields a query names. The filter is changed with updateProjectV2View(input: {viewId, filter}).
 
 OPEN = f"label:{LABEL} is:open"
+OLD = f"label:{LABEL}"
 
 
 def updates(gh):
@@ -835,8 +839,15 @@ def updates(gh):
     return list(gh.updates)
 
 
-def autopilot_views(gh):
-    return [x for x in gh.views if x["name"] == "Autopilot"]
+def merged(number, issue):
+    """A pull_request_target closed payload for a merged pull request, as board.yml receives it."""
+    event = pr_event("closed", number, issue)
+    event["pull_request"]["merged"] = True
+    return event
+
+
+def status(gh, kind, n):
+    return gh.cards.get(gh.items.get((kind, n)), {}).get("Status")
 
 
 def test_a_new_autopilot_view_lists_only_open_issues_and_pull_requests(record_property):
@@ -852,69 +863,70 @@ def test_a_new_autopilot_view_lists_only_open_issues_and_pull_requests(record_pr
     assert updates(gh) == [], f"278.1: adding the new view also changed a view: {updates(gh)}"
 
 
-def test_the_existing_autopilot_view_is_fixed_to_open_items_only(record_property):
-    """The old Autopilot view is fixed to open items once a tree goes on autopilot.
+def test_merging_a_pull_request_fixes_the_old_autopilot_view(record_property):
+    """Right after a merge, an old Autopilot view is fixed to show only open items.
 
-    Proves 278.2. The faked board already has an Autopilot view filtered to label:autopilot. Switching #57 on autopilot changes that
-    same view's filter to label:autopilot is:open with one update call, adds no second Autopilot view and leaves the
-    Needs you view alone. #57 still gets its Autopilot pill."""
+    Proves 278.2. The faked GitHub has an Autopilot view filtered to label:autopilot and answers each views query with only the
+    fields it names, as GitHub does. The board run for the merge of PR #60 (Closes #57) changes that same view
+    (PVTV_1) to label:autopilot is:open with one update call, adds no view, leaves Needs you alone, and still moves
+    PR #60 and #57 to Done."""
     record_property("proves", "278.2")
-    gh = FakeGitHub(labels={57: {LABEL}}, cards={("issue", 57): {"Status": "Plan"}},
-                    views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"})
-    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    gh = FakeGitHub(prs={57: 60}, cards={("issue", 57): {"Status": "Review"}, ("pr", 60): {"Status": "Review"}},
+                    views=("Needs you", "Autopilot"), filters={"Autopilot": OLD})
+    board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert updates(gh) == [("PVTV_1", OPEN)], \
-        f"278.2: the old Autopilot view (PVTV_1, label:{LABEL}) was changed by {updates(gh)}, not one update to {OPEN}"
-    assert creates(gh) == [] and len(autopilot_views(gh)) == 1, \
-        f"278.2: fixing the view added another: the board has {[x['name'] for x in gh.views]}"
+        f"278.2: the merge run sent {updates(gh)}, not one change of the Autopilot view (PVTV_1, {OLD}) to {OPEN}"
+    assert creates(gh) == [] and [x["name"] for x in gh.views] == ["Needs you", "Autopilot"], \
+        f"278.2: fixing the view changed the board's views to {[x['name'] for x in gh.views]}, creates {creates(gh)}"
     assert next(x for x in gh.views if x["name"] == "Needs you")["filter"] == "", "278.2: fixing the view changed the Needs you view"
-    assert gh.action("issue", 57) == "Autopilot", f"278.2: #57 shows {gh.action('issue', 57)!r}, not the Autopilot pill"
+    assert (status(gh, "pr", 60), status(gh, "issue", 57)) == ("Done", "Done"), \
+        f"278.2: the merge no longer moved PR #60 and #57 to Done: {status(gh, 'pr', 60)}, {status(gh, 'issue', 57)}"
 
 
-def test_a_view_already_showing_open_items_only_is_left_alone(record_property):
-    """An Autopilot view already showing only open items is never rewritten or duplicated.
+def test_the_fix_is_made_once_across_merges(record_property):
+    """Two merges in a row fix the old view once, never twice.
 
-    Proves 278.2. The faked board's Autopilot view has the old filter: switching #57 on fixes it with one update, and
-    switching #101 on afterwards sends no second update and no create-view call. A second board whose view already
-    has label:autopilot is:open gets no update and no create-view call at all."""
+    Proves 278.2. The Autopilot view starts on label:autopilot. PR #60 merges, then PR #61: exactly one update is sent, to
+    label:autopilot is:open, and no view is created."""
     record_property("proves", "278.2")
-    gh = FakeGitHub(labels={57: {LABEL}, 101: {LABEL}}, views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"})
-    for n in (57, 101):
-        board.sync("issues", label_event("labeled", LABEL, [LABEL], n), SPEC, REPO, q=gh.q, rest=gh.rest)
+    gh = FakeGitHub(prs={57: 60, 58: 61}, views=("Needs you", "Autopilot"), filters={"Autopilot": OLD})
+    board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    board.sync("pull_request_target", merged(61, 58), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert updates(gh) == [("PVTV_1", OPEN)] and creates(gh) == [], \
-        f"278.2: two switches on sent updates {updates(gh)} and creates {creates(gh)}, not one fix to {OPEN}"
-    right = FakeGitHub(labels={57: {LABEL}}, views=("Needs you", "Autopilot"), filters={"Autopilot": OPEN})
-    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=right.q, rest=right.rest)
-    assert updates(right) == [] and creates(right) == [], \
-        f"278.2: a view already filtered to {OPEN} was touched: updates {updates(right)}, creates {creates(right)}"
+        f"278.2: two merges sent updates {updates(gh)} and creates {creates(gh)}, not one fix to {OPEN}"
 
 
-def test_the_fix_happens_through_the_fake_board_too(record_property, make):
-    """Switching an issue on autopilot fixes the old view; a stage moment never touches it.
+def test_a_view_already_right_is_left_alone(record_property):
+    """An Autopilot view already right, or filtered by the owner, is never rewritten.
 
-    Proves 278.2. Uses the stand-in Board: the board has an Autopilot view filtered to label:autopilot. Moving #58 to Work leaves
-    the filter as it was; switching #57 on autopilot sets it to label:autopilot is:open, with still one Autopilot view."""
-    record_property("proves", "278.2")
-    w = make(labels={("issue", 57): {LABEL}, ("issue", 58): set()}, views=("Needs you", "Autopilot"))
-    next(v for v in w.view_list if v["name"] == "Autopilot")["filter"] = f"label:{LABEL}"
-    board.sync("issues", label_event("labeled", "work", ["work"], 58), SPEC, REPO)
-    assert [v["filter"] for v in w.view_list if v["name"] == "Autopilot"] == [f"label:{LABEL}"], \
-        "278.2: a board change unrelated to autopilot changed the Autopilot view"
-    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
-    assert [v["filter"] for v in w.view_list if v["name"] == "Autopilot"] == [OPEN], \
-        f"278.2: after switching #57 on, the Autopilot views are {[v for v in w.view_list if v['name'] == 'Autopilot']}"
-
-
-def test_a_refused_fix_never_stops_the_pills_and_says_why(record_property):
-    """A refused fix still sets the pills, and the run fails naming the Autopilot view.
-
-    Proves 278.3. The faked GitHub refuses updateProjectV2View. Switching #57 on autopilot still gives #57 and its PR #60 the
-    Autopilot pill and labels PR #60, then the sync raises an error whose message names the Autopilot view."""
+    Proves 278.3. Three boards, each through the board run of a merged PR #60: one whose Autopilot view is already
+    label:autopilot is:open, as the owner set it by hand; one whose owner chose label:autopilot is:open -label:parked;
+    and one with no Autopilot view at all. None gets an update call or a create-view call. Beside them, a board still
+    on label:autopilot gets its one fix, so the run truly reads the filter rather than never touching any view."""
     record_property("proves", "278.3")
-    gh = FakeGitHub(labels={57: {LABEL}}, prs={57: 60}, cards={("issue", 57): {"Status": "Plan"}},
-                    views=("Needs you", "Autopilot"), filters={"Autopilot": f"label:{LABEL}"}, refuse_updates=True)
+    old = FakeGitHub(prs={57: 60}, views=("Needs you", "Autopilot"), filters={"Autopilot": OLD})
+    board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=old.q, rest=old.rest)
+    assert updates(old) == [("PVTV_1", OPEN)], \
+        f"278.3: a merge never fixed a view still on {OLD} (sent {updates(old)}), so leaving right views alone proves nothing"
+    for views, filters in ((("Needs you", "Autopilot"), {"Autopilot": OPEN}),
+                           (("Needs you", "Autopilot"), {"Autopilot": f"{OPEN} -label:parked"}),
+                           (("Needs you",), {})):
+        gh = FakeGitHub(prs={57: 60}, views=views, filters=filters)
+        board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+        assert updates(gh) == [] and creates(gh) == [], \
+            f"278.3: a merge on a board with views {views} filtered {filters} sent updates {updates(gh)}, creates {creates(gh)}"
+
+
+def test_a_refused_fix_still_moves_the_cards_and_says_why(record_property):
+    """A refused fix still moves the merged cards, and the run says why.
+
+    Proves 278.4. The faked GitHub refuses updateProjectV2View. The board run for the merge of PR #60 (Closes #57) still moves both
+    cards to Done, then raises an error whose message names the Autopilot view."""
+    record_property("proves", "278.4")
+    gh = FakeGitHub(prs={57: 60}, cards={("issue", 57): {"Status": "Review"}, ("pr", 60): {"Status": "Review"}},
+                    views=("Needs you", "Autopilot"), filters={"Autopilot": OLD}, refuse_updates=True)
     with pytest.raises(Exception) as failed:
-        board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO, q=gh.q, rest=gh.rest)
-    assert "Autopilot view" in str(failed.value), f"278.3: the failure does not name the Autopilot view: {failed.value!r}"
-    assert (gh.action("issue", 57), gh.action("pr", 60)) == ("Autopilot", "Autopilot"), \
-        "278.3: a refused fix stopped the Autopilot pills from being set"
-    assert LABEL in gh.labels.get(60, set()), "278.3: a refused fix stopped PR #60 from being labelled"
+        board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
+    assert "Autopilot view" in str(failed.value), f"278.4: the failure does not name the Autopilot view: {failed.value!r}"
+    assert (status(gh, "pr", 60), status(gh, "issue", 57)) == ("Done", "Done"), \
+        "278.4: a refused fix stopped the merged cards from moving to Done"
