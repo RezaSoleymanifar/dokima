@@ -342,6 +342,7 @@ def test_the_issue_and_its_pr_show_the_same_card(record_property, monkeypatch, t
     Runs the card for an issue with an open PR and checks the card saved on the issue and the one written on the PR
     match line for line, except the links row, and that the PR keeps its line closing the issue."""
     record_property("proves", "180.1")
+    record_property("proves", "344.1")
     on_issue, on_pr = write_main(monkeypatch, tmp_path, "My ask.")
     assert on_issue and on_pr, "180.1: the card was not written on both the issue and its PR"
     a, b = block(on_issue).splitlines(), block(on_pr).splitlines()
@@ -488,6 +489,7 @@ def test_all_tests_shows_the_state_github_reports(record_property):
     Draws the card with the all tests check missing, queued, in progress, passed and failed, and checks the row's first
     circle each time."""
     record_property("proves", "180.3")
+    record_property("proves", "344.2")
     cases = [(None, "not started"), (run("all tests", "queued", None, n=4), "not started"),
              (run("all tests", "in_progress", None, n=4), "running"), (run("all tests", n=4), "passed"),
              (run("all tests", conclusion="failure", n=4), "failed")]
@@ -611,6 +613,7 @@ def test_a_missing_stale_or_unproven_review_never_shows_as_passed(record_propert
     with an approval from someone who is not a code owner, and with an owner's approval later withdrawn by asking for
     changes, and checks none shows passed."""
     record_property("proves", "180.6")
+    record_property("proves", "344.2")
     stale = dod(draw(recs=[PLANNED, PLAN_OK, BUILT, CODE_OK, rec("worker", n=15)]), "180.6")
     assert alts(stale)[1] != "passed", "180.6: a review of an older build showed passed"
     unproven = dod(draw(recs=[PLANNED, PLAN_OK, BUILT, rec("reviewer", "pr", passed=False, n=14, verdict="approve")]), "180.6")
