@@ -2,8 +2,10 @@
 
 Before this, only a review could list issues it found, and they stayed proposals on its card until someone filed them
 by hand (a `/issue` command was only planned). #222 showed the cost: the no-PR bug was found, never filed, and broke
-main. Now the planner's plan.json, the worker's work.json and the reviewer's review.json all take the same field,
-issues_found ({title, why, evidence}), and the run that hands them back files each one once its hand-back passes.
+main. Now the planner's plan.json, the worker's work.json and the reviewer's review.json all carry them in the same
+field, raises, the shared field #289 brings: each found issue is a raise of kind issue ({kind: "issue", title, why,
+evidence}), and the run that hands them back files each one once its hand-back passes. The owner asked to build toward
+that shape and add no new raise-type field, so no hand-back gains an issues_found field.
 
 These tests run the agents through the whole agent workflow (.github/workflows/agent.yml), the way GitHub runs it,
 with the machine from test_start.py and the fake GitHub of test_automerge.py, on issue #57. The "plan" machine holds
@@ -211,13 +213,18 @@ def keyed(job):
     return {**job, "steps": steps}
 
 
+def raised(found):
+    """These findings as raises of kind issue, the shape #289 gives every hand-back."""
+    return [{"kind": "issue", **f} for f in found]
+
+
 def plan_handback(*found, tests=True):
     """A planner's plan for #57 (one criterion, its test tests/test_x.py::test_a) listing these issues found outside it.
 
     It links no other issue, as the planner's check asks since #256. With tests=False the planner writes no test, so
     the planner's check rejects the plan."""
     return {**ts.STORY, "summary": "Stuck issues get unstuck.", "links": {"blocked_by": [], "blocks": [], "relates_to": []},
-            "issues_found": [dict(f) for f in found], "_tests": tests}
+            "raises": raised(found), "_tests": tests}
 
 
 def work_handback(*found, summary="Built the fix in x.py."):
@@ -225,18 +232,18 @@ def work_handback(*found, summary="Built the fix in x.py."):
 
     An empty summary is rejected by the check."""
     return {"summary": summary, "criteria": {"57.1": "x.py"}, "evidence": "pytest: 1 passed",
-            "issues_found": [dict(f) for f in found]}
+            "raises": raised(found)}
 
 
 def plan_review(*found, verdict="approve"):
     """A plan review of #57's one-story plan that lists these issues found outside it."""
     return {**ts.APPROVE, "verdict": verdict, "asks": [{**ts.APPROVE["asks"][0], "criterion": "57.1"}],
-            "issues_found": [dict(f) for f in found]}
+            "raises": raised(found)}
 
 
 def code_review(*found):
     """A code review of pull request #60 that approves it and lists these issues found outside it."""
-    return {**tam.review_pr("approve"), "issues_found": [dict(f) for f in found]}
+    return {**tam.review_pr("approve"), "raises": raised(found)}
 
 
 class Agents(tam.Merges, ts.Machine):
@@ -367,7 +374,10 @@ def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property
     command after any, and checks each run filed exactly one issue per finding, titled with the finding's own title,
     carrying exactly the labels parked and filed-by-dokima and nothing else. It runs the same four on a repo that has
     neither label yet, and checks the issues are filed with both all the same. Beside them, each agent handing back
-    no finding files nothing. Each agent's prompt names the same field, issues_found, with a title, why and evidence."""
+    no finding files nothing. The planner and the worker handing their findings back in a field of their own
+    (issues_found) or as a raise of another kind (blocker) file nothing, so no new raise-type field files issues. Each
+    agent's prompt gives found issues as raises of kind issue, with a title, why and evidence, and none still names
+    issues_found."""
     record_property("proves", "268.1")
     wrong = []
     for repo, kw in (("repo with the labels", {}), ("repo without the labels", {"repo_labels": EXISTING})):
@@ -382,11 +392,25 @@ def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property
         ran(m, "268.1", f"{case}, nothing found")
         if titles(m):
             wrong.append(f"{case} found nothing yet filed issues: {titles(m)}")
+    own_field = {"title": "Found in a field of its own", "why": "w", "evidence": "e"}
+    other_kind = {"kind": "blocker", "title": "Raised as another kind", "why": "w", "evidence": "e"}
+    for case, handback in (("planner with issues_found", {**plan_handback(), "issues_found": [own_field]}),
+                           ("worker with issues_found", {**work_handback(), "issues_found": [own_field]}),
+                           ("planner raising a blocker", {**plan_handback(), "raises": [other_kind]}),
+                           ("worker raising a blocker", {**work_handback(), "raises": [other_kind]})):
+        role = case.split()[0]
+        m = Agents(tmp_path / case.replace(" ", "-"), "plan" if role == "planner" else "pr")
+        m.run(role, handback)
+        if titles(m):
+            wrong.append(f"{case} filed {titles(m)}; only a raise of kind issue is filed, and no new field files")
     for role in ROLES:
         prompt = open(os.path.join(ts.ROOT, "dokima", "roles", f"{role}.md")).read()
-        if not re.search(r'"issues_found":\s*\[\{"title":\s*"[^"]*",\s*"why":\s*"[^"]*",\s*"evidence":', prompt):
-            wrong.append(f"dokima/roles/{role}.md does not give the {role}'s hand-back the field "
-                         '"issues_found": [{"title": ..., "why": ..., "evidence": ...}]')
+        if not re.search(r'"raises":\s*\[\{"kind":\s*"issue",\s*"title":\s*"[^"]*",\s*"why":\s*"[^"]*",\s*"evidence":',
+                         prompt):
+            wrong.append(f"dokima/roles/{role}.md does not give the {role}'s found issues as "
+                         '"raises": [{"kind": "issue", "title": ..., "why": ..., "evidence": ...}]')
+        if "issues_found" in prompt:
+            wrong.append(f"dokima/roles/{role}.md still names issues_found; found issues go in raises")
     assert not wrong, "268.1: " + "\n268.1: ".join(wrong)
 
 
