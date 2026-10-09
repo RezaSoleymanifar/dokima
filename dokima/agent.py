@@ -464,11 +464,38 @@ def record_fold(rec):
     return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
 
 
-def render(rec, pr=None, plan=None):
+def raised_lines(repo, rec, earlier):
+    """What a passed run raised, and on a review its answers to earlier raises.
+
+    A review's answers go in a Raised earlier section, its own raises in Raised; an answer finds its raise
+    among `earlier` by ID. No ID is ever drawn."""
+    h = rec["handback"]
+    lines = []
+    if rec["role"] == "reviewer" and card.answers_of(h):
+        found = {}
+        for r in earlier or []:
+            if isinstance(r, dict) and (r.get("check") or {}).get("passed"):
+                found.update({x["id"]: x for x in card.raises_of(r.get("handback")) if x.get("id")})
+        lines += ["", "**Raised earlier:**", ""]
+        for a in card.answers_of(h):
+            r = found.get(a["raise"])
+            lines.append(card.raise_line(repo, r) if r else "- A raise not found in this issue's earlier records")
+            word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
+            lines.append(f"  - {word}: {escape_line(a.get('why'))}")
+            if filled(a.get("words")) and filled(a.get("source")):
+                lines.append(f"  - Your words: [\"{escape_line(a['words']).replace(']', '\\]')}\"]({words_link(a['source'])})")
+    raised = card.raises_of(h)
+    if raised:
+        lines += ["", "**Raised:**", ""] + [card.raise_line(repo, r) for r in raised]
+    return lines
+
+
+def render(rec, pr=None, plan=None, earlier=None):
     """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
     needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
     worker's pull request, once it exists; `plan` is the plan a plan review judged, whose assumptions answer its
-    questions."""
+    questions; `earlier` is the issue's records before this one, oldest first, where a review's answers find the
+    raises they answer."""
     role, h = rec["role"], rec["handback"]
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if role == "not-started":
@@ -547,6 +574,8 @@ def render(rec, pr=None, plan=None):
         lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
+    if passed:
+        lines += raised_lines(repo, rec, earlier)
     lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
 
@@ -1821,7 +1850,15 @@ def main(argv):
                 plan = json.load(open(reviewed))
             except (OSError, json.JSONDecodeError):
                 plan = None
-        open(os.path.join(out, "comment.md"), "w").write(render(rec, plan=plan if isinstance(plan, dict) else None))
+        earlier = []
+        folder = os.path.join(os.environ.get("PACK", ""), "in")
+        for name in sorted(os.listdir(folder)) if os.environ.get("PACK") and os.path.isdir(folder) else []:
+            try:
+                earlier.append(json.load(open(os.path.join(folder, name))))
+            except (OSError, json.JSONDecodeError):
+                print(f"::warning title=Record not read::{name} in the pack could not be read")
+        open(os.path.join(out, "comment.md"), "w").write(render(rec, plan=plan if isinstance(plan, dict) else None,
+                                                                earlier=earlier))
         return 0
     if argv[1] == "not-started":
         role, stage, out, why_file = argv[2:6]
