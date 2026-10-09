@@ -26,7 +26,7 @@ Raise a doubt only with evidence you can point at: a file and line, a commit, an
 evidence: plan the issue as asked. Most issues pass without a doubt; a false alarm costs the owner's attention.
 
 # Links to other issues
-Your pack holds open_issues.json: every open issue of the repo, with its number, title and current card. Read it and find which
+Your pack holds open_issues.json: every open issue of the repo, with its number, title and body. Read it and find which
 of them this issue is blocked by (they must land first), which it blocks (they wait on this one) and which it relates to
 (they touch the same thing without waiting on each other). Link only open issues listed there, never this issue itself,
 and put each issue in one list at most; empty lists are fine when there are none.

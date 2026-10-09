@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from dokima import body, card, words
+from dokima import card, words
 from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
@@ -692,7 +692,6 @@ def pack(repo, number, role, stage, dest):
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
     json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
-        listed = [{"number": i["number"], "title": i["title"], "card": body.card_text(i["body"])} for i in listed]
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
     answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
     json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)

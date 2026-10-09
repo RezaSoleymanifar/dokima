@@ -110,8 +110,8 @@ def test_the_planners_pack_holds_every_open_issue_of_the_repo(record_property, t
     assert numbers == issues, (f"250.1: open_issues.json lists {len(numbers)} issues, not all {len(issues)} open ones "
                                f"(missing e.g. {sorted(set(issues) - set(numbers))[:5]})")
     for i in listed:
-        assert (i.get("title"), i.get("card")) == (f"Issue title {i['number']}", f"Issue body {i['number']}"), \
-            f"250.1: issue #{i['number']} is listed without its own title and card: {i}"
+        assert (i.get("title"), i.get("body")) == (f"Issue title {i['number']}", f"Issue body {i['number']}"), \
+            f"250.1: issue #{i['number']} is listed without its own title and body: {i}"
     assert os.path.isfile(os.path.join(pack, "issue.md")), "250.1: the pack lost issue.md"
 
 
