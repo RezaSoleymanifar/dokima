@@ -45,7 +45,7 @@ EXISTING = ["autopilot", "blocker", "high"]
 REFUSED = "HTTP 502: Server Error (https://api.github.com/repos/o/r/issues)"
 ROLES = ("planner", "worker", "reviewer")
 WORKFLOWS = ["agent.yml", "assign.yml", "autopilot.yml", "board.yml", "card.yml", "commands.yml", "done-whens.yml",
-             "full-suite.yml", "planner.yml", "wiki.yml", "worker.yml"]
+             "full-suite.yml", "planner.yml", "uptodate.yml", "wiki.yml", "worker.yml"]
 
 FIND_A = {"title": "The board drops closed pull requests", "why": "Cards for merged work go stale on the board.",
           "evidence": "dokima/board.py:121 asks only for OPEN pull requests"}
@@ -214,9 +214,10 @@ def keyed(job):
 def plan_handback(*found, tests=True):
     """A planner's plan for #57 (one criterion, its test tests/test_x.py::test_a) listing these issues found outside it.
 
-    With tests=False the planner writes no test, so the planner's check rejects the plan."""
-    return {**ts.STORY, "summary": "Stuck issues get unstuck.", "issues_found": [dict(f) for f in found],
-            "_tests": tests}
+    It links no other issue, as the planner's check asks since #256. With tests=False the planner writes no test, so
+    the planner's check rejects the plan."""
+    return {**ts.STORY, "summary": "Stuck issues get unstuck.", "links": {"blocked_by": [], "blocks": [], "relates_to": []},
+            "issues_found": [dict(f) for f in found], "_tests": tests}
 
 
 def work_handback(*found, summary="Built it. The fix is in x.py."):
