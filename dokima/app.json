@@ -15,7 +15,9 @@
     "actions": "read",
     "statuses": "read",
     "metadata": "read",
-    "workflows": "write"
+    "workflows": "write",
+    "administration": "read",
+    "organization_projects": "write"
   },
   "default_events": []
 }
