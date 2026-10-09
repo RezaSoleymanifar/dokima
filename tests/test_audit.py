@@ -18,6 +18,10 @@ What the faked GitHub offers, and the audit is expected to use (a read may raise
     views()                   the board's {view: {"layout": str, "filter": str}}
     branch_rule(repo, branch) {"required_checks": [name, ...]}, or None when the branch has no rule
     permissions(repo)         the app's {permission: "read" | "write"}
+    merge_queue(repo, branch) {"offered": False} where GitHub offers the repo no merge queue; {"offered": True,
+                              "queue": None} where it does and the branch has none; {"offered": True, "queue":
+                              {"merge_method": ..., "grouping_strategy": ..., "max_entries_to_build": n,
+                              "max_entries_to_merge": n, ...}} where the branch has one (GitHub's rule parameters)
     setup_issue(repo)         the open Setup issue as {"number": n, "body": str}, or None
     create_issue(repo, title, body) -> n
     edit_issue(repo, n, body)
@@ -70,6 +74,8 @@ class GitHub:
         self.view_map = copy.deepcopy(manifest.VIEWS)
         self.rules = copy.deepcopy(manifest.BRANCH_RULES)
         self.perms = copy.deepcopy(manifest.PERMISSIONS)
+        self.queues = {}
+        self.queue_reads = []
         self.fail = dict(fail or {})
         self.issues = {n: dict(i) for n, i in (issues or {}).items()}
         self.writes = []
@@ -94,6 +100,10 @@ class GitHub:
 
     def permissions(self, repo):
         return self._read("permissions", self.perms)
+
+    def merge_queue(self, repo, branch):
+        self.queue_reads.append((repo, branch))
+        return self._read("merge_queue", self.queues.get(branch, {"offered": False}))
 
     def setup_issue(self, repo):
         for n, i in sorted(self.issues.items()):

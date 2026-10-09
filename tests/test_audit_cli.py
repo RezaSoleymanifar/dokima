@@ -241,7 +241,7 @@ def test_the_audit_command_mentions_the_code_owners_and_writes_only_to_its_repo(
     assert said == {"alice", "bob"}, f"283.4: the Setup issue mentions {said}, not exactly alice and bob"
     s = a.state()
     assert all(w["repo"] == REPO for w in s["writes"]), f"283.4: a write left the repo: {s['writes']}"
-    away = [c for c in s["calls"] for arg in c if re.search(r"repos/(?!acme/widgets/)[^/\s]+/[^/\s]+", arg)]
+    away = [c for c in s["calls"] for arg in c if re.search(r"repos/(?!acme/widgets(?:[/?]|$))[^/\s]+/[^/\s]+", arg)]
     assert not away, f"283.4: the command called GitHub about another repo: {away}"
 
 

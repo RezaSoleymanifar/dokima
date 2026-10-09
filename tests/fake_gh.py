@@ -11,12 +11,20 @@ What it answers (OWNER/REPO is the state's repo; any other repo is logged as uns
     gh api [-X GET] repos/OWNER/REPO/branches/main/protection[/required_status_checks]
                                                                         main's rule; 404 "Branch not protected" if none
     gh api [-X GET] repos/OWNER/REPO/installation                       the app's {"permissions": {...}}
+    gh api [-X GET] repos/OWNER/REPO                                    the repo: its "owner" {"login", "type"},
+        "private" and "visibility", from the state's "account" {"type": "User" | "Organization", "visibility":
+        "public" | "private", "plan": name or None}; a repo with no "account" is a public personal repo
+    gh api [-X GET] orgs/OWNER                                          the organization, with "plan" {"name"} when
+        the account's plan is not None; 404 "Not Found" for a personal account
+    gh api [-X GET] repos/OWNER/REPO/rules/branches/BRANCH              the branch's active rules: always a deletion
+        rule, plus a merge_queue rule whose "parameters" are the state's "queue"[BRANCH] when that is set
     gh api [-X GET] repos/OWNER/REPO/issues[?state=...&labels=...]      issues (open unless state says otherwise)
     gh api [-X GET] repos/OWNER/REPO/issues/N[/comments]
     gh api [-X POST] repos/OWNER/REPO/issues -f title=.. -f body=.. [-f labels[]=..]   opens an issue
     gh api -X PATCH repos/OWNER/REPO/issues/N -f body=.. | -f state=closed            edits or closes it
     gh api [-X POST] repos/OWNER/REPO/issues/N/comments -f body=..                     comments on it
         (fields may also come as -F key=@file or --input file.json)
+    Reads that can be failed: "labels", "protection", "permissions", "repo", "org", "rules", "board".
     gh issue create|edit|close|comment|pin|list|view ... --repo OWNER/REPO   the same, the gh way
     gh api graphql -f query=...  answering organization{projectV2{id fields{nodes{id name options{id name color
         description}}} views{nodes{id name layout filter}}}} and repository{issue(number:){id number title body state
@@ -172,12 +180,40 @@ def api_args(args):
 
 def rest(state, method, path, fields):
     """Answer one REST call on the state's repo."""
-    path, _, query = path.lstrip("/").partition("?")
+    path, _, query = path.strip("/").partition("?")
     params = dict(p.partition("=")[::2] for p in query.split("&") if p)
+    fail = state.get("fail", {})
+    account = dict({"type": "User", "visibility": "public", "plan": None}, **state.get("account", {}))
+    owner = state["repo"].split("/")[0]
+    if method == "GET" and path == f"orgs/{owner}":
+        if "org" in fail:
+            refuse(state, fail["org"])
+        if account["type"] != "Organization":
+            refuse(state, "Not Found (HTTP 404)", {"message": "Not Found", "status": "404"})
+        org = {"login": owner, "id": 1, "type": "Organization"}
+        if account["plan"] is not None:
+            org["plan"] = {"name": account["plan"]}
+        reply(state, org)
+    if method == "GET" and path == f"repos/{state['repo']}":
+        if "repo" in fail:
+            refuse(state, fail["repo"])
+        reply(state, {"id": 1, "full_name": state["repo"], "name": state["repo"].split("/")[1],
+                      "owner": {"login": owner, "type": account["type"]},
+                      "private": account["visibility"] != "public", "visibility": account["visibility"]})
     prefix = f"repos/{state['repo']}/"
     if not path.startswith(prefix):
         unsupported(state, f"{method} {path} is not on the repo {state['repo']}")
-    rest_path, fail = path[len(prefix):], state.get("fail", {})
+    rest_path = path[len(prefix):]
+    m = re.fullmatch(r"rules/branches/([^/]+)", rest_path)
+    if method == "GET" and m:
+        if "rules" in fail:
+            refuse(state, fail["rules"])
+        source = {"ruleset_source_type": "Repository", "ruleset_source": state["repo"]}
+        rules = [dict(source, type="deletion", ruleset_id=1)]
+        queue = (state.get("queue") or {}).get(m.group(1))
+        if queue is not None:
+            rules.append(dict(source, type="merge_queue", ruleset_id=24821641, parameters=dict(queue)))
+        reply(state, rules)
     if method == "GET" and rest_path == "labels":
         if "labels" in fail:
             refuse(state, fail["labels"])
