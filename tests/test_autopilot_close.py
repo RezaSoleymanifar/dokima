@@ -37,6 +37,10 @@ from test_start import N, OWNER, Ctx, evaluate, condition
 LABEL = "autopilot"
 LINE = "Autopilot: blockers merged, starting plan"
 WORKFLOWS = os.path.join(ts.ROOT, ".github", "workflows")
+# Workflows a close starts that this harness leaves out, with why. card.yml (#254) redraws cards on every issue event;
+# it changes nothing autopilot reads, needs a fake GitHub for the card's own calls, and its start on a close is proven
+# in tests/test_hand_links.py.
+NOT_RUN_HERE = {"card.yml": "redraws cards only; proven in tests/test_hand_links.py"}
 
 TREE_GH = r'''
 def jload(name, default):
@@ -331,7 +335,7 @@ class Repo(ts.Machine):
         open(f"{self.tmp}/event.json", "w").write(json.dumps(github["event"]))
         ran = []
         for fname in sorted(os.listdir(WORKFLOWS)):
-            if not fname.endswith((".yml", ".yaml")):
+            if not fname.endswith((".yml", ".yaml")) or fname in NOT_RUN_HERE:
                 continue
             wf = ts.load_yaml(open(os.path.join(WORKFLOWS, fname)).read())
             if not closes_on_issue_close(wf):
