@@ -6,11 +6,11 @@ nothing was being built. The other way round, an issue the owner started with `/
 built it, and a finished worker's issue jumped to Review before its code review had started.
 
 The rule these tests hold the board to, for an open issue and its open pull request:
-- an approved plan whose worker has not started is in Plan, also while it waits on a blocker, and its card still
-  names what it waits on;
+- an approved plan whose worker has not started is in Plan;
 - a worker has started once the code owner says `/work`, the bot posts the Autopilot line that starts it
-  (`Autopilot: plan approved, starting work` or `Autopilot: blockers closed, starting work`) or the bot puts up the
-  worker's run card; from then the issue is in Work;
+  (`Autopilot: plan approved, starting work`) or the bot puts up the worker's run card; from then the issue is in
+  Work. #353 removed #253's waiting worker, so the bot's old `Autopilot: blockers closed, starting work` starts
+  nothing;
 - after the worker's record it stays in Work until the code review starts: the bot puts up the code review's run card
   (queued is enough) or posts its record; then it is in Review;
 - only the bot's own lines and run cards, and a code owner's `/work`, count: anyone can comment on a public repo.
@@ -31,7 +31,6 @@ from dokima import agent, board, card  # noqa: E402
 
 SPEC, REPO, LABEL = tny.SPEC, tny.REPO, tny.LABEL
 NEEDS, AUTO = tny.NEEDS, tny.AUTO
-WAIT = (agent.BOT, "Autopilot: plan approved, waiting for #332 to close")
 STARTED = (agent.BOT, "Autopilot: plan approved, starting work")
 GO = (agent.BOT, "Autopilot: blockers closed, starting work")
 
@@ -68,33 +67,7 @@ def everywhere(w, monkeypatch, tmp_path, n):
     yield "the 15-minute sweep"
 
 
-# 343.1: an approved plan whose worker has not started stays in Plan, also while it waits on a blocker
-
-def test_an_approved_plan_waiting_on_a_blocker_stays_in_plan_and_its_card_names_the_blocker(record_property, make, monkeypatch, tmp_path):
-    """An approved plan waiting on a blocker stays in Plan; its card names the blocker.
-
-    Proves 343.1.
-    #333's case. #57 is on autopilot; its plan is approved and the bot said `Autopilot: plan approved, waiting for
-    #332 to close`. Its card starts in Work with Autopilot, where today's board puts it. After a run's end, a comment
-    and the 15-minute sweep, it must be in Plan with Autopilot each time. Its issue card, drawn with GitHub's links
-    (#332 blocks it), must still say Blocked by #332."""
-    record_property("proves", "343.1")
-    w = make(labels={("issue", 57): {LABEL}}, records={57: tny.plan_approved() + [WAIT]},
-             cards={("issue", 57): {"Status": "Work", "Action": AUTO}})
-    for way in everywhere(w, monkeypatch, tmp_path, 57):
-        assert place(w, "issue", 57) == ("Plan", AUTO), \
-            f"343.1: #57's approved plan waits on #332 and no worker started, yet after {way} its card is at " \
-            f"{place(w, 'issue', 57)}, not in Plan with Autopilot"
-    # Drawn the way card.draw() draws it: GitHub's blocked-by links, read now, are the card's Blocked by line.
-    items = card.as_items(tny.plan_approved(), tny.OWNER)
-    found = {"recs": agent.records(items), "items": items, "pr": None, "check_runs": [], "reviews": [],
-             "owners": {tny.OWNER}, "tests": {}, "worker": None, "children": [],
-             "blocking": {"blocked_by": [332], "blocks": [], "loop": []},
-             "linked": {"relates_to": [], "blocked_by": [332], "blocks": []}}
-    drawn = card.render(REPO, {"number": 57, "title": "Issue 57", "url": "https://github.com/o/r/issues/57"}, found)
-    assert "**Blocked by:** #332" in drawn, \
-        f"343.1: #57 waits on #332, yet its card no longer says Blocked by #332:\n{drawn}"
-
+# 343.1: an approved plan whose worker has not started stays in Plan
 
 def test_an_approved_plan_stays_in_plan_until_its_worker_starts(record_property, make, monkeypatch, tmp_path):
     """Every approved plan whose worker has not started is in Plan.
@@ -123,16 +96,14 @@ def test_an_issue_is_in_work_once_its_worker_starts(record_property, make, monke
     """Once a worker starts, the issue and its pull request are in Work.
 
     Proves 343.2.
-    Four ways a worker starts, each from an approved plan whose card starts in Plan: the code owner says `/work` (#57,
+    Three ways a worker starts, each from an approved plan whose card starts in Plan: the code owner says `/work` (#57,
     off autopilot: Work with no pill); the bot's `Autopilot: plan approved, starting work` (#58, on autopilot: Work with
-    Autopilot); the bot's `Autopilot: blockers closed, starting work` after the waiting line (#59: Work with Autopilot);
-    and, after a code review sent a test back to the planner and the re-plan was approved with the same criteria, the
+    Autopilot); and, after a code review sent a test back to the planner and the re-plan was approved with the same criteria, the
     worker's run card the bot put up with no command and no line (#60, with its PR #70: both in Work with no pill).
     Each is checked after a run's end, a comment and the sweep."""
     record_property("proves", "343.2")
     cases = {57: (tny.plan_approved() + ["/work"], set(), None),
              58: (tny.plan_approved() + [STARTED], {LABEL}, AUTO),
-             59: (tny.plan_approved() + [WAIT, GO], {LABEL}, AUTO),
              60: (replanned_after_test_fix() + [bot_card("worker")], set(), None)}
     for n, (history, labels, pill) in cases.items():
         pr = 70 if n == 60 else None
@@ -172,14 +143,14 @@ def test_words_anyone_could_paste_start_no_worker_and_no_code_review(record_prop
     """Words anyone could paste never move a card to Work or Review.
 
     Proves 343.4.
-    Beside 343.2 and 343.3's good cases, each on autopilot after the waiting line, so only the pasted words could
-    move it: someone else says `/work` (#57), someone else pastes `Autopilot: blockers closed, starting work` (#58),
+    Beside 343.2 and 343.3's good cases, each on autopilot with an approved plan, so only the pasted words could
+    move it: someone else says `/work` (#57), someone else pastes `Autopilot: plan approved, starting work` (#58),
     someone else pastes the worker's run card (#59): each stays in Plan with Autopilot. #61's worker has built PR #62
     and someone else pastes the code review's run card: both stay in Work with Autopilot."""
     record_property("proves", "343.4")
-    pasted = {57: (STRANGER, "/work"), 58: (STRANGER, GO[1]), 59: (STRANGER, bot_card("worker")[1])}
+    pasted = {57: (STRANGER, "/work"), 58: (STRANGER, STARTED[1]), 59: (STRANGER, bot_card("worker")[1])}
     for n, words in pasted.items():
-        w = make(labels={("issue", n): {LABEL}}, records={n: tny.plan_approved() + [WAIT, words]},
+        w = make(labels={("issue", n): {LABEL}}, records={n: tny.plan_approved() + [words]},
                  cards={("issue", n): {"Status": "Work"}})
         for way in everywhere(w, monkeypatch, tmp_path, n):
             assert place(w, "issue", n) == ("Plan", AUTO), \
@@ -219,3 +190,24 @@ def test_a_rebuilt_issue_stays_in_work_until_its_next_code_review_starts(record_
             want = {"issue #57": (column, None), "pr #60": (column, None)}
             assert got == want, \
                 f"343.3: #57's code review sent it back and {name}, yet after {way} the cards are at {got}, not {want}"
+
+
+# 353.4: #253's waiting worker is gone, so its old line starts nothing
+
+def test_the_old_blockers_closed_line_no_longer_starts_a_worker(record_property, make, monkeypatch, tmp_path):
+    """The bot's old `Autopilot: blockers closed, starting work` no longer moves a card to Work.
+
+    Proves 353.4.
+    #57 is on autopilot with an approved plan, and the bot's own comment `Autopilot: blockers closed, starting work`
+    (the line #253 started a waiting worker with) is on it: its card, started in Work, must be in Plan with Autopilot
+    after a run's end, a comment and the sweep. Beside it, #58 with the bot's `Autopilot: plan approved, starting work`
+    still goes to Work with Autopilot."""
+    record_property("proves", "353.4")
+    cases = {57: (GO, "Work", ("Plan", AUTO)), 58: (STARTED, "Plan", ("Work", AUTO))}
+    for n, (line, start, want) in cases.items():
+        w = make(labels={("issue", n): {LABEL}}, records={n: tny.plan_approved() + [line]},
+                 cards={("issue", n): {"Status": start}})
+        for way in everywhere(w, monkeypatch, tmp_path, n):
+            assert place(w, "issue", n) == want, \
+                f"353.4: #{n} has the bot's {line[1]!r} after its approved plan, yet after {way} its card is at " \
+                f"{place(w, 'issue', n)}, not {want}"

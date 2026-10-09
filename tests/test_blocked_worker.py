@@ -1,17 +1,21 @@
-"""On autopilot, a blocked issue plans, but its worker waits for every blocker (#253).
+"""On autopilot, a blocked issue plans only after its blockers merge (#353, which reverses #253).
 
-Story 4 of #231. Two moments matter, and each runs the real code against a fake GitHub:
+Before #353 a blocked issue on autopilot planned early, and its approved plan waited for its blockers with the bot's
+line `Autopilot: plan approved, waiting for #A to close`; when they closed, its worker built that old plan, with
+`Autopilot: blockers closed, starting work`. A plan written while its blockers are still open goes stale when they
+merge, so now nothing waits with an approved plan. Each moment runs the real code against a fake GitHub:
 
 - The plan review approves. `python3 -m dokima.agent next N OUT` (the step of agent.yml that decides what follows a
   run) runs on the review's record, on the fake GitHub of test_plan_links_recorded.py (issue #252 there). An issue on
-  autopilot that GitHub still has blocked by an open issue must not start its worker: it gets one line naming the
-  open issues it waits on, and the card's Next line mentions no one.
+  autopilot that GitHub still has blocked by an open issue builds nothing: no worker starts, no line stands in for
+  `/work`, and the card's Next line names the open issues it waits for and says it plans again, mentioning no one.
 - An issue closes. autopilot.yml runs the way GitHub runs it, on the machine of test_autopilot_close.py (issue #57
-  there). When the last open blocker of an issue on autopilot closes, and its newest plan is approved and no worker
-  has started on it, its worker starts once, with one line `Autopilot: blockers closed, starting work`.
+  there). When the last open blocker of such an issue closes, autopilot starts a fresh planner run once, with
+  `Autopilot: blockers merged, starting plan`, and never the worker of the old plan.
+- A command the owner types by hand runs as today, through commands.yml, and a later close never overrides it.
 
-Where GitHub cannot list an issue's blockers, the fake answers that read with "HTTP 502: Server Error" and the worker
-must not start, with the reason on the issue.
+Where GitHub cannot list an issue's blockers, the fake answers that read with "HTTP 502: Server Error" and nothing
+may start, with GitHub's reason on the issue.
 """
 import json
 import os
@@ -23,8 +27,9 @@ import test_plan_links_recorded as pl
 import test_start as ts
 from dokima import agent
 
-WAIT = "Autopilot: plan approved, waiting for {} to close"
-GO = "Autopilot: blockers closed, starting work"
+OLD_WAIT = "Autopilot: plan approved, waiting for"
+OLD_GO = "Autopilot: blockers closed, starting work"
+LINE = "Autopilot: blockers merged, starting plan"
 LABEL = "autopilot"
 ERROR = "HTTP 502: Server Error (blocked_by)"
 
@@ -74,45 +79,49 @@ def approve_on(h, links, crit, case):
     return h.next(pl.review())
 
 
-def test_on_autopilot_a_blocked_plan_waits_with_one_line_and_mentions_no_one(tmp_path, record_property):
-    """On autopilot, a blocked approved plan starts no worker; one line names its open blockers.
+def old_lines(said):
+    """The lines #253 posted for a waiting worker, among these comments."""
+    return [c for c in said if c.startswith(OLD_WAIT) or OLD_GO in c]
 
+
+def test_an_approved_plan_with_an_open_blocker_builds_nothing_and_says_what_it_waits_for(tmp_path, record_property):
+    """A plan approved while a blocker is open builds nothing; its card names the blockers.
+
+    Proves 353.2.
     #252 is on autopilot. Its plan says blocked by #301 (open) and #302 (closed), and GitHub already has #252 blocked
-    by #304 (open) by hand. The plan goes to its review as usual; when the review approves, no stage starts, no
-    `/work` stand-in line is written, #252 gets exactly one comment, `Autopilot: plan approved, waiting for #301 and
-    #304 to close`, the card's Next line mentions no one and the card is not marked Needs you. With #301 the only
-    blocker the line reads `... waiting for #301 to close`. Beside them: with every blocker closed the worker starts
-    and no waiting line is written, and off autopilot the blocked plan stops for the owner as before, with no line. Proves 253.1."""
-    record_property("proves", "253.1")
+    by #304 (open) by hand. The plan goes to its review as usual; when the review approves, no stage starts, no line
+    stands in for `/work`, neither of #253's lines (`Autopilot: plan approved, waiting for ...`, `Autopilot: blockers
+    closed, starting work`) is posted, and the card's Next line names #301 and #304 but not #302, says the issue plans
+    again (the word "plan"), never says a worker starts, and mentions no one. The run places the card in Plan without
+    Needs you. Beside it: with every blocker closed the worker starts as usual, and off autopilot the blocked plan
+    stops for the owner as before, with no line."""
+    record_property("proves", "353.2")
     h = hub(tmp_path / "blocked", closed=[302], deps={pl.N: [304]})
-    step, comment, out = approve_on(h, pl.links([301, 302]), "253.1", "blocked")
-    assert not step.startswith("start"), f"253.1: a blocked plan on autopilot started {step!r}"
-    assert not os.path.exists(os.path.join(out, "autopilot.md")), "253.1: the worker's Autopilot line was still written"
-    assert h.writes("dispatch") == [], f"253.1: a stage was signalled: {h.writes('dispatch')}"
-    said = new_comments(h)
-    assert said == [WAIT.format("#301 and #304")], \
-        f"253.1: #252 should get exactly one line naming the open issues it waits on (#301 and #304), got {said}"
+    step, comment, out = approve_on(h, pl.links([301, 302]), "353.2", "blocked")
+    assert not step.startswith("start"), f"353.2: a plan approved with open blockers started {step!r}"
+    assert not os.path.exists(os.path.join(out, "autopilot.md")), "353.2: the worker's Autopilot line was still written"
+    assert h.writes("dispatch") == [], f"353.2: a stage was signalled: {h.writes('dispatch')}"
+    assert old_lines(new_comments(h)) == [], f"353.2: #253's waiting-worker lines were posted: {new_comments(h)}"
     nxt = next_line(comment)
-    assert nxt and "@" not in nxt, f"253.1: the card's Next line should mention no one while it waits: {nxt!r}"
-    assert open(os.path.join(out, "board.txt")).read().split()[1] == "none", \
-        "253.1: the card is marked Needs you while the issue only waits on its blockers"
-
-    h = hub(tmp_path / "one")
-    step, comment, out = approve_on(h, pl.links([301]), "253.1", "one blocker")
-    assert not step.startswith("start"), f"253.1 (one blocker): the worker started: {step!r}"
-    assert new_comments(h) == [WAIT.format("#301")], f"253.1 (one blocker): the line is {new_comments(h)}"
+    assert nxt, f"353.2: the card has no Next line: {comment[-600:]!r}"
+    assert "#301" in nxt and "#304" in nxt, f"353.2: the Next line does not name both open blockers #301 and #304: {nxt!r}"
+    assert "#302" not in nxt, f"353.2: the Next line names #302, which is already closed: {nxt!r}"
+    assert "@" not in nxt, f"353.2: the Next line mentions someone while the issue only waits on its blockers: {nxt!r}"
+    assert "worker" not in nxt.lower(), f"353.2: the Next line still says a worker will build the old plan: {nxt!r}"
+    assert "plan" in nxt.lower(), f"353.2: the Next line does not say the issue plans again when they close: {nxt!r}"
+    assert open(os.path.join(out, "board.txt")).read().split() == ["Plan", "none"], \
+        f"353.2: the run placed the waiting card at {open(os.path.join(out, 'board.txt')).read().strip()!r}, not in Plan without Needs you"
 
     h = hub(tmp_path / "all-closed", closed=[301, 302])
-    step, comment, out = approve_on(h, pl.links([301, 302]), "253.1", "all closed")
-    assert step == "start worker", f"253.1 (all closed): with every blocker closed the worker should start, not {step!r}"
-    assert os.path.exists(os.path.join(out, "autopilot.md")), "253.1 (all closed): the Autopilot line is missing"
-    assert new_comments(h) == [], f"253.1 (all closed): a waiting line was written: {new_comments(h)}"
+    step, comment, out = approve_on(h, pl.links([301, 302]), "353.2", "all closed")
+    assert step == "start worker", f"353.2 (all closed): with every blocker closed the worker should start, not {step!r}"
+    assert os.path.exists(os.path.join(out, "autopilot.md")), "353.2 (all closed): the Autopilot line is missing"
 
     h = hub(tmp_path / "off", autopilot=False)
-    step, comment, out = approve_on(h, pl.links([301]), "253.1", "off autopilot")
+    step, comment, out = approve_on(h, pl.links([301]), "353.2", "off autopilot")
     assert step == "stop" and f"@{pl.OWNER}" in next_line(comment), \
-        f"253.1 (off autopilot): the approval should stop for the owner: {step!r} {next_line(comment)!r}"
-    assert new_comments(h) == [], f"253.1 (off autopilot): a waiting line was written: {new_comments(h)}"
+        f"353.2 (off autopilot): the approval should stop for the owner: {step!r} {next_line(comment)!r}"
+    assert new_comments(h) == [], f"353.2 (off autopilot): a line was written: {new_comments(h)}"
 
 
 def test_when_github_cannot_list_the_blockers_the_worker_waits_and_the_issue_says_why(tmp_path, record_property):
@@ -138,12 +147,11 @@ def test_when_github_cannot_list_the_blockers_the_worker_waits_and_the_issue_say
 # An issue closes: autopilot.yml on #57 ------------------------------------------------------------------------------
 
 def bot_line(text, t):
-    """An Autopilot line the bot posted on #57, as GitHub returns it."""
+    """A comment the bot posted on #57, as GitHub returns it."""
     return {"author": {"login": agent.BOT}, "body": text, "createdAt": t}
 
 
 APPROVED = ts.STORY_PLANNED + [ts.record_comment(ts.review_record(ar.APPROVE), "2026-10-07T10:20:00Z")]
-WAITING = APPROVED + [bot_line(WAIT.format("#101 and #102"), "2026-10-07T10:21:00Z")]
 WORKER = {"role": "worker", "stage": None, "run_id": "3", "run": "https://github.com/o/r/actions/runs/3",
           "models": ["claude-opus-5-5"], "handback": {"summary": "Built it."}, "check": {"passed": True, "problems": []}}
 
@@ -166,125 +174,141 @@ def repo(tmp, history, closed=(102,), on=True, fail_read=False):
 
 def workers(m, crit):
     """How many times #57's worker was started by a signal that starts agent.yml."""
-    n = 0
-    for s in m.signals():
-        p = s["payload"]
-        if s["event_type"] == "dokima-next" and p.get("role") == "worker" and p.get("issue") == "57":
-            assert s["token"] == "fake-token", f"{crit}: #57's worker was signalled with the workflow's own token, which GitHub ignores"
-            n += 1
-    return n
+    return sum(1 for s in m.signals() if s["event_type"] == "dokima-next" and s["payload"].get("role") == "worker"
+               and s["payload"].get("issue") == "57")
 
 
-def go_lines(m):
-    """How many new comments on #57 read exactly the line that starts its worker."""
-    return sum(1 for b in m.new_comments(57) if b.strip() == GO)
-
-
-def assert_starts_once(m, crit, case):
-    """#57's worker started exactly once with exactly one line, and its planner did not start."""
+def assert_plans_again_once(m, crit, case):
+    """#57's planner started once, with one `Autopilot: blockers merged, starting plan`, and no worker."""
     assert not m.failed, f"{crit} ({case}): a workflow failed: {m.failures}\n{m.tail()}"
-    assert workers(m, crit) == 1, f"{crit} ({case}): #57's worker started {workers(m, crit)} times, expected once\n{m.tail()}"
-    assert go_lines(m) == 1, f"{crit} ({case}): #57 should get exactly one {GO!r} comment: {m.new_comments(57)}"
-    assert 57 not in m.planners_started(crit), f"{crit} ({case}): #57's planner was started again"
+    assert workers(m, crit) == 0, f"{crit} ({case}): #57's worker started on its old plan, though only a fresh plan may follow"
+    assert not any(OLD_GO in b for b in m.new_comments(57)), f"{crit} ({case}): #57 got {OLD_GO!r}: {m.new_comments(57)}"
+    started = m.planners_started(crit)
+    assert started.get(57) == 1, f"{crit} ({case}): #57's planner started {started.get(57, 0)} times, expected once\n{m.tail()}"
+    assert m.autopilot_lines(57) == 1, \
+        f"{crit} ({case}): #57 should get exactly one {LINE!r} comment: {m.new_comments(57)}"
 
 
 def assert_starts_nothing(m, crit, case):
-    """#57's worker did not start and no line starts it."""
+    """Neither #57's planner nor its worker started, and no line starts either."""
     assert not m.failed, f"{crit} ({case}): a workflow failed: {m.failures}\n{m.tail()}"
-    assert workers(m, crit) == 0, f"{crit} ({case}): #57's worker started, though it must not"
-    assert go_lines(m) == 0, f"{crit} ({case}): #57 got a {GO!r} line, though nothing may start: {m.new_comments(57)}"
+    assert workers(m, crit) == 0, f"{crit} ({case}): #57's worker started, though nothing may start"
+    assert 57 not in m.planners_started(crit), f"{crit} ({case}): #57's planner started, though nothing may start"
+    assert m.autopilot_lines(57) == 0 and not any(OLD_GO in b for b in m.new_comments(57)), \
+        f"{crit} ({case}): #57 got a line that starts a stage, though nothing may start: {m.new_comments(57)}"
 
 
-def test_the_last_blocker_closing_starts_the_waiting_worker_once(tmp_path, record_property):
-    """The last open blocker closing starts the waiting worker once, with its line.
+def test_the_last_blocker_closing_starts_a_fresh_plan_never_the_old_plans_worker(tmp_path, record_property):
+    """The last blocker closing plans the issue again once, never building the old plan.
 
-    #57 is on autopilot, its plan approved and waiting on #101 and #102. With #102 already closed, closing #101
-    starts #57's worker exactly once, by Dokima's own signal, with exactly one comment reading `Autopilot: blockers
-    closed, starting work`, and does not start its planner. Another close right after starts nothing more. With #102
-    still open, closing #101 starts nothing; and off autopilot the same last close starts nothing. Proves 253.2."""
-    record_property("proves", "253.2")
-    m = repo(tmp_path / "last", WAITING)
+    Proves 353.3.
+    #57 is on autopilot, blocked by #101 and #102 (#102 closed), and its plan was approved while #101 was open, so
+    nothing was built. Closing #101 starts #57's planner exactly once, by Dokima's own signal, with exactly one comment
+    reading `Autopilot: blockers merged, starting plan`, and starts no worker. Another close right after starts
+    nothing more. With #102 still open, or off autopilot, closing #101 starts nothing. Nor does it once something
+    already started after the approval: the planner's run card, a newer plan under review, the line above from an
+    earlier close, a worker record or the worker's Autopilot line."""
+    record_property("proves", "353.3")
+    m = repo(tmp_path / "last", APPROVED)
     m.close(101)
-    assert_starts_once(m, "253.2", "last blocker closed")
+    assert_plans_again_once(m, "353.3", "last blocker closed")
     m.close(110)
-    assert_starts_once(m, "253.2", "a later close")
+    assert_plans_again_once(m, "353.3", "a later close")
 
     for case, kw in (("one still open", dict(closed=())), ("off autopilot", dict(on=False))):
-        m = repo(tmp_path / case.replace(" ", "-"), WAITING, **kw)
+        m = repo(tmp_path / case.replace(" ", "-"), APPROVED, **kw)
         m.close(101)
-        assert_starts_nothing(m, "253.2", case)
+        assert_starts_nothing(m, "353.3", case)
 
-
-def test_a_worker_already_started_is_never_started_again(tmp_path, record_property):
-    """A close never starts a worker again once it has started.
-
-    #57 is on autopilot, its plan approved, blocked by #101 and #102 (#102 closed). When #101 closes, #57's worker
-    starts once; but not when, after the approval, the owner already said `/work`, a worker record is on the issue,
-    or the bot already wrote `Autopilot: blockers closed, starting work`. Proves 253.2."""
-    record_property("proves", "253.2")
-    m = repo(tmp_path / "waiting", WAITING)
-    m.close(101)
-    assert_starts_once(m, "253.2", "waiting")
-    for case, extra in (("owner said /work", ts.owner_comment("/work", "2026-10-07T10:30:00Z")),
-                        ("worker record", ts.record_comment(WORKER, "2026-10-07T10:30:00Z")),
-                        ("already started by a close", bot_line(GO, "2026-10-07T10:30:00Z"))):
-        m = repo(tmp_path / case.replace(" ", "-").replace("/", ""), WAITING + [extra])
+    t = "2026-10-07T10:30:00Z"
+    replan = ts.record_comment(ts.planner_record(ts.STORY), t)
+    for case, extra in (("planner's run card up", bot_line(agent.live_card("planner", "", "handoff"), t)),
+                        ("newer plan under review", replan),
+                        ("already started by a close", bot_line(LINE, t)),
+                        ("worker record", ts.record_comment(WORKER, t)),
+                        ("worker started by autopilot", bot_line("Autopilot: plan approved, starting work", t))):
+        m = repo(tmp_path / case.replace(" ", "-").replace("'", ""), APPROVED + [extra])
         m.close(101)
-        assert_starts_nothing(m, "253.2", case)
+        assert_starts_nothing(m, "353.3", case)
 
 
-def test_only_an_approved_newest_plan_starts_its_worker(tmp_path, record_property):
-    """The last blocker closing starts the worker only when the issue's newest plan is approved.
+def test_a_command_the_owner_types_while_it_waits_runs_and_no_close_overrides_it(tmp_path, record_property):
+    """While it waits, the owner's own `/plan` or `/work` runs and no close overrides it.
 
-    #57 is on autopilot, blocked by #101 and #102 (#102 closed). Closing #101 starts #57's worker when its newest
-    plan is approved; it starts nothing when the plan is still under review, or when a newer plan came after the
-    approval and is not reviewed yet. Proves 253.2."""
-    record_property("proves", "253.2")
-    m = repo(tmp_path / "approved", APPROVED)
-    m.close(101)
-    assert_starts_once(m, "253.2", "approved, no waiting line")
-    replan = ts.record_comment(ts.planner_record(ts.STORY), "2026-10-07T10:40:00Z")
-    for case, history in (("under review", ts.STORY_PLANNED), ("re-plan not reviewed", WAITING + [replan])):
-        m = repo(tmp_path / case.replace(" ", "-"), history)
+    Proves 353.3.
+    #57 is on autopilot, its plan approved while #101 was still open. The code owner's `/plan` and `/work` on it each
+    start their stage through the listener as today. Once the owner has said either one after the approval, closing
+    #101, its last open blocker, starts neither #57's planner nor its worker."""
+    record_property("proves", "353.3")
+    for said in ("/plan", "/work"):
+        m = repo(tmp_path / f"listen-{said[1:]}", APPROVED, closed=())
+        called = m.listen(said)
+        assert not m.failed and called, f"353.3: the owner's {said} on the waiting #57 did not start its stage:\n{m.tail()}"
+        m = repo(tmp_path / f"close-{said[1:]}", APPROVED + [ts.owner_comment(said, "2026-10-07T10:30:00Z")])
         m.close(101)
-        assert_starts_nothing(m, "253.2", case)
+        assert_starts_nothing(m, "353.3", f"the owner said {said}")
 
 
-def test_a_close_that_cannot_list_the_blockers_starts_no_worker_and_says_why(tmp_path, record_property):
-    """When a close cannot list the blockers, no worker starts and the issue says why.
+def test_a_close_that_cannot_list_the_blockers_starts_nothing_and_says_why(tmp_path, record_property):
+    """When a close cannot list the blockers, nothing starts and the issue says GitHub's reason.
 
-    #57 is on autopilot, its plan approved and waiting, blocked by #101 and #102 (#102 closed), and every read of
-    #57's blocked-by list fails with "HTTP 502: Server Error (blocked_by)". Closing #101 starts no worker and leaves
-    a new comment on #57 quoting GitHub's error. Beside it, the same close with the list readable starts the worker.
-    Proves 253.4."""
-    record_property("proves", "253.4")
-    m = repo(tmp_path / "readable", WAITING)
+    Proves 353.5.
+    #57 is on autopilot, its plan approved while #101 was open, blocked by #101 and #102 (#102 closed), and every read
+    of #57's blocked-by list fails with "HTTP 502: Server Error (blocked_by)". Closing #101 starts neither #57's
+    planner nor its worker and leaves a new comment on #57 quoting GitHub's error. Beside it, the same close with the
+    list readable plans #57 again once."""
+    record_property("proves", "353.5")
+    m = repo(tmp_path / "readable", APPROVED)
     m.close(101)
-    assert_starts_once(m, "253.4", "readable")
+    assert_plans_again_once(m, "353.5", "readable")
 
-    m = repo(tmp_path / "unreadable", WAITING, fail_read=True)
+    m = repo(tmp_path / "unreadable", APPROVED, fail_read=True)
     m.close(101)
-    assert workers(m, "253.4") == 0, "253.4: #57's worker started though GitHub could not list its blockers"
-    assert go_lines(m) == 0, f"253.4: #57 got a {GO!r} line though its blockers could not be listed"
+    assert workers(m, "353.5") == 0, "353.5: #57's worker started though GitHub could not list its blockers"
+    assert 57 not in m.planners_started("353.5"), "353.5: #57's planner started though GitHub could not list its blockers"
     assert any(ERROR in b for b in m.new_comments(57)), \
-        f"253.4: #57 does not say why its worker did not start (GitHub's error): {m.new_comments(57)}\n{m.tail()}"
+        f"353.5: #57 does not say why nothing started (GitHub's error): {m.new_comments(57)}\n{m.tail()}"
 
 
-# AGENTS.md ----------------------------------------------------------------------------------------------------------
+# The code and AGENTS.md ---------------------------------------------------------------------------------------------
 
-def test_agents_md_says_a_blocked_issue_plans_and_its_worker_waits(record_property):
-    """AGENTS.md's flow says a blocked issue still plans and its worker waits.
+def test_the_code_253_added_for_a_waiting_worker_is_gone(record_property):
+    """The waiting worker's code from #253 is gone from Dokima.
 
-    Reads the section of AGENTS.md whose heading starts "The flow". One paragraph of it must say that on autopilot
-    "a blocked issue still plans", that "its worker waits until every blocker closes", that it "then starts by
-    itself", and name the line `Autopilot: blockers closed, starting work`. Proves 253.3."""
-    record_property("proves", "253.3")
+    Proves 353.4.
+    dokima.agent must no longer have WAIT_LINE, GO_LINE, worker_waits, start_worker or start_blocked_workers, and no
+    file under dokima/ may still hold either of #253's lines, `Autopilot: plan approved, waiting for` or
+    `Autopilot: blockers closed, starting work`."""
+    record_property("proves", "353.4")
+    left = [n for n in ("WAIT_LINE", "GO_LINE", "worker_waits", "start_worker", "start_blocked_workers") if hasattr(agent, n)]
+    assert not left, f"353.4: dokima.agent still has #253's waiting-worker code: {left}"
+    held = []
+    for root, _, files in os.walk(os.path.join(ts.ROOT, "dokima")):
+        for f in files:
+            if f.endswith(".py"):
+                text = open(os.path.join(root, f), encoding="utf-8").read()
+                held += [f"{f}: {w!r}" for w in ("Autopilot: plan approved, waiting for", OLD_GO) if w in text]
+    assert not held, f"353.4: Dokima's code still holds #253's waiting-worker lines: {held}"
+
+
+def test_agents_md_says_a_blocked_issue_plans_only_after_its_blockers_merge(record_property):
+    """AGENTS.md says a blocked issue plans only after its blockers merge, with no waiting worker.
+
+    Proves 353.4.
+    One paragraph of AGENTS.md's The flow section must say, word for word, "a blocked issue plans only after its
+    blockers merge", "nothing is built" and "a fresh planner", and name `Autopilot: blockers merged, starting plan`.
+    Nowhere may AGENTS.md still say "a blocked issue still plans", "its worker waits until every blocker closes",
+    `Autopilot: plan approved, waiting for`, `Autopilot: blockers closed, starting work` or #343's "also while it
+    waits on a blocker"."""
+    record_property("proves", "353.4")
     text = open(os.path.join(ts.ROOT, "AGENTS.md")).read()
     sections = {m.group(1).strip(): m.group(2) for m in re.finditer(r"^## (.+?)\n(.*?)(?=^## |\Z)", text, re.S | re.M)}
     flow = next((v for k, v in sections.items() if k.startswith("The flow")), "")
-    assert flow, "253.3: AGENTS.md has no The flow section"
-    want = ("autopilot", "a blocked issue still plans", "its worker waits until every blocker closes",
-            "then starts by itself", f"`{GO}`")
+    assert flow, "353.4: AGENTS.md has no The flow section"
+    want = ("a blocked issue plans only after its blockers merge", "nothing is built", "a fresh planner", f"`{LINE}`")
     best = max(flow.split("\n\n"), key=lambda p: sum(w in p for w in want))
     missing = [w for w in want if w not in best]
-    assert not missing, f"253.3: no paragraph of AGENTS.md's The flow says the new rule; the closest misses {missing}"
+    assert not missing, f"353.4: no paragraph of AGENTS.md's The flow says the new rule; the closest misses {missing}"
+    stale = [w for w in ("a blocked issue still plans", "its worker waits until every blocker closes", OLD_WAIT, OLD_GO,
+                         "also while it waits on a blocker") if w in text]
+    assert not stale, f"353.4: AGENTS.md still describes the waiting worker of #253 or #343's rule for it: {stale}"
