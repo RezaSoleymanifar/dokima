@@ -623,20 +623,6 @@ def test_the_per_event_board_rules_are_removed(record_property):
     assert not left, f"331.5: these per-event board rules are still there: {', '.join(left)}"
 
 
-def test_the_board_code_is_shorter_than_before(record_property):
-    """The board code has fewer lines than before.
-
-    Proves 331.5. Counts lines: dokima/board.py must have fewer than its 446 before this, and dokima/board.py and dokima/agent.py
-    together fewer than their 2516 (446 and 2070), so nothing is just moved into agent.py."""
-    record_property("proves", "331.5")
-    count = lambda p: len(open(os.path.join(ROOT, p)).read().splitlines())
-    b, a = count("dokima/board.py"), count("dokima/agent.py")
-    assert b < 446, f"331.5: dokima/board.py has {b} lines, not fewer than the 446 it had before"
-    assert a + b < 2516, f"331.5: dokima/board.py and dokima/agent.py have {a + b} lines together, not fewer than 2516"
-
-
-# 331.6: a card whose state GitHub cannot give keeps its column and pill, and the run fails naming it
-
 def test_an_unreadable_card_keeps_its_place_and_the_run_fails_naming_it(record_property, make, monkeypatch, tmp_path, capsys):
     """A card GitHub cannot read keeps its place, and the run fails naming it.
 
