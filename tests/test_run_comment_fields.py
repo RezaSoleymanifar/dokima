@@ -614,3 +614,65 @@ def test_a_blocker_the_plan_cannot_place_still_shows_why(record_property, run):
     for b in BLOCK["blockers"]:
         assert b["problem"] in text, f"236.8: with no plan to read, the review hides the blocker {b['problem']!r}:\n{text}"
     assert not re.search(r"\bB\d+\b", text), f"236.8: with no plan to read, the review shows a blocker code:\n{text}"
+
+
+# 236.9: no new raise-type field
+
+FIELDS_READ_ON_MAIN = {
+    "BASE", "BODY", "CARD_ID", "DOKIMA_BOARD", "DOKIMA_BOT", "GITHUB_ACTOR", "GITHUB_REPOSITORY", "GITHUB_RUN_ID",
+    "GITHUB_SERVER_URL", "HEAD", "LOG_URL", "NUMBER", "ON_PR", "OWNERS", "PACK", "PLANNER_BASE", "ROLE", "STAGE",
+    "acceptance_criteria", "accepted", "agent_started", "answer", "ask", "asks", "assumption", "assumptions", "attempt",
+    "author", "base", "blocked_by", "blocker", "blockers", "body", "cache_creation_input_tokens",
+    "cache_read_input_tokens", "change", "changes", "check", "check_runs", "command", "comments", "concerns",
+    "conclusion", "content", "context", "cost_usd", "createdAt", "created_at", "criteria", "criterion", "depends_on",
+    "dropped_by_fence", "duration_ms", "evidence", "feature", "file", "file_path", "filename", "files", "fix", "fixer",
+    "handback", "headRefName", "id", "input", "input_tokens", "issue", "issues_found", "kind", "labels", "line",
+    "links", "log", "login", "matched", "merge", "merged_pr", "message", "model", "models", "name", "non_functional",
+    "notes", "num_turns", "number", "original_line", "out_of_scope", "output_tokens", "outside_plan", "outside_scope",
+    "passed", "path", "pattern", "pr", "previous_step", "principle", "problem", "problems", "question", "questions",
+    "replies", "report", "resolved", "reviews", "role", "run", "run_id", "scope", "source", "stage", "state", "status",
+    "statuses", "stories", "story", "submittedAt", "summary", "suspect_tests", "test", "test_changes", "tests", "text",
+    "title", "tokens_in", "tokens_out", "total_cost_usd", "turns", "type", "url", "usage", "user", "user_story",
+    "verdict", "where", "why"}
+RECORD_FIELDS_THIS_STORY_ADDS = {"files_changed", "verified_by"}
+
+
+def fields_read(path):
+    """Every field name dokima/agent.py reads by name: x["name"] or x.get("name")."""
+    import ast
+    out = set()
+    for n in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" and n.args
+                and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)):
+            out.add(n.args[0].value)
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str):
+            out.add(n.slice.value)
+    return out
+
+
+def test_no_hand_back_gains_a_new_raise_type_field(record_property, run):
+    """Run comments are drawn from the fields agents hand back today, never a new one.
+
+    Reads every field name dokima/agent.py reads and checks the only new ones since main are the two this story keeps
+    in the record (the worker's files changed and each test's Verified by line), so no raise-type field is added
+    ahead of #289's raises and answers. Then hands back a planner, a worker and a review that also carry raises and
+    answers, and checks those never show while today's question, blocker and issue found still do. Proves 236.9."""
+    record_property("proves", "236.9")
+    path = os.path.join(os.path.dirname(__file__), "..", "dokima", "agent.py")
+    new = fields_read(path) - FIELDS_READ_ON_MAIN
+    assert not new - RECORD_FIELDS_THIS_STORY_ADDS, \
+        f"236.9: dokima/agent.py reads fields main never had, so a hand-back gained a field: {sorted(new - RECORD_FIELDS_THIS_STORY_ADDS)}"
+    assert RECORD_FIELDS_THIS_STORY_ADDS <= new, \
+        f"236.9: the record does not yet keep the worker's files changed and each test's Verified by line " \
+        f"(files_changed, verified_by); dokima/agent.py reads only {sorted(new)} beyond main's fields"
+    extra = {"raises": [{"kind": "question", "text": "A raise nobody may read zr."}],
+             "answers": [{"raise": "R1", "answer": "done", "why": "An answer nobody may read zr."}]}
+    review = dict(BLOCK, issues_found=FOUND, **extra)
+    for role, stage, hb, kept in (("planner", "", dict(PLAN, questions=[QA], **extra), QA["question"]),
+                                  ("worker", "", dict(WORK, **extra), WORK["summary"].split(".")[0]),
+                                  ("reviewer", "plan", review, BLOCK["blockers"][0]["problem"]),
+                                  ("reviewer", "pr", review, FOUND[0]["title"])):
+        text = plain(visible(run(role, stage, hb)[0]))
+        assert kept in text, f"236.9: the {role} {stage} comment lost {kept!r}, drawn from a field it has today:\n{text}"
+        for gone in ("A raise nobody may read zr.", "An answer nobody may read zr."):
+            assert gone not in text, f"236.9: the {role} {stage} comment shows a field no hand-back has today: {gone!r}"
