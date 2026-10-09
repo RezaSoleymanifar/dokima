@@ -94,6 +94,7 @@ REPO_PATHS = [
     (r"pulls(/|$)", "pull_requests"),
     (r"actions/", "actions"),
     (r"commits(/|$)|compare/|contents/|git/|dispatches$|branches(/[^/]+)?$|merges$", "contents"),
+    (r"installation$", NONE),  # the app's own installation: GitHub answers it to the app's key, not a permission
 ]
 # REST paths outside a repo: (pattern, permission)
 OTHER_PATHS = [
