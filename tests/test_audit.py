@@ -177,14 +177,15 @@ def test_each_difference_gets_one_line_saying_what_is_off_and_what_dokima_needs(
     Proves 283.1. The faked repo differs in seven ways: the plan label is missing, the work label's color is 000000, the Action field
     has no Autopilot option, the High priority option is RED, the Autopilot view filters on label:autopilot, main's
     rule lacks the all done-whens passed check, and the app has issues: read. The audit returns seven single lines, one
-    per difference, each naming the setting and the value Dokima needs (with the live value where there is one)."""
+    per difference, each naming the setting and the value Dokima needs (with the live value where there is one; a
+    missing option's line gives the color Dokima needs)."""
     record_property("proves", "283.1")
     a = audit("283.1")
     lines = a.compare(drifted(), REPO)
     assert all("\n" not in l and l.strip() for l in lines), f"283.1: every difference must be one plain line: {lines}"
     one_line(lines, "283.1", "the missing plan label", "plan", "1d76db")
     one_line(lines, "283.1", "the work label's color", "work", "000000", "0e8a16")
-    one_line(lines, "283.1", "the missing Autopilot option of the Action field", "Action", "Autopilot")
+    one_line(lines, "283.1", "the missing Autopilot option of the Action field", "Action", "Autopilot", "PURPLE")
     one_line(lines, "283.1", "the High option's color", "High", "RED", "ORANGE")
     one_line(lines, "283.1", "the Autopilot view's filter", "label:autopilot is:open")
     one_line(lines, "283.1", "main's missing required check", "main", "all done-whens passed")
@@ -214,7 +215,7 @@ def test_a_missing_branch_rule_and_a_missing_view_are_reported(record_property):
     """A branch with no rule and a missing Autopilot view each get one line.
 
     Proves 283.1. The faked repo has no rule on main and no Autopilot view. The audit returns two lines: one naming main and its
-    required checks, one naming the Autopilot view and its filter."""
+    required checks, one naming the Autopilot view with the layout and filter Dokima needs."""
     record_property("proves", "283.1")
     a = audit("283.1")
     g = GitHub()
@@ -222,8 +223,29 @@ def test_a_missing_branch_rule_and_a_missing_view_are_reported(record_property):
     del g.view_map["Autopilot"]
     lines = a.compare(g, REPO)
     one_line(lines, "283.1", "main's missing rule", "main", "all tests", "all done-whens passed")
-    one_line(lines, "283.1", "the missing Autopilot view", "Autopilot", "label:autopilot is:open")
+    one_line(lines, "283.1", "the missing Autopilot view", "Autopilot", "table", "label:autopilot is:open")
     assert len(lines) == 2, f"283.1: two differences gave {len(lines)} lines: {lines}"
+
+
+def test_descriptions_and_layouts_are_compared_too(record_property):
+    """A changed label description, option description and view layout each get one line.
+
+    Proves 283.1. The faked repo matches the manifest except that the work label's description reads "Old words", the Status field's
+    Plan option's description reads "Old words", and the Autopilot view is a board. The audit returns three lines,
+    each naming the setting, what it is now and what Dokima needs."""
+    record_property("proves", "283.1")
+    a = audit("283.1")
+    g = GitHub()
+    g.label_list["work"]["description"] = "Old words"
+    g.field_map["Status"]["Plan"]["description"] = "Old words"
+    g.view_map["Autopilot"]["layout"] = "board"
+    lines = a.compare(g, REPO)
+    one_line(lines, "283.1", "the work label's description", "work", "Old words",
+             manifest.LABELS["work"]["description"])
+    one_line(lines, "283.1", "the Plan option's description", "Plan", "Old words",
+             manifest.FIELDS["Status"]["Plan"]["description"])
+    one_line(lines, "283.1", "the Autopilot view's layout", "Autopilot", "board", "table")
+    assert len(lines) == 3, f"283.1: three differences gave {len(lines)} lines: {lines}"
 
 
 def test_matching_and_undeclared_settings_get_no_line(record_property):
