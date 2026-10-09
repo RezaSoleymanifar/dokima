@@ -10,6 +10,10 @@ test_autopilot_close.py (issue tree, labels, states, blocked-by links, comments 
 river's decision between two stages matters, the journey runs `python3 -m dokima.agent next N OUT` on the finished
 stage's record, against the same fake GitHub, as agent.yml does after every run.
 
+A sub-issue someone attaches by hand to a tree on autopilot joins it and plans too. GitHub sends no event when an
+existing issue is attached, so autopilot also looks on a schedule, every 5 minutes, and when an issue opens; an issue
+someone took off autopilot is never put back on it.
+
 A blocked issue that starts planning gets one line naming its open blockers, `Autopilot: starting plan, its worker
 waits for #A and #B to close`, where the owner would have said `/plan`.
 """
@@ -305,7 +309,8 @@ def test_agents_md_says_every_story_on_autopilot_plans_as_soon_as_it_exists(reco
 
     The flow section must say "starts planning as soon as it exists, blocked or not" and name the line
     `Autopilot: starting plan, its worker waits for #A and #B to close`, and still say a blocked issue's worker waits
-    until every blocker closes. Neither The flow nor Commands may still say an issue starts its planner only when its
+    until every blocker closes. It must also say a sub-issue "attached by hand" to a tree on autopilot joins it, that
+    autopilot looks "every 5 minutes", and that an issue "taken off autopilot" stays off. Neither The flow nor Commands may still say an issue starts its planner only when its
     blockers have closed ("whose blocked-by issues have now all closed starts its planner") or that `/autopilot start`
     starts only issues with "nothing open to wait for". Proves 313.6."""
     record_property("proves", "313.6")
@@ -314,9 +319,230 @@ def test_agents_md_says_every_story_on_autopilot_plans_as_soon_as_it_exists(reco
     assert flow and commands, "313.6: AGENTS.md has no The flow or no Commands section"
     for words in ("starts planning as soon as it exists, blocked or not",
                   "`Autopilot: starting plan, its worker waits for #A and #B to close`",
-                  "its worker waits until every blocker closes"):
+                  "its worker waits until every blocker closes", "attached by hand", "every 5 minutes",
+                  "taken off autopilot"):
         assert words in " ".join(flow.split()), f"313.6: AGENTS.md's The flow does not say {words!r}"
     for name, body in (("The flow", flow), ("Commands", commands)):
         flat = " ".join(body.split())
         for old in ("whose blocked-by issues have now all closed starts its planner", "nothing open to wait for"):
             assert old not in flat, f"313.6: AGENTS.md's {name} still says {old!r}, which is no longer how autopilot works"
+
+
+# 313.3 and 313.7: sub-issues attached by hand ----------------------------------------------------------------------
+
+EVENTS_GH = r'''
+m_ev = re.fullmatch(r"repos/o/r/issues/(\d+)/(events|timeline)", API or "")
+if m_ev:
+    print(json.dumps(jload("events.json", {}).get(m_ev.group(1), [])))
+    sys.exit(0)
+'''
+
+
+def starts_on(wf, event, action):
+    """True when GitHub starts this workflow on `event`, with this activity type if given."""
+    on = wf.get("on")
+    if isinstance(on, str):
+        return on == event
+    if isinstance(on, list):
+        return event in on
+    if not isinstance(on, dict) or event not in on:
+        return False
+    if action is None:
+        return True
+    spec = on.get(event)
+    types = spec.get("types") if isinstance(spec, dict) else None
+    return not types or action in (types if isinstance(types, list) else [types])
+
+
+def crons():
+    """Every cron schedule a workflow in .github/workflows/ runs on, as (file, cron)."""
+    found = []
+    for fname in sorted(os.listdir(tac.WORKFLOWS)):
+        if fname.endswith((".yml", ".yaml")):
+            on = ts.load_yaml(open(os.path.join(tac.WORKFLOWS, fname)).read()).get("on")
+            if isinstance(on, dict) and isinstance(on.get("schedule"), list):
+                found += [(fname, s.get("cron")) for s in on["schedule"] if isinstance(s, dict)]
+    return found
+
+
+class Tree(tac.Repo):
+    """test_autopilot_close's repo, also telling label history and firing any event.
+
+    GitHub tells an issue's history, labels added and removed included, at `gh api repos/o/r/issues/N/events` (and
+    `.../timeline`); here it is what `events` gives for N, each like {"event": "unlabeled", "label": {"name": ...}}."""
+
+    def __init__(self, tmp, tree, labels=None, events=None, **kw):
+        super().__init__(tmp, tree, labels, **kw)
+        anchor = 'if a[:2] == ["issue", "view"]:'
+        fake = open(f"{self.tmp}/bin/gh").read()
+        assert anchor in fake, "test setup: could not teach the fake GitHub about issue events"
+        open(f"{self.tmp}/bin/gh", "w").write(fake.replace(anchor, EVENTS_GH + anchor, 1))
+        json.dump({str(k): v for k, v in (events or {}).items()}, open(f"{self.tmp}/gh/events.json", "w"))
+
+    def fire(self, event_name, action=None, issue=None):
+        """GitHub sends this event, and every river workflow it starts runs.
+
+        Every job's `if:` is evaluated.
+
+        Only workflows that run `dokima.agent` run here: the card and the assigner, which also start when an issue
+        opens, draw and assign, and their own tests cover them. Returns the names of the jobs that ran; a failed job is kept in self.failures as file:job."""
+        event = {"repository": {"full_name": "o/r", "default_branch": "main", "name": "r", "owner": {"login": "o"}}}
+        if action:
+            event["action"] = action
+        if issue is not None:
+            event["issue"] = self.issue_event(issue)
+            event["sender"] = {"login": OWNER, "type": "User"}
+        if event_name == "schedule":
+            event["schedule"] = "*/5 * * * *"
+        github = ts.Ctx(event_name=event_name, actor=OWNER, event=event, run_id="42", run_attempt="1",
+                        ref="refs/heads/main", server_url="https://github.com", repository="o/r", repository_owner="o",
+                        token="fake-github-token")
+        open(f"{self.tmp}/event.json", "w").write(json.dumps(event))
+        ran = []
+        for fname in sorted(os.listdir(tac.WORKFLOWS)):
+            if not fname.endswith((".yml", ".yaml")):
+                continue
+            text = open(os.path.join(tac.WORKFLOWS, fname)).read()
+            wf = ts.load_yaml(text)
+            if "dokima.agent" not in text or not starts_on(wf, event_name, action):
+                continue
+            jobs, results, outputs = wf.get("jobs") or {}, {}, {}
+            while len(results) < len(jobs):
+                progressed = False
+                for name, job in jobs.items():
+                    needs = job.get("needs") or []
+                    needs = [needs] if isinstance(needs, str) else needs
+                    if name in results or any(x not in results for x in needs):
+                        continue
+                    progressed = True
+                    res = [results[x] for x in needs]
+                    status = {"failed": "failure" in res, "success": all(r == "success" for r in res)}
+                    ctx = {"github": github, "inputs": ts.Ctx(), "vars": ts.Ctx(DOKIMA_APP_ID="1"),
+                           "secrets": ts.Ctx(CLAUDE_CODE_OAUTH_TOKEN="fake-claude-token", DOKIMA_APP_KEY="k"),
+                           "needs": ts.Ctx({x: {"result": results[x], "outputs": outputs.get(x, {})} for x in needs})}
+                    if not ts.evaluate(ts.condition(job.get("if")), ctx, status):
+                        results[name] = "skipped"
+                        continue
+                    ran.append(f"{fname}:{name}")
+                    if "uses" in job:
+                        results[name] = "success"
+                        continue
+                    self.runs += 1
+                    label = f"{event_name}{self.runs}-{fname}-{name}"
+                    results[name], outputs[name] = self.run_job(label, job, ctx, event_name,
+                                                                [("/tmp/", f"{self.tmp}/jobs/{label}/tmp/")], wf.get("defaults"))
+                    if results[name] == "failure":
+                        self.failures.append(f"{fname}:{name}")
+                assert progressed, f"test setup: the jobs of {fname} wait on each other"
+        self.failed = bool(self.failures)
+        return ran
+
+
+def one_start_line(m, crit, case, n, blockers=""):
+    """Issue n got exactly one Autopilot line, and it starts its plan.
+
+    With `blockers`, it is the waiting line naming them."""
+    lines = autopilot_said(m, n)
+    if blockers:
+        assert lines == [WAITS.format(blockers)], \
+            f"{crit} ({case}): #{n} should get exactly one {WAITS.format(blockers)!r} line: {said(m, n)}"
+    else:
+        assert len(lines) == 1 and "starting plan" in lines[0], \
+            f"{crit} ({case}): #{n} should get exactly one Autopilot line saying it is starting its plan: {said(m, n)}"
+
+
+def test_a_sub_issue_attached_by_hand_joins_autopilot_and_plans_at_the_next_look(record_property, tmp_path):
+    """A sub-issue attached by hand to a tree on autopilot plans within 5 minutes.
+
+    GitHub sends no event when an existing issue is attached as a sub-issue, so autopilot looks on a schedule: some
+    workflow must run every 5 minutes (cron `*/5 * * * *`, the shortest GitHub allows). #57 is on autopilot with #101
+    (planned); #130 (no blockers), #131 (blocked by #101, open) and #132 were attached by hand under #57, and #140
+    by hand under #132; none of them carries the label. #200, not on
+    autopilot, has #201 attached. When the schedule fires, #130, #131, #132 and #140 must get the `autopilot` label;
+    #130 and #140 must start planning once with one line saying they start their plan, #131 once with
+    `Autopilot: starting plan, its worker waits for #101 to close`; #132 (a parent), #101 (planned), #200 and #201
+    must not start and #200 and #201 stay off autopilot. When the schedule fires again, nothing starts twice and no
+    second line is posted. Proves 313.3."""
+    record_property("proves", "313.3")
+    looks = [(f, c) for f, c in crons() if c and c.split()[:5] == ["*/5", "*", "*", "*", "*"]]
+    assert looks, f"313.3: no workflow runs every 5 minutes to find sub-issues attached by hand; schedules: {crons()}"
+
+    tree = {57: [101, 130, 131, 132], 132: [140], 200: [201]}
+    m = Tree(tmp_path / "attached", tree, {57: [LABEL], 101: [LABEL]}, deps={131: [101]}, seed=[tac.planned(101, 4001)])
+    ran = m.fire("schedule")
+    assert ran, "313.3: no workflow ran on the schedule"
+    assert not m.failed, f"313.3: a workflow failed on the schedule: {m.failures}\n{m.tail()}"
+    on = m.on_autopilot()
+    for n in (130, 131, 132, 140):
+        assert n in on, f"313.3: #{n}, attached by hand under #57, was not put on autopilot: on autopilot now {sorted(on)}"
+    for n in (200, 201):
+        assert n not in on, f"313.3: #{n} is in no tree on autopilot but was put on autopilot: {sorted(on)}"
+    started = m.planners_started("313.3")
+    assert started == {130: 1, 131: 1, 140: 1}, \
+        f"313.3: #130, #131 (blocked) and #140 should each start planning once, and nothing else: {started}\n{m.tail()}"
+    one_start_line(m, "313.3", "schedule", 130)
+    one_start_line(m, "313.3", "schedule", 140)
+    one_start_line(m, "313.3", "schedule", 131, "#101")
+    for n in (57, 101, 132, 200, 201):
+        assert autopilot_said(m, n) == [], f"313.3: #{n} got an Autopilot line though it must not start: {said(m, n)}"
+
+    m.fire("schedule")
+    assert not m.failed, f"313.3: a workflow failed on the second schedule: {m.failures}\n{m.tail()}"
+    assert m.planners_started("313.3") == started, \
+        f"313.3: the second look started something again: {m.planners_started('313.3')}"
+    for n in (130, 131, 140):
+        assert len(autopilot_said(m, n)) == 1, f"313.3: #{n} got a second Autopilot line: {said(m, n)}"
+
+
+def test_a_sub_issue_created_under_an_issue_on_autopilot_plans_right_away(record_property, tmp_path):
+    """A sub-issue created under an issue on autopilot plans the moment it opens.
+
+    GitHub sends `issues: opened` for #130, created as a sub-issue of #57 (on autopilot): every workflow GitHub starts
+    on it runs, and #130 must get the `autopilot` label and start planning once, with one line saying it starts its
+    plan; created blocked by #120 (open), its line is `Autopilot: starting plan, its worker waits for #120 to close`.
+    Beside it, #130 opened under #200 (not on autopilot) and #150 opened with no parent get no label, no planner and
+    no Autopilot line. Proves 313.3."""
+    record_property("proves", "313.3")
+    for case, deps, blockers in (("free", {}, ""), ("blocked", {130: [120]}, "#120")):
+        m = Tree(tmp_path / case, {57: [130]}, {57: [LABEL]}, deps=deps)
+        m.fire("issues", "opened", 130)
+        started = m.planners_started("313.3")
+        assert started == {130: 1}, \
+            f"313.3 ({case}): #130, opened under #57 on autopilot, should start planning once: {started}\n{m.tail()}"
+        assert LABEL in m.labels().get(130, []), f"313.3 ({case}): #130 was not put on autopilot: {m.labels()}"
+        one_start_line(m, "313.3", case, 130, blockers)
+        assert autopilot_said(m, 57) == [], f"313.3 ({case}): #57 got an Autopilot line: {said(m, 57)}"
+
+    for case, tree, n in (("parent off autopilot", {200: [130]}, 130), ("no parent", {}, 150)):
+        m = Tree(tmp_path / case.replace(" ", "-"), tree, {})
+        m.fire("issues", "opened", n)
+        assert m.planners_started("313.3") == {}, f"313.3 ({case}): something started: {m.planners_started('313.3')}"
+        assert m.on_autopilot() == set(), f"313.3 ({case}): an issue was put on autopilot: {m.on_autopilot()}"
+        assert m.any_autopilot_line() == [], f"313.3 ({case}): an Autopilot line was posted: {m.any_autopilot_line()}"
+
+
+def test_an_issue_taken_off_autopilot_stays_off_under_a_parent_on_autopilot(record_property, tmp_path):
+    """A sub-issue taken off autopilot stays off, though its parent stays on.
+
+    #57 is on autopilot with #101 and #102, neither planned nor labeled. GitHub's history of #102 shows the
+    `autopilot` label added, then removed (`/autopilot stop` on #102, or by hand); #101 was never on autopilot. When
+    the schedule fires, #101 must be put on autopilot and start planning, and #102 must stay off autopilot, start
+    nothing and get no Autopilot line, on that look and the next. The same holds when #102's sibling #103 opens under
+    #57. Proves 313.7."""
+    record_property("proves", "313.7")
+    history = {102: [{"event": "labeled", "label": {"name": LABEL}}, {"event": "unlabeled", "label": {"name": LABEL}}]}
+    m = Tree(tmp_path / "schedule", {57: [101, 102]}, {57: [LABEL]}, events=history)
+    m.fire("schedule")
+    m.fire("schedule")
+    assert not m.failed, f"313.7: a workflow failed on the schedule: {m.failures}\n{m.tail()}"
+    assert m.planners_started("313.7") == {101: 1}, \
+        f"313.7: only #101 should start planning, once; #102 was taken off autopilot: {m.planners_started('313.7')}\n{m.tail()}"
+    assert LABEL in m.labels().get(101, []), f"313.7: #101, never on autopilot, was not put on it: {m.labels()}"
+    assert LABEL not in m.labels().get(102, []), f"313.7: #102, taken off autopilot, was put back on it: {m.labels()}"
+    assert autopilot_said(m, 102) == [], f"313.7: #102 got an Autopilot line: {said(m, 102)}"
+
+    m = Tree(tmp_path / "opened", {57: [102, 103]}, {57: [LABEL]}, events=history)
+    m.fire("issues", "opened", 103)
+    assert m.planners_started("313.7") == {103: 1}, \
+        f"313.7 (opened): only #103 should start planning: {m.planners_started('313.7')}\n{m.tail()}"
+    assert LABEL not in m.labels().get(102, []), f"313.7 (opened): #102, taken off autopilot, was put back on it: {m.labels()}"
