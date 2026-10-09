@@ -11,7 +11,7 @@ river's decision between two stages matters, the journey runs `python3 -m dokima
 stage's record, against the same fake GitHub, as agent.yml does after every run.
 
 A sub-issue someone attaches by hand to a tree on autopilot joins it and plans too. GitHub sends no event when an
-existing issue is attached, so autopilot also looks on a schedule, every 5 minutes, and when an issue opens; an issue
+existing issue is attached, so autopilot also looks on a schedule, every 15 minutes, and when an issue opens; an issue
 someone took off autopilot is never put back on it.
 
 A blocked issue that starts planning gets one line naming its open blockers, `Autopilot: starting plan, its worker
@@ -310,7 +310,7 @@ def test_agents_md_says_every_story_on_autopilot_plans_as_soon_as_it_exists(reco
     The flow section must say "starts planning as soon as it exists, blocked or not" and name the line
     `Autopilot: starting plan, its worker waits for #A and #B to close`, and still say a blocked issue's worker waits
     until every blocker closes. It must also say a sub-issue "attached by hand" to a tree on autopilot joins it, that
-    autopilot looks "every 5 minutes", and that an issue "taken off autopilot" stays off. Neither The flow nor Commands may still say an issue starts its planner only when its
+    autopilot looks "every 15 minutes" (and no longer says "every 5 minutes"), and that an issue "taken off autopilot" stays off. Neither The flow nor Commands may still say an issue starts its planner only when its
     blockers have closed ("whose blocked-by issues have now all closed starts its planner") or that `/autopilot start`
     starts only issues with "nothing open to wait for". Proves 313.6."""
     record_property("proves", "313.6")
@@ -319,12 +319,13 @@ def test_agents_md_says_every_story_on_autopilot_plans_as_soon_as_it_exists(reco
     assert flow and commands, "313.6: AGENTS.md has no The flow or no Commands section"
     for words in ("starts planning as soon as it exists, blocked or not",
                   "`Autopilot: starting plan, its worker waits for #A and #B to close`",
-                  "its worker waits until every blocker closes", "attached by hand", "every 5 minutes",
+                  "its worker waits until every blocker closes", "attached by hand", "every 15 minutes",
                   "taken off autopilot"):
         assert words in " ".join(flow.split()), f"313.6: AGENTS.md's The flow does not say {words!r}"
     for name, body in (("The flow", flow), ("Commands", commands)):
         flat = " ".join(body.split())
-        for old in ("whose blocked-by issues have now all closed starts its planner", "nothing open to wait for"):
+        for old in ("whose blocked-by issues have now all closed starts its planner", "nothing open to wait for",
+                    "every 5 minutes"):
             assert old not in flat, f"313.6: AGENTS.md's {name} still says {old!r}, which is no longer how autopilot works"
 
 
@@ -365,6 +366,32 @@ def crons():
     return found
 
 
+def minute_gaps(cron):
+    """The minutes between runs of an hourly, every-day cron; None for any other cron.
+
+    Reads the minute field (`*`, `*/k`, `a-b/k`, `a-b`, `a`, or a list of those); the hour, day, month and weekday
+    fields must all be `*`. `*/15` and `0,15,30,45` give {15}; `*/5` gives {5}; `0,30` gives {30}."""
+    fields = (cron or "").split()
+    if len(fields) != 5 or fields[1:] != ["*", "*", "*", "*"]:
+        return None
+    minutes = set()
+    for part in fields[0].split(","):
+        rng, _, step = part.partition("/")
+        if rng == "*":
+            lo, hi = 0, 59
+        elif "-" in rng:
+            lo, hi = (int(x) for x in rng.split("-", 1))
+        else:
+            lo = hi = int(rng)
+            if step:
+                hi = 59
+        minutes |= set(range(lo, hi + 1, int(step) if step else 1))
+    ms = sorted(minutes)
+    if not ms:
+        return None
+    return {(ms[(i + 1) % len(ms)] - m) % 60 or 60 for i, m in enumerate(ms)}
+
+
 class Tree(tac.Repo):
     """test_autopilot_close's repo, also telling label history and firing any event.
 
@@ -393,7 +420,7 @@ class Tree(tac.Repo):
             event["issue"] = self.issue_event(issue)
             event["sender"] = {"login": OWNER, "type": "User"}
         if event_name == "schedule":
-            event["schedule"] = "*/5 * * * *"
+            event["schedule"] = "*/15 * * * *"
         github = ts.Ctx(event_name=event_name, actor=OWNER, event=event, run_id="42", run_attempt="1",
                         ref="refs/heads/main", server_url="https://github.com", repository="o/r", repository_owner="o",
                         token="fake-github-token")
@@ -452,10 +479,11 @@ def one_start_line(m, crit, case, n, blockers=""):
 
 
 def test_a_sub_issue_attached_by_hand_joins_autopilot_and_plans_at_the_next_look(record_property, tmp_path):
-    """A sub-issue attached by hand to a tree on autopilot plans within 5 minutes.
+    """A sub-issue attached by hand to a tree on autopilot plans within 15 minutes.
 
     GitHub sends no event when an existing issue is attached as a sub-issue, so autopilot looks on a schedule: some
-    workflow must run every 5 minutes (cron `*/5 * * * *`, the shortest GitHub allows). #57 is on autopilot with #101
+    workflow must run every 15 minutes, as the owner asked (a cron such as `*/15 * * * *`, every hour, every day), and
+    no workflow may run more often than every 15 minutes. #57 is on autopilot with #101
     (planned); #130 (no blockers), #131 (blocked by #101, open) and #132 were attached by hand under #57, and #140
     by hand under #132; none of them carries the label. #200, not on
     autopilot, has #201 attached. When the schedule fires, #130, #131, #132 and #140 must get the `autopilot` label;
@@ -464,8 +492,11 @@ def test_a_sub_issue_attached_by_hand_joins_autopilot_and_plans_at_the_next_look
     must not start and #200 and #201 stay off autopilot. When the schedule fires again, nothing starts twice and no
     second line is posted. Proves 313.3."""
     record_property("proves", "313.3")
-    looks = [(f, c) for f, c in crons() if c and c.split()[:5] == ["*/5", "*", "*", "*", "*"]]
-    assert looks, f"313.3: no workflow runs every 5 minutes to find sub-issues attached by hand; schedules: {crons()}"
+    gaps = {(f, c): minute_gaps(c) for f, c in crons()}
+    looks = [k for k, g in gaps.items() if g == {15}]
+    assert looks, f"313.3: no workflow runs every 15 minutes to find sub-issues attached by hand; schedules: {crons()}"
+    too_often = [k for k, g in gaps.items() if g and min(g) < 15]
+    assert not too_often, f"313.3: these schedules run more often than every 15 minutes, which the owner did not ask for: {too_often}"
 
     tree = {57: [101, 130, 131, 132], 132: [140], 200: [201]}
     m = Tree(tmp_path / "attached", tree, {57: [LABEL], 101: [LABEL]}, deps={131: [101]}, seed=[tac.planned(101, 4001)])
