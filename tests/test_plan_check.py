@@ -128,7 +128,8 @@ def test_anything_but_a_story_or_a_feature_is_rejected_saying_the_planner_always
 def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_property):
     """The planner's prompt offers only the user_story and feature kinds, and the planner workflow never looks for question.md.
 
-    Reads dokima/roles/planner.md: every "kind" it shows is user_story or feature (both still shown), the line naming the
+    Reads dokima/roles/planner.md: every plan "kind" it shows (kinds inside a raises list are a raise's kind, not the
+    plan's, and are left out) is user_story or feature (both still shown), the line naming the
     kinds and the line saying how the planner ends never offer a question, no heading offers "one question" for the owner,
     no line says a question is shown as handed back, and the questions list is still taught.
     Reads .github/workflows/planner.yml and checks question.md and "one question for the owner" appear nowhere while
@@ -137,7 +138,8 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
     record_property("proves", "154.1")
     text = open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read()
     flat = " ".join(text.split())
-    shown = set(re.findall(r'"kind":\s*"(\w+)"', text))
+    plan_kinds = re.sub(r'"raises":\s*\[.*?\]', "", text, flags=re.S)
+    shown = set(re.findall(r'"kind":\s*"(\w+)"', plan_kinds))
     assert shown == {"user_story", "feature"}, f"154.1: the prompt shows the kinds {sorted(shown)}, not exactly user_story and feature"
     kinds = re.search(r"Exactly one kind:[^.]*\.", flat)
     assert kinds and "question" not in kinds.group(0), f"154.1: the prompt still offers a question kind: {kinds and kinds.group(0)!r}"
