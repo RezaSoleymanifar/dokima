@@ -406,7 +406,7 @@ def test_the_plan_reviewer_judges_every_question_against_the_owners_words(record
 
     Runs the code check on plan reviews of a plan with two questions. Rejected: no judgements (both questions named),
     one judged and one not (the missing one named), an accepted one with no matched words, one whose source is
-    neither this issue, one of its comments nor AGENTS.md (an outside site, and a comment on another issue), an
+    neither an issue of this repo, a comment on one nor AGENTS.md (an outside site, and a comment on another repo's issue), an
     accepted value that is not true or false, a judgement that does not say true or false whether the assumption
     changes how the system works or what it costs, an accepted one that does change them, one not accepted with no
     reason why, and a judgement of a question the plan does not ask. Passed: both judged (one accepted from AGENTS.md
@@ -419,7 +419,7 @@ def test_the_plan_reviewer_judges_every_question_against_the_owners_words(record
            ("one missing", {"assumptions": [ACCEPT_1]}, [q2]),
            ("no matched words", {"assumptions": [ACCEPT_1, {k: v for k, v in ACCEPT_2.items() if k != "matched"}]}, ["matched"]),
            ("source elsewhere", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "source": "https://example.com/post"}]}, ["source"]),
-           ("another issue", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "source": "https://github.com/o/r/issues/58#issuecomment-77"}]},
+           ("another repo", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "source": "https://github.com/x/r/issues/58#issuecomment-77"}]},
             ["source"]),
            ("changes not said", {"assumptions": [ACCEPT_1, {k: v for k, v in ACCEPT_2.items() if k != "changes"}]}, ["changes"]),
            ("changes not true or false", {"assumptions": [ACCEPT_1, {**ACCEPT_2, "changes": "no"}]}, ["changes"]),
