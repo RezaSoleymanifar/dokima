@@ -4,7 +4,8 @@
     python3 -m dokima.checks annotate r.xml  # print one annotation per test in a JUnit report
 
 The plan is the newest one the planner handed back, once the reviewer approved it, read from the bot's own record
-comments; each criterion's check runs exactly the tests that plan lists for it.
+comments; each criterion's check runs exactly the tests that plan lists for it. A pull request with no approved plan that
+changes only Markdown files outside dokima/roles/, tests/ and .github/ gets one passing "Text only" check instead.
 
 A test proves a criterion by calling record_property("proves", "<issue>.<n>"),
 where n counts the issue's criteria from 1, top to bottom.
@@ -12,6 +13,7 @@ where n counts the issue's criteria from 1, top to bottom.
 import json
 import os
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -20,6 +22,8 @@ from dokima import agent, plan
 PROVES = re.compile(r"""record_property\(\s*["']proves["']\s*,\s*["']([\d.]+)["']\s*\)""")
 TEST_DEF = re.compile(r"^def (test_\w+)\(")
 QUEUE_REF = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/.+/pr-(\d+)-[0-9a-f]+$")
+TEXT_ONLY = [{"id": "text-only", "name": "Text only: no plan needed", "tests": ""}]
+NOT_TEXT = ("dokima/roles/", "tests/", ".github/")
 
 
 def find_tests(paths):
@@ -67,6 +71,28 @@ def build_matrix(number, recs):
     return rows or no_plan(f"No approved plan found for issue #{number}")
 
 
+def is_text(path):
+    """True for a Markdown file outside dokima/roles/, tests/ and .github/."""
+    return bool(path) and path.lower().endswith(".md") and not path.startswith(NOT_TEXT)
+
+
+def text_only(repo, number):
+    """True when every file the pull request changes, and its old name, is text.
+
+    Any failure to list the files, or an empty list, is False: no shortcut."""
+    try:
+        files = [f for p in agent.pages(agent.gh("api", f"repos/{repo}/pulls/{number}/files?per_page=100", "--paginate"))
+                 for f in p]
+    except (subprocess.CalledProcessError, ValueError, TypeError) as e:
+        print(f"Could not list the changed files of PR #{number}, so no text-only shortcut: "
+              f"{agent.gh_reason(e) if isinstance(e, subprocess.CalledProcessError) else e}", file=sys.stderr)
+        return False
+    if not files:
+        return False
+    return all(isinstance(f, dict) and is_text(f.get("filename")) and
+               ("previous_filename" not in f or is_text(f["previous_filename"])) for f in files)
+
+
 def annotations(junit_xml, repo, sha, done_when):
     """One annotation per test that ran, with a permanent link to the test's first line at this commit."""
     lines = []
@@ -98,7 +124,10 @@ def main(argv):
         pr = event_pr(repo, json.load(open(os.environ["GITHUB_EVENT_PATH"])))
         number = agent.issue_of_pr(pr["head"]["ref"], pr.get("body")) or plan.pr_issue_number(repo, pr["number"])
         recs = agent.records(agent.conversation(repo, number)[1]) if number else []
-        print("matrix=" + json.dumps(build_matrix(number, recs)))
+        rows = build_matrix(number, recs)
+        if rows[0]["id"] == "none" and text_only(repo, pr["number"]):
+            rows = TEXT_ONLY
+        print("matrix=" + json.dumps(rows))
     elif argv[1] == "annotate":
         for line in annotations(open(argv[2]).read(), repo, os.environ["HEAD_SHA"], os.environ["ID"]):
             print(line)
