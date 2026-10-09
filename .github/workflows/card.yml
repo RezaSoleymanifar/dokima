@@ -31,8 +31,8 @@ jobs:
     environment: keys
     # The bot's own edits and comments (the card itself) don't trigger another card, and a comment on a pull
     # request draws no issue card on it; an issue deleted or moved away has no card left to draw. A merge, even the
-    # bot's on autopilot, draws its pull request's card and its issue's.
-    if: github.event_name == 'workflow_run' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged) || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
+    # bot's on autopilot, draws its pull request's card and its issue's; a pull request closed unmerged draws none.
+    if: github.event_name == 'workflow_run' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged) || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event_name != 'pull_request_target' && github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
