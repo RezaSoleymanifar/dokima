@@ -1378,11 +1378,8 @@ def worker_waits(items, owners, body, number):
     if not approved(records(items)):
         return False
     at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
-    for c in items[at + 1:]:
-        who, said = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
-        if (who in owners and command_of(c.get("body")) == "worker") or is_record(c, "worker") \
-                or (who in (BOT, f"{BOT}[bot]") and said in (AUTOPILOT_LINES["worker"], GO_LINE)):
-            return False
+    if any(started(c, owners) == "Work" or is_record(c, "worker") for c in items[at + 1:]):
+        return False
     step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
     return step[:2] == ("start", "worker") and step[3:] == ("autopilot",)
 
@@ -1756,6 +1753,15 @@ def test_fix(items, owners):
 
 
 STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker", ""): "Work", ("reviewer", "pr"): "Review"}
+
+
+def started(c, owners):
+    """Column of the stage a code owner's `/work`, or the bot's line or run card, starts."""
+    who, body = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
+    card = who in (BOT, f"{BOT}[bot]") and re.match(re.escape(LIVE) + r"[^*]*\*\*(Planner|Worker|Reviewer) ?\(?(\w*)", body)
+    if who in owners and command_of(body) == "worker" and "(approved)" not in c.get("where", "") or who in (BOT, f"{BOT}[bot]") and body in (AUTOPILOT_LINES["worker"], GO_LINE):
+        return "Work"
+    return STAGE_COLUMN.get((card[1].lower(), card[2])) if card else None
 
 
 def board_place(rec, step):

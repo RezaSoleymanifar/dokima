@@ -394,8 +394,8 @@ def test_the_15_minute_sweep_puts_every_card_where_its_state_says(record_propert
     card is wrong: #57 (code review approved, waits for the merge) and its PR #60 in Plan with no pill; #58 (on autopilot, plan sent back to the planner) in Done with Needs you; #59 (no
     record yet) in Work with Needs you; #62 (split filed) in Plan with Needs you; #64 (plan approved, the code owner
     already said /work) in Review with Needs you; closed #63 in Plan with Needs you. After the run: #57 and PR #60 in
-    Review with Needs you, #58 in Plan with Autopilot, #59 in Backlog, #62 in Work, #64 in Plan, #63 in Done, the last
-    four with no pill."""
+    Review with Needs you, #58 in Plan with Autopilot, #59 in Backlog, #62 in Work, #64 in Work (its worker started
+    with /work, #343), #63 in Done, the last four with no pill."""
     record_property("proves", "331.2")
     wrong = {("issue", 57): ("Plan", None), ("pr", 60): ("Plan", None), ("issue", 58): ("Done", NEEDS),
              ("issue", 59): ("Work", NEEDS), ("issue", 62): ("Plan", NEEDS), ("issue", 64): ("Review", NEEDS),
@@ -406,7 +406,7 @@ def test_the_15_minute_sweep_puts_every_card_where_its_state_says(record_propert
              cards={k: {"Status": s, **({"Action": a} if a else {})} for k, (s, a) in wrong.items()})
     board.sync("schedule", {"schedule": "*/15 * * * *"}, SPEC, REPO)
     want = {"issue #57": ("Review", NEEDS), "pr #60": ("Review", NEEDS), "issue #58": ("Plan", AUTO),
-            "issue #59": ("Backlog", None), "issue #62": ("Work", None), "issue #64": ("Plan", None), "issue #63": ("Done", None)}
+            "issue #59": ("Backlog", None), "issue #62": ("Work", None), "issue #64": ("Work", None), "issue #63": ("Done", None)}
     got = places(w, *wrong)
     bad = {k: f"{got[k]}, not {want[k]}" for k in want if got[k] != want[k]}
     assert not bad, f"331.2: after the 15-minute sweep these cards are in the wrong place: {bad}"
