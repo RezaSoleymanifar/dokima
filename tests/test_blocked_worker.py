@@ -270,6 +270,45 @@ def test_a_close_that_cannot_list_the_blockers_starts_nothing_and_says_why(tmp_p
         f"353.5: #57 does not say why nothing started (GitHub's error): {m.new_comments(57)}\n{m.tail()}"
 
 
+def test_a_blocked_issue_on_autopilot_never_starts_its_planner_by_itself(tmp_path, record_property):
+    """On autopilot, an issue with an open blocker never starts its planner by itself.
+
+    Proves 353.1.
+    Three moments, each run the way GitHub runs it. Switch-on: the code owner's `/autopilot start` on #57, blocked by
+    #110 (open), starts no planner and posts no Autopilot line; beside it, with #110 closed, #57's planner starts once.
+    A split filed: `/work` on #57 on autopilot files stories #900 and #901, #901 blocked by #900; #900's planner
+    starts and #901's does not. A close: #57, blocked by #101 and #102 (both open), once with no plan and once with a
+    plan approved while blocked; closing #101 leaves #102 open and starts nothing, no planner and no worker; closing
+    #102 then starts #57's planner once and never its worker."""
+    record_property("proves", "353.1")
+    switch = "Autopilot: switched on, starting plan"
+    for case, closed, want in (("blocked", (), {}), ("blocker closed", (110,), {57: 1})):
+        m = tc.Repo(tmp_path / f"switch-{case.replace(' ', '-')}", {}, {}, deps={57: [110]}, closed=closed)
+        m.listen("/autopilot start")
+        assert not m.failed, f"353.1 (switch-on, {case}): the listener failed on /autopilot start:\n{m.tail()}"
+        started = m.planners_started("353.1")
+        assert started == want, f"353.1 (switch-on, {case}): /autopilot start started planners {started}, expected {want}"
+        said = sum(1 for b in m.new_comments(57) if b.strip() == switch)
+        assert said == sum(want.values()), \
+            f"353.1 (switch-on, {case}): #57 got {said} {switch!r} lines, expected {sum(want.values())}: {m.new_comments(57)}"
+
+    m = tc.Repo(tmp_path / "split", {}, {57: [LABEL]}, history=ts.SPLIT_APPROVED)
+    m.listen("/work")
+    assert not m.failed, f"353.1 (split filed): the listener failed on /work:\n{m.tail()}"
+    assert json.load(open(f"{m.tmp}/gh/tree.json")).get("57") == [900, 901], \
+        f"353.1 (split filed): /work did not file the two stories as #900 and #901:\n{m.tail()}"
+    started = m.planners_started("353.1")
+    assert started == {900: 1}, f"353.1 (split filed): planners started {started}; only #900, which waits on nothing, may start"
+    assert m.autopilot_lines(901) == 0, f"353.1 (split filed): #901, blocked by #900, got an Autopilot line: {m.new_comments(901)}"
+
+    for case, history in (("no plan", None), ("plan approved while blocked", APPROVED)):
+        m = repo(tmp_path / f"close-{case.replace(' ', '-')}", history, closed=())
+        m.close(101)
+        assert_starts_nothing(m, "353.1", f"{case}, #102 still open")
+        m.close(102)
+        assert_plans_again_once(m, "353.1", f"{case}, last blocker closed")
+
+
 # The code and AGENTS.md ---------------------------------------------------------------------------------------------
 
 def test_the_code_253_added_for_a_waiting_worker_is_gone(record_property):
