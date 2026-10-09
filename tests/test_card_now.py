@@ -13,8 +13,11 @@ These tests play card.yml the way GitHub runs it, for one event at a time, again
   bash, from a copy of this repo's dokima/ and .github/, with a fake `gh` first on PATH. Values a step writes to
   GITHUB_OUTPUT or GITHUB_ENV are read as KEY=value lines, and a job's `outputs:` reach later jobs through `needs`.
 - Every concurrency group card.yml declares (the workflow's and each job's that runs) is evaluated for the event.
-- Pull request events reach card.yml as pull_request_target (main's copy of the workflow), pull_request_review and
-  pull_request_review_comment; on a review GitHub's own ref is the pull request's merge ref.
+- Pull request events are sent as GitHub sends them: pull_request_target for the pull request itself (main's copy of
+  the workflow), pull_request_review and pull_request_review_comment for reviews and line notes (the pull request's own
+  copy, from its merge ref). Such a review or line note reaches card.yml through a relay: any workflow of this repo
+  that card.yml's workflow_run lists by name and that starts on the event is played first, and when it passes,
+  card.yml is played for the workflow_run GitHub then sends, carrying the pull request.
 
 The fake GitHub (repo o/r, code owner `boss` through CODEOWNERS, Dokima's bot `dokima-runtime`) keeps its state in one
 JSON file and answers: `gh issue view|edit|comment|list`, `gh pr view|edit|list`, and `gh api` for
@@ -43,13 +46,18 @@ from test_start import Ctx, Nil, condition, evaluate, fill, github_shell, load_y
 from dokima import agent, body  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-CARD_YML = os.path.join(ROOT, ".github", "workflows", "card.yml")
+WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+CARD_YML = os.path.join(WORKFLOWS, "card.yml")
 CARD_PY = os.path.join(ROOT, "dokima", "card.py")
 OWNER = "boss"
 BOT = agent.BOT
 # dokima/card.py's length on main when this story was planned; the owner asked for the card code to get smaller.
 CARD_PY_LINES_BEFORE = 721
 STAGES = ("Backlog", "Plan", "Work", "Review", "Merged")
+# GitHub runs these events from the default branch's copy of the workflow file, whatever a pull request changes.
+MAINS_COPY = {"issues", "issue_comment", "pull_request_target", "workflow_run", "schedule", "workflow_dispatch"}
+# GitHub runs these from the pull request's own copy (its merge ref, or the merge queue's).
+OWN_COPY = {"pull_request", "pull_request_review", "pull_request_review_comment", "merge_group"}
 
 FAKE_GH = r'''
 import json, os, re, sys
@@ -561,8 +569,22 @@ class Hub:
         self.save()
 
     def run(self, event_name, event, k):
-        """Play card.yml for one event and return the Run."""
+        """Play card.yml for one event, directly or through its relays, and return card.yml's Run.
+
+        When card.yml does not start on the event itself, every relay that starts on it is played, and card.yml is
+        played for the workflow_run each passing relay sends; the returned Run keeps the relays' Runs in `relays`."""
         r = Run(self, event_name, event)
+        if not r.started:
+            relay_runs = []
+            for name, wf in relays(event_name, event):
+                rr = Run(self, event_name, event, wf)
+                relay_runs.append(rr)
+                if rr.started and not rr.failed():
+                    r = Run(self, *relayed(name, event_name, event))
+                    if r.started:
+                        break
+            r.relays = relay_runs
+            r.log = "".join(x.log for x in relay_runs) + r.log
         self.log = r.log
         return r
 
@@ -700,6 +722,50 @@ def workflow():
     return load_yaml(open(CARD_YML).read())
 
 
+def workflows():
+    """Every workflow of the repo but card.yml, read, as {file name: workflow}."""
+    out = {}
+    for f in sorted(os.listdir(WORKFLOWS)):
+        path = os.path.join(WORKFLOWS, f)
+        if f.endswith((".yml", ".yaml")) and path != CARD_YML:
+            out[f] = load_yaml(open(path).read())
+    return out
+
+
+def listened():
+    """The workflows card.yml starts after, by its workflow_run trigger, as {file name: workflow}."""
+    t = triggers(workflow()).get("workflow_run")
+    names = listed(t.get("workflows")) if isinstance(t, dict) else []
+    return {f: wf for f, wf in workflows().items() if wf.get("name") in names}
+
+
+def relays(event_name, event):
+    """The workflows card.yml starts after that start on this event, as [(name, workflow)].
+
+    Only for an event GitHub runs from the pull request's own copy, which card.yml must hear through a relay; any
+    other event card.yml hears itself."""
+    if event_name not in OWN_COPY:
+        return []
+    return [(wf.get("name"), wf) for wf in listened().values() if starts(wf, event_name, event)]
+
+
+def relayed(name, event_name, event):
+    """The workflow_run event GitHub sends card.yml when relay `name`, started by this event, passes."""
+    x = event.get("pull_request") or {}
+    head = x.get("head") or {}
+    pulls = [{"number": x["number"], "head": head, "base": x.get("base") or {"ref": "main"}}] if x else []
+    run = {"name": name, "head_sha": head.get("sha"), "head_branch": head.get("ref"), "display_title": x.get("title"),
+           "event": event_name, "status": "completed", "conclusion": "success", "pull_requests": pulls,
+           "actor": event.get("sender"), "triggering_actor": event.get("sender")}
+    return "workflow_run", {"action": "completed", "workflow": {"name": name}, "workflow_run": run,
+                            "sender": event.get("sender"), "repository": REPOSITORY}
+
+
+def reaches(event_name, event):
+    """True when the event starts card.yml, itself or through a relay."""
+    return starts(workflow(), event_name, event) or bool(relays(event_name, event))
+
+
 def triggers(wf):
     """card.yml's `on:` as {event name: its settings or ''}."""
     on = wf.get("on")
@@ -754,13 +820,13 @@ def order(jobs):
 class Run:
     """One run of card.yml for one event, played as GitHub plays it."""
 
-    def __init__(self, hub, event_name, event):
+    def __init__(self, hub, event_name, event, wf=None):
         self.hub, self.event_name, self.event = hub, event_name, event
-        wf = workflow()
+        wf = workflow() if wf is None else wf
         self.wf = wf
         self.started = starts(wf, event_name, event)
         self.jobs, self.log, self.checkouts = {}, "", []
-        self.groups = {}
+        self.groups, self.relays = {}, []
         if not self.started:
             return
         base_ctx = {"github": github_ctx(event_name, event), "vars": Context(), "secrets": Context(), "inputs": Context()}
@@ -848,8 +914,8 @@ class Run:
         return {self.groups.get(name) or self.groups.get("workflow") for name, j in self.jobs.items() if j["wrote"]}
 
     def all_groups(self):
-        """Every concurrency group this run took a place in, the workflow's and each job's."""
-        return {g for g in self.groups.values() if g}
+        """Every concurrency group this run and its relays took a place in."""
+        return {g for r in [self, *self.relays] for g in r.groups.values() if g}
 
     def errors(self):
         """The ::error lines the run printed, where GitHub names what failed."""
@@ -973,14 +1039,15 @@ def test_records_redraw_the_cards_and_the_cards_own_writes_redraw_nothing(tmp_pa
     assert card_of(hub.pr_body(260)), "332.1: the bot opening PR #260 did not draw its card"
 
 
-def test_card_yml_starts_on_every_kind_of_event_about_an_issue_or_its_pr(record_property):
+def test_card_yml_starts_on_every_kind_of_event_about_an_issue_or_its_pr(tmp_path, record_property):
     """card.yml starts on every kind of event about an issue or its pull request.
 
-    Reads card.yml's `on:`: issues and issue comments of every kind, pull_request_target opened, edited, reopened,
-    synchronize and closed, reviews submitted, edited and dismissed, line notes created, edited and deleted, the checks
-    and the worker finishing, and the schedule. Proves 332.1."""
+    Issues and issue comments of every kind, pull requests opened, edited, reopened, new commits and closed, reviews
+    submitted, edited and dismissed, line notes created, edited and deleted, the checks and the worker finishing, and
+    the schedule each start card.yml, itself or through a relay. Then the owner opening, editing and reopening PR #260,
+    editing and dismissing a review and editing and deleting a line note are each played on GitHub, and each runs the
+    card job and passes. Proves 332.1."""
     record_property("proves", "332.1")
-    wf = workflow()
     want = [issue_event(246, a) for a in ("opened", "edited", "closed", "reopened", "labeled", "unlabeled")]
     want += [issue_comment(246, action=a) for a in ("created", "edited", "deleted")]
     want += [pr_comment(246, 260, action=a) for a in ("created", "edited", "deleted")]
@@ -989,8 +1056,13 @@ def test_card_yml_starts_on_every_kind_of_event_about_an_issue_or_its_pr(record_
     want += [line_note(246, 260, action=a) for a in ("created", "edited", "deleted")]
     want += [checks_finished(246, 260, w) for w in ("done-whens", "full suite", "worker")]
     want += [schedule()]
-    missing = [f"{e} {p.get('action') or p.get('workflow', {}).get('name', '')}" for e, p in want if not starts(wf, e, p)]
+    missing = [f"{e} {p.get('action') or p.get('workflow', {}).get('name', '')}" for e, p in want if not reaches(e, p)]
     assert not missing, f"332.1: card.yml does not start on: {missing}"
+    hub = Hub(tmp_path)
+    for event in ([pr_event(246, 260, a, OWNER) for a in ("opened", "edited", "reopened")]
+                  + [review_event(246, 260, action=a) for a in ("edited", "dismissed")]
+                  + [line_note(246, 260, action=a) for a in ("edited", "deleted")]):
+        must_redraw(hub, event, "332.1")
 
 
 # 332.2 -----------------------------------------------------------------------------------------------------------
@@ -1065,8 +1137,8 @@ def test_the_merge_rewrites_the_pr_card_as_merged_with_the_true_definition_of_do
 
     PR #260 has every check passed and an approving code review, and the owner merges it: the merge event leaves
     #260's card saying Merged with All tests, Code review and Owner approval passed. On a fresh GitHub where All tests
-    failed on the PR's last commit and the bot merged it, the merge leaves Merged with All tests failed and Owner
-    approval not passed. Proves 332.3."""
+    failed on the PR's last commit, the code review blocked and the bot merged it, the merge leaves Merged with All
+    tests failed, Code review failed and Owner approval not passed. Proves 332.3."""
     record_property("proves", "332.3")
     hub = Hub(tmp_path / "green")
     hub.merge(246, 260)
@@ -1078,12 +1150,17 @@ def test_the_merge_rewrites_the_pr_card_as_merged_with_the_true_definition_of_do
     hub = Hub(tmp_path / "red")
     s = hub.load()
     s["checks"]["sha260"][1].update(conclusion="failure")
+    blocked = review_record("pr")
+    blocked["handback"].update(verdict="block", summary="Blocked.",
+                               blockers=[{"id": "B1", "criterion": "246.1", "problem": "No proof.", "fixer": "worker"}])
+    s["issues"]["246"]["comments"][-1] = record(blocked, "2026-10-09T04:00:00Z")
     hub.save()
     hub.merge(246, 260, by=BOT)
     must_redraw(hub, pr_event(246, 260, "closed", "bot", merged=True), "332.3")
     done = done_of(hub.pr_body(260))
     assert stage_of(hub.pr_body(260)) == "Merged" and done.get("All tests") == "failed", \
         f"332.3: the merged PR's card does not show its failed All tests: {done}"
+    assert done.get("Code review") == "failed", f"332.3: the merged PR's card does not show its blocked code review: {done}"
     assert done.get("Owner approval") != "passed", f"332.3: a bot's merge shows as the owner's approval: {done}"
 
 
@@ -1197,19 +1274,49 @@ def test_an_event_names_the_card_it_cannot_write_fails_and_writes_the_other(tmp_
 
 # 332.7 -----------------------------------------------------------------------------------------------------------
 
-def test_runs_started_by_a_pull_request_run_mains_code(tmp_path, record_property):
-    """Runs started by a pull request use main's card code, never the PR's.
+def keys_held(wf):
+    """How a workflow holds keys: an environment, secret, app token or write permission."""
+    found = []
+    perms = [wf.get("permissions")] + [job.get("permissions") for job in (wf.get("jobs") or {}).values()]
+    if wf.get("permissions") is None:
+        found.append("no permissions: block, so GitHub's default token may write")
+    for p in perms:
+        if p == "write-all" or (isinstance(p, dict) and "write" in p.values()):
+            found.append(f"write permission {p}")
+    for name, job in (wf.get("jobs") or {}).items():
+        if job.get("environment"):
+            found.append(f"job {name} opens environment {job['environment']}")
+        if "secrets" in job:
+            found.append(f"job {name} passes secrets")
+        for step in job.get("steps") or []:
+            if "create-github-app-token" in str(step.get("uses") or ""):
+                found.append(f"job {name} makes the app's token")
+    if "secrets." in json.dumps(wf):
+        found.append("it reads a secret")
+    return found
 
-    card.yml has no pull_request trigger (which runs a PR's own copy of the workflow with the keys), and for a merge,
-    new commits, a review and a line note on PR #260 every checkout step of the run checks out main. Proves 332.7."""
+
+def test_runs_started_by_a_pull_request_run_mains_code(tmp_path, record_property):
+    """Runs started by a pull request use main's card.yml and card code, never the PR's.
+
+    card.yml starts only on events GitHub runs from main's copy of the workflow (never pull_request, a review or a
+    line note, which run the pull request's own copy). Every workflow card.yml starts after that a pull request's own
+    copy can run holds no keys: no environment, secret, app token or write permission. For a merge, new commits, a
+    review and a line note on PR #260, card.yml runs and every checkout step checks out main. Proves 332.7."""
     record_property("proves", "332.7")
-    assert "pull_request" not in triggers(workflow()), \
-        "332.7: card.yml starts on pull_request, which runs the pull request's own copy of the workflow"
+    on = set(triggers(workflow()))
+    assert on <= MAINS_COPY, \
+        f"332.7: card.yml starts on {sorted(on - MAINS_COPY)}, which GitHub runs from the pull request's own copy"
+    for f, wf in listened().items():
+        if set(triggers(wf)) & OWN_COPY:
+            held = keys_held(wf)
+            assert not held, f"332.7: {f} runs the pull request's own copy and card.yml starts after it, yet: {held}"
     hub = Hub(tmp_path)
     for event in (pr_event(246, 260, "closed", OWNER, merged=True), pr_event(246, 260, "synchronize"),
                   review_event(246, 260), line_note(246, 260)):
         r = must_redraw(hub, event, "332.7")
         what = f"{event[0]} {event[1]['action']}"
+        assert r.event_name in MAINS_COPY, f"332.7: on {what} card.yml ran for {r.event_name}, the pull request's copy"
         assert r.checkouts, f"332.7: the run on {what} checks out no code"
         wrong = [ref for ref in r.checkouts if ref not in ("main", "refs/heads/main")]
         assert not wrong, f"332.7: the run on {what} checks out {wrong}, the pull request's code, not main"
@@ -1220,15 +1327,19 @@ def test_runs_started_by_a_pull_request_run_mains_code(tmp_path, record_property
 def test_a_sweep_with_nothing_to_put_right_makes_few_github_calls(tmp_path, record_property):
     """A sweep with nothing to fix writes nothing and makes few GitHub calls.
 
-    Thirty closed issues (#246 and #400 to #428), each with its merged pull request, and the open #312 with its open
-    PR #314 and the open #320 with none. The first scheduled run puts every card right: all thirty closed issues and
-    their PRs say Merged. The second, with nothing changed, writes nothing and makes at most 10 GitHub calls plus one
-    per open issue and two per open pull request (14 here), however many closed issues there are. Proves 332.8."""
+    Thirty closed issues (#246 and #400 to #428), each with its merged pull request, the open #312 with its open PR
+    #314, and twenty open issues with none (#320 and #500 to #518). The first scheduled run puts every card right: all
+    thirty closed issues and their PRs say Merged. The second, with nothing changed, writes nothing and makes at most
+    10 GitHub calls plus two per open issue and two per open pull request (54 here, with 21
+    open issues), however many closed issues there are; three calls per open issue would be 63 or more. Proves 332.8."""
     record_property("proves", "332.8")
     hub = stale_repo(tmp_path)
     closed = [(246, 260)] + [(n, n + 100) for n in range(400, 429)]
     for n, p in closed[1:]:
         hub.add_issue(n, p)
+    opened = [312, 320] + list(range(500, 519))
+    for n in opened[2:]:
+        hub.add_issue(n)
     hub.save()
     for n, p in closed[1:]:
         hub.merge(n, p)
@@ -1240,7 +1351,7 @@ def test_a_sweep_with_nothing_to_put_right_makes_few_github_calls(tmp_path, reco
     open(calls, "w").close()
     must_redraw(hub, schedule(), "332.8")
     made = [json.loads(l) for l in open(calls)]
-    budget = 10 + 2 + 2 * 1
+    budget = 10 + 2 * len(opened) + 2 * 1
     assert not [w for w in hub.writes() if w["op"] in ("issue-body", "pr-body")], \
         f"332.8: a sweep with nothing changed wrote cards: {hub.writes()}"
     assert len(made) <= budget, \
