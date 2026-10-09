@@ -40,7 +40,7 @@ unless newer words ask you to.
 
 # What you hand back
 One file, `work.json`, in the hand-back folder:
-  {"summary": "Two plain sentences: the cause and the change.",
+  {"summary": "One plain sentence of at most 25 words: what you changed.",
    "criteria": {"N.1": "Where and how it is built, one line.", ...},
    "evidence": "The test command you ran last and its result line.",
    "outside_scope": [{"file": "path", "why": "..."}],

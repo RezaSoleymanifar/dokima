@@ -7,6 +7,7 @@ names its criterion on every failure. A plan for issue 9 with criteria 9.1 to 9.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -105,7 +106,9 @@ def test_the_review_comment_shows_who_fixes_each_blocker(record_property):
     not the worker, and B2's line names the worker and not the planner."""
     record_property("proves", "166.1")
     body = agent.render(rec("reviewer", "pr", review(blocker("B1", "planner"), blocker("B2", "worker", "9.2"))))
-    lines = {b: [l for l in body.splitlines() if l.startswith(f"- **{b}**")] for b in ("B1", "B2")}
+    # The blocker icon code draws in front of each blocker (issue #234) is not part of its words.
+    plain = [re.sub(r"<img [^>]*>\s*", "", l) for l in body.splitlines()]
+    lines = {b: [l for l in plain if l.startswith(f"- **{b}**")] for b in ("B1", "B2")}
     assert len(lines["B1"]) == 1 and len(lines["B2"]) == 1, f"166.1: each blocker needs exactly one line in the comment:\n{body}"
     assert "planner" in lines["B1"][0] and "worker" not in lines["B1"][0], f"166.1: B1's line does not say the planner fixes it: {lines['B1'][0]}"
     assert "worker" in lines["B2"][0] and "planner" not in lines["B2"][0], f"166.1: B2's line does not say the worker fixes it: {lines['B2'][0]}"
@@ -137,6 +140,9 @@ def fake_github(monkeypatch, recs):
             return json.dumps({"number": 9, "title": "T", "body": "B", "comments": comments})
         if args[:2] == ("pr", "list"):
             return "[]"
+        if args[:2] == ("issue", "list") or (args[0] == "api" and args[1].lstrip("/").startswith("repos/o/r/issues")
+                                             and "/comments" not in args[1]):
+            return "[]"  # the repo's open issues, which the planner's pack lists
         raise AssertionError(f"unexpected gh call {args}")
     monkeypatch.setattr(agent, "gh", gh)
 
@@ -154,7 +160,7 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     agent.pack("o/r", 9, "planner", "", str(tmp_path / "p"))
     got = [b.get("id") for b in json.load(open(tmp_path / "p" / "open_blockers.json"))]
     assert got == ["B1"], f"166.3: the planner was handed blockers {got}, not exactly the test blocker B1"
-    assert agent.problems_round("planner", {"replies": []}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
+    assert agent.problems_round("planner", {"replies": [], "links": {"blocked_by": [], "blocks": [], "relates_to": []}}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
         "166.3: the planner's hand-back may skip the code review's test blocker B1"
     fake_github(monkeypatch, base + [rec("planner", handback=STORY), PLAN_OK])
     agent.pack("o/r", 9, "worker", "", str(tmp_path / "w"))

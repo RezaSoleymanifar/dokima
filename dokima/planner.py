@@ -492,7 +492,10 @@ def main(argv):
         return 0
     try:
         kind, result = read_output(out, number)
-        listed, bad = criterion_caps(result["raw"] if kind == "plan" else json.loads(result))
+        raw = result["raw"] if kind == "plan" else json.loads(result)
+        listed, bad = criterion_caps(raw)
+        more, too_long = words.summary_caps(raw["summary"])
+        listed, bad = more + listed, too_long + bad
         if kind == "plan":
             base = os.environ.get("PLANNER_BASE", "HEAD")
             files = changed_files(base)
