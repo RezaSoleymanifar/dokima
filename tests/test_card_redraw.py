@@ -20,6 +20,7 @@ dokima.body, and answers what the card reads today:
     gh api repos/o/r/contents/.github/CODEOWNERS    "* @boss"; any other file is missing
     gh api repos/o/r/actions/workflows/.../runs     no runs
     gh api repos/o/r/issues/N  [.../events]
+    gh api repos/o/r/issues/N/dependencies/blocked_by|blocking --paginate   no blocked-by links
     gh api -X PATCH repos/o/r/pulls/N -F body=@file (or -f body=...)   writes the PR body
     gh api -X PATCH repos/o/r/issues/N ... body                          writes the issue body
 Any other call fails the way GitHub refuses an unknown path, and is listed in the failure message.
@@ -217,6 +218,9 @@ class FakeGitHub:
             raise subprocess.CalledProcessError(1, ["gh", *args], output="", stderr="gh: Not Found (HTTP 404)")
         if re.fullmatch(r"repos/o/r/actions/workflows/[\w.-]+/runs", bare):
             return json.dumps({"total_count": 0, "workflow_runs": []})
+        m = re.fullmatch(r"repos/o/r/issues/(\d+)/dependencies/(blocked_by|blocking)", bare)
+        if m and int(m.group(1)) in self.issues:
+            return "[]"
         m = re.fullmatch(r"repos/o/r/issues/(\d+)(/events)?", bare)
         if m and int(m.group(1)) in self.issues:
             i = self.issues[int(m.group(1))]
@@ -445,6 +449,14 @@ def issue_edit(number, sender_type):
     return {"action": "edited", "issue": {"number": number}, "sender": {"login": "x", "type": sender_type}}
 
 
+def issue_comment(number, sender_type, on_pr=False):
+    """A comment on issue `number` (a PR when `on_pr`), by a user or a bot."""
+    issue = {"number": number, "pull_request": {"url": f"https://api.github.com/repos/o/r/pulls/{number}"}} \
+        if on_pr else {"number": number}
+    return {"action": "created", "issue": issue, "comment": {"body": "/plan"},
+            "sender": {"login": "x", "type": sender_type}}
+
+
 # What the card shows
 
 def block(text):
@@ -572,9 +584,9 @@ def test_the_card_is_redrawn_on_both_pages_whenever_something_it_shows_changes(r
 
     Runs each event through the real workflow files and the card code they start, against a fake GitHub: the all
     tests and criteria checks finishing on PR #5, the code review's record being posted by agent.yml, the owner's
-    Approve (its commands run), and the merge of PR #5. Each must redraw the card on issue #40 and on PR #5. A
-    command typed in an issue comment and the bot's own edit of the issue must redraw nothing, and never the older
-    PR #4 that main's head points to. Proves 315.1."""
+    Approve (its commands run), and the merge of PR #5. Each must redraw the card on issue #40 and on PR #5. The
+    commands run that a command typed in an issue comment starts, and the bot's own edit of and comment on the
+    issue, must redraw nothing, and never the older PR #4 that main's head points to. Proves 315.1."""
     record_property("proves", "315.1")
     wrong = []
     approve = [{"user": {"login": OWNER}, "state": "APPROVED", "submitted_at": "2026-10-09T04:40:00Z",
@@ -609,7 +621,8 @@ def test_the_card_is_redrawn_on_both_pages_whenever_something_it_shows_changes(r
         wrong.append(f"the code review's record was posted: the card code crashed: {e!r}")
     for case, name, event in (("a command typed in an issue comment", "workflow_run",
                                workflow_run("commands", pr=None, event="issue_comment", head=MAIN, title="/plan")),
-                              ("the bot's own edit of the issue", "issues", issue_edit(40, "Bot"))):
+                              ("the bot's own edit of the issue", "issues", issue_edit(40, "Bot")),
+                              ("the bot's own comment on the issue", "issue_comment", issue_comment(40, "Bot"))):
         g = github_with()
         use(monkeypatch, tmp_path, g)
         try:
@@ -818,10 +831,12 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
 
     GitHub keeps one waiting run per concurrency group and cancels it when a newer one arrives. card.yml's group
     is read for redraws of PR #5 (two checks), PR #6 (merge), PR #7 (approval), issue #41 and issue #40 (an owner's
-    edit of each), and for two runs that draw nothing: the bot's own edit of issue #40 (each card write makes one)
-    and a command typed in an issue comment. The two redraws of PR #5 must share a group, each other issue and pull
-    request must have its own, no run that draws nothing may sit in a redraw's group (not even the group of the
-    issue it edits), and no run may cancel one already running. Proves 315.5."""
+    edit of each) and issue #42 (an owner's comment), for the 15-minute sweep of blocked-by links, and for runs that
+    draw nothing: the bot's own edit of issue #40 (each card write makes one), the bot's own comment on issue #40
+    (each record makes one), a comment on PR #5, and the commands run of a command typed in an issue comment. The
+    two redraws of PR #5 must share a group, each other issue and pull request must have its own, neither the sweep
+    nor a run that draws nothing may sit in a redraw's group (not even the group of the issue or pull request it
+    is on), and no run may cancel one already running. Proves 315.5."""
     record_property("proves", "315.5")
     events = {"all tests on PR #5": ("workflow_run", workflow_run("full suite")),
               "criteria checks on PR #5": ("workflow_run", workflow_run("done-whens")),
@@ -833,7 +848,11 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
                                                                  head="7" * 40)),
               "owner's edit of issue #41": ("issues", issue_edit(41, "User")),
               "owner's edit of issue #40": ("issues", issue_edit(40, "User")),
+              "owner's comment on issue #42": ("issue_comment", issue_comment(42, "User")),
+              "15-minute sweep": ("schedule", {"schedule": "*/15 * * * *"}),
               "bot's edit of issue #40": ("issues", issue_edit(40, "Bot")),
+              "bot's comment on issue #40": ("issue_comment", issue_comment(40, "Bot")),
+              "comment on PR #5": ("issue_comment", issue_comment(5, "User", on_pr=True)),
               "command in an issue comment": ("workflow_run", workflow_run("commands", pr=None, event="issue_comment",
                                                                          head=MAIN, title="/plan"))}
     g = groups(events)
@@ -844,16 +863,17 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
         f"315.5: two redraws of PR #5 wait in different groups ({g['all tests on PR #5'][0]!r}, " \
         f"{g['criteria checks on PR #5'][0]!r}), so they can draw at once and an older one can land last"
     redraws = ["all tests on PR #5", "merge of PR #6", "approval of PR #7", "owner's edit of issue #41",
-               "owner's edit of issue #40"]
+               "owner's edit of issue #40", "owner's comment on issue #42"]
     seen = {}
     for name in redraws:
         assert g[name][0] not in seen, \
             f"315.5: {name} and {seen.get(g[name][0])} share the group {g[name][0]!r}, so one drops the other's redraw"
         seen[g[name][0]] = name
-    for name in ("bot's edit of issue #40", "command in an issue comment"):
+    for name in ("bot's edit of issue #40", "bot's comment on issue #40", "comment on PR #5",
+                 "command in an issue comment", "15-minute sweep"):
         assert g[name][0] != g["owner's edit of issue #40"][0], \
             f"315.5: the {name} waits in the group {g[name][0]!r} of a redraw of issue #40, so it cancels that redraw"
         groups_of_redraws = {g[r][0]: r for r in redraws + ["criteria checks on PR #5"]}
         assert g[name][0] not in groups_of_redraws, \
-            f"315.5: {name} draws nothing but waits in the group {g[name][0]!r} of the redraw of " \
+            f"315.5: the {name} is no redraw of that one but waits in the group {g[name][0]!r} of the redraw of " \
             f"{groups_of_redraws.get(g[name][0])}, so it cancels that redraw"
