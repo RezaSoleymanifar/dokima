@@ -213,16 +213,16 @@ def issue_of(repo, pr, head=None, body=None):
 def where(repo, owners, n, on):
     """(column, pill) of open issue n, from its history now.
 
-    Backlog with no record, else where the river put it after its newest record (a filed split is in Work). Needs
-    you while it waits on the owner, else Autopilot when `on`, else none."""
+    Backlog with no record, else the newest stage started since its newest record, else where the river put it then but
+    never in a worker or code review not yet started. Needs you while it waits on the owner, else Autopilot or none."""
     d, items = agent.conversation(repo, n)
     at = [i for i, c in enumerate(items) if agent.is_record(c)]
     body, pill = d.get("body") or "", "Autopilot" if on else None
     if not at:
         return "Backlog", pill
-    rec = agent.records([items[at[-1]]])[0]
-    column = "Work" if rec.get("role") == "split" else \
-        agent.board_place(rec, agent.next_step(items[:at[-1]], rec, owners, autopilot=lambda: on, body=body, number=str(n)))[0]
+    step = agent.next_step(items[:at[-1]], rec := agent.records([items[at[-1]]])[0], owners, autopilot=lambda: on, body=body, number=str(n))
+    held = ("stop",) if step[:2] == ("start", "worker") and rec.get("stage") == "plan" or step[1:3] == ("reviewer", "pr") else step
+    column = "Work" if rec.get("role") == "split" else ([s for s in (agent.started(c, owners) for c in items[at[-1] + 1:]) if s] or [agent.board_place(rec, held)[0]])[-1]
     return column, "Needs you" if agent.waits_on_owner(items, owners, lambda: on, body, str(n)) else pill
 
 
