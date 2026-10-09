@@ -16,7 +16,6 @@ CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
 AUTOPILOT = "autopilot"
-VIEW_FILTER = f"label:{AUTOPILOT} is:open"  # merged and closed items keep their label, so the view shows only open ones
 
 
 def linked(body):
@@ -191,24 +190,21 @@ def switch(board, number):
         return
     try:
         if "Autopilot" not in board.views():
-<<<<<<< HEAD
             view = manifest.VIEWS["Autopilot"]
             board.add_view("Autopilot", view["layout"], view["filter"])
-=======
-            board.add_view("Autopilot", "table", VIEW_FILTER)
->>>>>>> origin/main
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Could not add the Autopilot view to the board: {(e.stderr or str(e)).strip()}") from e
 
 
 def fix_view(board):
-    """Move an Autopilot view still on the old filter, label:autopilot, to VIEW_FILTER; any other filter is the owner's."""
+    """Move an Autopilot view still on label:autopilot to the manifest's filter; others are the owner's."""
+    new = manifest.VIEWS["Autopilot"]["filter"]
     try:
         for v in board.view_nodes():
             if v["name"] == "Autopilot" and v.get("filter") == f"label:{AUTOPILOT}":
-                board.set_view_filter(v["id"], VIEW_FILTER)
+                board.set_view_filter(v["id"], new)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Could not fix the Autopilot view's filter to {VIEW_FILTER}: {(e.stderr or str(e)).strip()}") from e
+        raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {(e.stderr or str(e)).strip()}") from e
 
 
 def sync(event, payload, spec, repo, q=gql, rest=api):

@@ -43,6 +43,7 @@ FIELDS = {
     },
 }
 
+# Merged and closed items keep their label, so the Autopilot view shows only open ones.
 VIEWS = {
     "Autopilot": {"layout": "table", "filter": "label:autopilot is:open"},
 }
@@ -303,7 +304,8 @@ def check_python(report, path, source):
                     and isinstance(left.slice, ast.Constant) and left.slice.value == "name"
                     and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq))):
                 name = text(node.comparators[0], scope)
-                if name is not None and name not in CHECKS:
+                # A name compared with a declared view's is the view being looked up, not a check.
+                if name is not None and name not in CHECKS and name not in VIEWS:
                     report.add(path, f"check {name!r} is not in the manifest's required checks")
         elif isinstance(node, ast.Call):
             python_call(report, path, node, scope)
