@@ -20,6 +20,7 @@ The new reads raise subprocess.CalledProcessError when GitHub refuses, as Board'
 run the real Board against a faked GitHub, so those reads truly reach GitHub's issue dependencies API
 (repos/{owner}/{repo}/issues/{n}/dependencies/blocking and .../blocked_by, the same API dokima/agent.py reads).
 """
+import json
 import os
 import re
 import subprocess
@@ -28,7 +29,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from dokima import board  # noqa: E402
+from dokima import agent, board  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "board.yml")
@@ -115,6 +116,14 @@ def fake_board(world):
         def blocked_by(self, n):
             return world.deps(int(n), "blocked_by")
 
+        def state(self, kind, n):
+            return world.issues[int(n)]["state"] if int(n) in world.issues else "open"
+
+        def cards(self):
+            return [{"kind": k, "number": n, "status": c.get("Status"), "action": c.get("Action"),
+                     "closed": world.issues.get(n, {}).get("state") == "closed", "autopilot": False}
+                    for (k, n), c in sorted(world.cards.items())]
+
         def open_issues(self):
             world.reads.append(("open_issues", None))
             return sorted(n for n, i in world.issues.items() if i["state"] == "open")
@@ -129,6 +138,9 @@ def make(monkeypatch):
     def wire(**kw):
         world = World(**kw)
         monkeypatch.setattr(board, "Board", fake_board(world))
+        # Each issue has no record yet, so the board's recompute of its column reads no network.
+        monkeypatch.setattr(agent, "gh", lambda *a: json.dumps({"number": int(a[2]), "title": "", "body": "", "comments": []})
+                            if a[:2] == ("issue", "view") else "[]")
         return world
 
     return wire

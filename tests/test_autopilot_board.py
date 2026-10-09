@@ -22,6 +22,11 @@ What the fake Board offers, and the code is expected to use:
     .label(kind, n, on)                put the `autopilot` label on (True) or off (False) that issue or pull request
     .views() -> [name, ...]            the board's views
     .add_view(name, layout, filter)    add a view to the board
+    .state(kind, n) -> "open"|"closed" whether the issue or pull request is closed (#331)
+    .cards() -> [{...}, ...]           every card with its kind, number, status, action, closed and autopilot (#331)
+
+Since #331 every event recomputes the cards from the issue's history, so the fake `gh` also answers `pr view` and a
+`pr list` asked for JSON; no issue here has a record yet, so an open one belongs in Backlog.
 
 The fake `gh` answers `pr list` (the issue's open pull request), `issue view` and `api repos/o/r/issues/N` (with
 labels), `issue create`, sub-issue and blocked-by links, and labels added through `issue create --label`,
@@ -110,6 +115,14 @@ def fake_board(world):
         def views(self):
             return [v["name"] for v in world.view_list]
 
+        def state(self, kind, n):
+            return "closed" if (kind, int(n)) in getattr(world, "closed", set()) else "open"
+
+        def cards(self):
+            return [{"kind": k, "number": n, "status": c.get("Status"), "action": c.get("Action"),
+                     "closed": (k, n) in getattr(world, "closed", set()), "autopilot": world.has(k, n)}
+                    for (k, n), c in sorted(world.cards.items())]
+
         def add_view(self, name, layout, filter):
             world.view_list.append({"name": name, "layout": layout, "filter": filter})
 
@@ -125,7 +138,15 @@ def fake_gh(world):
         if a[:2] == ["pr", "list"]:
             head = a[a.index("--head") + 1]
             n = world.prs.get(int(head.rsplit("-", 1)[1]))
+            if "-q" not in a:
+                # Asked for the list itself, as reading an issue's history does: no pull request has a record here.
+                return "[]"
             return f"{n}\n" if n else "\n"
+        if a[:2] == ["pr", "view"]:
+            n = int(a[2])
+            issue = next((i for i, p in world.prs.items() if p == n), None)
+            return json.dumps({"number": n, "headRefName": f"try/issue-{issue}" if issue else f"feature-{n}",
+                               "body": f"Closes #{issue}" if issue else "", "comments": [], "reviews": []})
         if a[:2] == ["issue", "view"]:
             n = int(a[2])
             return json.dumps({"number": n, "title": "Parent", "body": "", "comments": [],
@@ -165,6 +186,21 @@ def fake_gh(world):
     return gh
 
 
+@pytest.fixture(autouse=True)
+def no_history(monkeypatch):
+    """Every issue here has no record yet, so the board reads no network.
+
+    make() replaces it with its own world."""
+    monkeypatch.setattr(agent, "gh", no_records)
+
+
+def no_records(*a):
+    """agent.gh for an issue with no record yet: no comments, no reviews."""
+    if a[:2] in (("issue", "view"), ("pr", "view")):
+        return json.dumps({"number": int(a[2]), "title": "", "body": "", "headRefName": "", "comments": [], "reviews": []})
+    return "[]"
+
+
 @pytest.fixture
 def make(monkeypatch):
     """Wire a world into dokima.board.Board and dokima.agent.gh, and return it."""
@@ -200,15 +236,15 @@ def test_switching_autopilot_on_puts_the_pill_on_the_issue_and_its_pull_request(
 
     The `autopilot` label is added to #57 (open PR #60) and to #101 (no PR), as `/autopilot start` does for every issue
     in a tree; each label event reaches the board sync. Both issue cards and PR #60 show Autopilot and no card's stage
-    moves. A `bug` label on #58, which is not on autopilot, puts no Autopilot pill anywhere."""
+    moves from Backlog, where an issue with no record yet belongs. A `bug` label on #58, which is not on autopilot, puts no Autopilot pill anywhere."""
     record_property("proves", "210.1")
     w = make(labels={("issue", 57): {LABEL}, ("issue", 101): {LABEL}}, prs={57: 60},
-             cards={("issue", 57): {"Status": "Plan"}, ("pr", 60): {"Status": "Review"}, ("issue", 101): {"Status": "Backlog"}})
+             cards={("issue", 57): {"Status": "Backlog"}, ("pr", 60): {"Status": "Backlog"}, ("issue", 101): {"Status": "Backlog"}})
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
     board.sync("issues", label_event("labeled", LABEL, [LABEL], 101), SPEC, REPO)
     for kind, n in (("issue", 57), ("pr", 60), ("issue", 101)):
         assert w.action(kind, n) == "Autopilot", f"210.1: {kind} #{n} on autopilot shows {w.action(kind, n)!r}, not the Autopilot pill"
-    assert (w.status("issue", 57), w.status("pr", 60), w.status("issue", 101)) == ("Plan", "Review", "Backlog"), \
+    assert (w.status("issue", 57), w.status("pr", 60), w.status("issue", 101)) == ("Backlog", "Backlog", "Backlog"), \
         "210.1: switching autopilot on moved a card to another column"
     w.labels[("issue", 58)] = {"bug"}
     w.cards[("issue", 58)] = {"Status": "Plan"}
@@ -220,56 +256,33 @@ def test_switching_autopilot_off_takes_the_pill_away(record_property, make):
     """Switching an issue off autopilot takes the Autopilot pill off its card and its open pull request's card.
 
     #57 and its PR #60 show Autopilot; the `autopilot` label is removed from #57, as `/autopilot stop` does. Both
-    cards end with no pill and stay in their columns."""
+    cards end with no pill and stay in Backlog, where an issue with no record yet belongs."""
     record_property("proves", "210.1")
     w = make(labels={("issue", 57): set(), ("pr", 60): {LABEL}}, prs={57: 60},
-             cards={("issue", 57): {"Status": "Work", "Action": "Autopilot"}, ("pr", 60): {"Status": "Review", "Action": "Autopilot"}})
+             cards={("issue", 57): {"Status": "Backlog", "Action": "Autopilot"}, ("pr", 60): {"Status": "Backlog", "Action": "Autopilot"}})
     board.sync("issues", label_event("unlabeled", LABEL, [], 57), SPEC, REPO)
     assert w.action("issue", 57) is None, f"210.1: issue #57 off autopilot still shows {w.action('issue', 57)!r}"
     assert w.action("pr", 60) is None, f"210.1: PR #60, whose issue is off autopilot, still shows {w.action('pr', 60)!r}"
-    assert (w.status("issue", 57), w.status("pr", 60)) == ("Work", "Review"), "210.1: switching autopilot off moved a card"
+    assert (w.status("issue", 57), w.status("pr", 60)) == ("Backlog", "Backlog"), "210.1: switching autopilot off moved a card"
 
 
-def test_stage_moments_keep_the_pill_on_issues_on_autopilot_only(record_property, make):
-    """When the board moves a card to the next stage, a card on autopilot keeps its Autopilot pill; others get none.
+def test_the_river_keeps_the_pill_when_it_moves_a_card_on_autopilot(record_property, make, monkeypatch, tmp_path):
+    """When a run ends, an issue on autopilot and its PR keep Autopilot.
 
-    Runs the board sync's stage moments (the work label, a pull request opened, changes requested) for #57, on autopilot
-    with PR #60, and for #58, not on autopilot, with PR #61. Every #57 and #60 card ends in the new column with
-    Autopilot; every #58 and #61 card ends in the new column with no pill."""
+    Runs the end of a run's board step (`agent board N OUT`, as agent.yml does after every run) for #57, on autopilot
+    with open PR #60, and for #58, not on autopilot, with open PR #61. #57 and #60 show Autopilot; #58 and #61 show
+    no pill."""
     record_property("proves", "210.1")
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}, ("issue", 58): set()}, prs={57: 60, 58: 61})
-    board.sync("issues", label_event("labeled", "work", [LABEL, "work"], 57), SPEC, REPO)
-    board.sync("issues", label_event("labeled", "work", ["work"], 58), SPEC, REPO)
-    assert (w.status("issue", 57), w.action("issue", 57)) == ("Work", "Autopilot"), \
-        f"210.1: #57 on autopilot moved to Work shows {w.action('issue', 57)!r}, not Autopilot"
-    assert (w.status("issue", 58), w.action("issue", 58)) == ("Work", None), "210.1: #58, not on autopilot, got a pill"
-    board.sync("pull_request_target", pr_event("opened", 60, 57), SPEC, REPO)
-    board.sync("pull_request_target", pr_event("opened", 61, 58), SPEC, REPO)
-    for kind, n in (("pr", 60), ("issue", 57)):
-        assert (w.status(kind, n), w.action(kind, n)) == ("Review", "Autopilot"), \
-            f"210.1: {kind} #{n} on autopilot in Review shows {w.action(kind, n)!r}, not Autopilot"
-    for kind, n in (("pr", 61), ("issue", 58)):
-        assert (w.status(kind, n), w.action(kind, n)) == ("Review", None), f"210.1: {kind} #{n}, not on autopilot, got a pill"
-    review = {"action": "submitted", "review": {"state": "changes_requested"}, "pull_request": {"number": 60, "body": "Closes #57"}}
-    board.sync("pull_request_review", review, SPEC, REPO)
-    assert (w.status("pr", 60), w.action("pr", 60)) == ("Work", "Autopilot"), "210.1: PR #60 sent back to Work lost its Autopilot pill"
-
-
-def test_the_river_keeps_the_pill_when_it_moves_a_card_on_autopilot(record_property, make):
-    """When the river starts the next stage, the issue and its pull request keep the Autopilot pill while on autopilot.
-
-    Calls the river's card move (agent.move_card, as `agent board` does after every run) for #57, on autopilot with
-    open PR #60, and for #58, not on autopilot, with open PR #61. #57 and #60 land in Review with Autopilot; #58 and
-    #61 land in Review with no pill."""
-    record_property("proves", "210.1")
-    w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}, ("issue", 58): set()}, prs={57: 60, 58: 61})
-    agent.move_card("o/r", "57", "Review", False, "o/1")
-    agent.move_card("o/r", "58", "Review", False, "o/1")
+    monkeypatch.setenv("DOKIMA_BOARD", "o/1")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    for n in ("57", "58"):
+        agent.main(["agent", "board", n, str(tmp_path)])
     for kind, n in (("issue", 57), ("pr", 60)):
-        assert (w.status(kind, n), w.action(kind, n)) == ("Review", "Autopilot"), \
-            f"210.1: the river moved {kind} #{n}, on autopilot, and it shows {w.action(kind, n)!r}, not Autopilot"
+        assert w.action(kind, n) == "Autopilot", \
+            f"210.1: a run ended on {kind} #{n}, on autopilot, and it shows {w.action(kind, n)!r}, not Autopilot"
     for kind, n in (("issue", 58), ("pr", 61)):
-        assert (w.status(kind, n), w.action(kind, n)) == ("Review", None), f"210.1: the river gave {kind} #{n}, not on autopilot, a pill"
+        assert w.action(kind, n) is None, f"210.1: a run ended on {kind} #{n}, not on autopilot, and it got a pill"
 
 
 # 210.2: children filed by a split under a parent on autopilot are on autopilot too
@@ -310,47 +323,8 @@ def test_a_split_under_a_parent_on_autopilot_files_children_on_autopilot(record_
     assert w.action("issue", 139) is None, "210.2: parent #139, not on autopilot, got the Autopilot pill"
 
 
-# 210.3: Needs you takes the Autopilot pill's place when the river stops for the owner, never both
-
-def test_needs_you_replaces_autopilot_when_the_river_stops_and_autopilot_returns_after(record_property, make):
-    """When the river stops for the owner on an issue on autopilot, its card shows Needs you instead; Autopilot returns after.
-
-    For #57 on autopilot with PR #60: the river stops (move_card with Needs you) and both cards show Needs you; it goes
-    on (move_card without) and both show Autopilot again. The board sync does the same: a planner question shows Needs
-    you on #57, and the work label after it shows Autopilot."""
-    record_property("proves", "210.3")
-    w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60})
-    agent.move_card("o/r", "57", "Plan", True, "o/1")
-    for kind, n in (("issue", 57), ("pr", 60)):
-        assert w.action(kind, n) == "Needs you", f"210.3: the river stopped for the owner and {kind} #{n} shows {w.action(kind, n)!r}"
-    agent.move_card("o/r", "57", "Work", False, "o/1")
-    for kind, n in (("issue", 57), ("pr", 60)):
-        assert w.action(kind, n) == "Autopilot", f"210.3: the river went on and {kind} #{n} shows {w.action(kind, n)!r}, not Autopilot"
-    board.sync("issue_comment", comment_event(57, "**Planner question**\n\nWhich?", [LABEL]), SPEC, REPO)
-    assert w.action("issue", 57) == "Needs you", f"210.3: a question for the owner on #57 shows {w.action('issue', 57)!r}"
-    board.sync("issues", label_event("labeled", "work", [LABEL, "work"], 57), SPEC, REPO)
-    assert w.action("issue", 57) == "Autopilot", f"210.3: #57 went on after the question and shows {w.action('issue', 57)!r}"
-
-
-def test_switching_autopilot_never_hides_needs_you(record_property, make):
-    """Switching autopilot on or off while the card waits on the owner leaves Needs you, so no card shows both or loses it.
-
-    #57 and PR #60 show Needs you. Adding the `autopilot` label keeps Needs you on both; removing it keeps Needs you
-    on both. A card off autopilot that shows Autopilot by mistake loses it, so the switch does act."""
-    record_property("proves", "210.3")
-    w = make(labels={("issue", 57): {LABEL}}, prs={57: 60},
-             cards={("issue", 57): {"Status": "Plan", "Action": "Needs you"}, ("pr", 60): {"Status": "Review", "Action": "Needs you"}})
-    board.sync("issues", label_event("labeled", LABEL, [LABEL], 57), SPEC, REPO)
-    for kind, n in (("issue", 57), ("pr", 60)):
-        assert w.action(kind, n) == "Needs you", f"210.3: switching autopilot on replaced Needs you on {kind} #{n} with {w.action(kind, n)!r}"
-    w.labels[("issue", 57)] = set()
-    board.sync("issues", label_event("unlabeled", LABEL, [], 57), SPEC, REPO)
-    for kind, n in (("issue", 57), ("pr", 60)):
-        assert w.action(kind, n) == "Needs you", f"210.3: switching autopilot off cleared Needs you on {kind} #{n}"
-    w.cards[("issue", 58)] = {"Status": "Plan", "Action": "Autopilot"}
-    board.sync("issues", label_event("unlabeled", LABEL, [], 58), SPEC, REPO)
-    assert w.action("issue", 58) is None, "210.3: switching autopilot off left the Autopilot pill on #58"
-
+# 210.3: Needs you takes the Autopilot pill's place when the river stops for the owner, never both. Since #331 the
+# pill follows the issue's history, proven in tests/test_board_state.py; the real Board's reads of it stay below.
 
 # 210.4: one Autopilot table view lists every issue and pull request on autopilot
 
@@ -450,6 +424,7 @@ class FakeGitHub:
         self.closed_prs = dict(closed_prs or {})  # issue number -> a closed PR on the same branch
         self.kinds = {**{n: "pr" for n in list(self.prs.values()) + list(self.closed_prs.values())}}
         self.cards = {}  # item id -> {field: option}
+        self.closed = set()  # issue and PR numbers GitHub says are closed (a merged PR is closed)
         self.items = {}  # (kind, n) -> item id
         for (kind, n), fields in (cards or {}).items():
             self.items[(kind, n)] = f"ITEM_{kind}_{n}"
@@ -599,7 +574,8 @@ class FakeGitHub:
                 self.put(n, False)
             elif m.group(2) and method in ("POST", "PUT") and LABEL in " ".join(str(x) for x in fields.values()):
                 self.put(n, True)
-            return {"number": n, "labels": [{"name": l} for l in sorted(self.labels.get(n, set()))]}
+            return {"number": n, "state": "closed" if n in self.closed else "open",
+                    "labels": [{"name": l} for l in sorted(self.labels.get(n, set()))]}
         return {}
 
 
@@ -700,7 +676,7 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
 
     Runs board.sync with the real Board against a faked GitHub. #57 (on Plan) and its PR #60 get Autopilot, PR #60
     carries the autopilot label, and the board gains one Autopilot table view filtered to label:autopilot is:open. A second
-    issue switched on adds no second view. #58, already showing Needs you when switched on, keeps Needs you."""
+    issue switched on adds no second view."""
     record_property("proves", "210.1")
     ready("210.1", sync=True)
     gh = FakeGitHub(labels={57: {LABEL}, 58: {LABEL}, 101: {LABEL}}, prs={57: 60},
@@ -710,7 +686,6 @@ def test_switching_autopilot_on_reaches_github_end_to_end(record_property):
         board.sync("issues", label_event("labeled", LABEL, [LABEL], n), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert (gh.action("issue", 57), gh.action("pr", 60), gh.action("issue", 101)) == ("Autopilot",) * 3, \
         f"210.1: on GitHub the cards show {gh.action('issue', 57)!r}, {gh.action('pr', 60)!r}, {gh.action('issue', 101)!r}"
-    assert gh.action("issue", 58) == "Needs you", f"210.3: switching #58 on replaced Needs you with {gh.action('issue', 58)!r}"
     assert LABEL in gh.labels.get(60, set()), "210.4: on GitHub PR #60 does not carry the autopilot label"
     assert [x["name"] for x in gh.views].count("Autopilot") == 1, f"210.4: the board has views {[x['name'] for x in gh.views]}"
     view = next(x for x in gh.views if x["name"] == "Autopilot")
@@ -777,6 +752,8 @@ def start_tree(gh, monkeypatch, top, tree):
 
     monkeypatch.setattr(agent, "gh", fake)
     agent.switch_autopilot("o/r", top, "start")
+    # The board runs that follow read each issue's history: none has a record yet.
+    monkeypatch.setattr(agent, "gh", no_records)
     return added
 
 
@@ -873,6 +850,7 @@ def test_merging_a_pull_request_fixes_the_old_autopilot_view(record_property):
     record_property("proves", "278.2")
     gh = FakeGitHub(prs={57: 60}, cards={("issue", 57): {"Status": "Review"}, ("pr", 60): {"Status": "Review"}},
                     views=("Needs you", "Autopilot"), filters={"Autopilot": OLD})
+    gh.closed |= {57, 60}
     board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert updates(gh) == [("PVTV_1", OPEN)], \
         f"278.2: the merge run sent {updates(gh)}, not one change of the Autopilot view (PVTV_1, {OLD}) to {OPEN}"
@@ -925,6 +903,7 @@ def test_a_refused_fix_still_moves_the_cards_and_says_why(record_property):
     record_property("proves", "278.4")
     gh = FakeGitHub(prs={57: 60}, cards={("issue", 57): {"Status": "Review"}, ("pr", 60): {"Status": "Review"}},
                     views=("Needs you", "Autopilot"), filters={"Autopilot": OLD}, refuse_updates=True)
+    gh.closed |= {57, 60}
     with pytest.raises(Exception) as failed:
         board.sync("pull_request_target", merged(60, 57), SPEC, REPO, q=gh.q, rest=gh.rest)
     assert "Autopilot view" in str(failed.value), f"278.4: the failure does not name the Autopilot view: {failed.value!r}"

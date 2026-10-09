@@ -22,8 +22,10 @@ Whether an item is closed may also be read through `gh` (`gh api repos/o/r/issue
 `gh pr view N --json state`); the fake answers all of them alike, and fails alike for an item GitHub cannot read. A
 pull request's issue is read from its branch (try/issue-N) or its "Closes #N". An item waits on the owner when the
 river's last word on its issue stopped for the owner and no code owner has answered with a command since.
-Code owners are the people CODEOWNERS names (dokima.plan.repo_approvers). The last two tests run the real Board's new
-reads against a faked GitHub.
+Code owners are the people CODEOWNERS names (dokima.plan.repo_approvers). Since #331 the pills follow the issue's
+history, so each world holds the records and words behind them: a comment lands in the history before its event
+reaches the board, a run's end is `agent board N OUT`, and a closed item shows no pill at all. The last two tests run
+the real Board's new reads against a faked GitHub.
 """
 import json
 import os
@@ -83,7 +85,7 @@ class World(tab.World):
 
     def __init__(self, closed=(), unreadable=(), subs=None, records=None, reviews=None, **kw):
         super().__init__(**kw)
-        self.reviews = {k: list(v) for k, v in (reviews or {}).items()}  # pr -> [(state, summary)], by the code owner
+        self.reviews = {k: list(v) for k, v in (reviews or {}).items()}  # pr -> [(state, summary[, login])], the code owner's by default
         self.closed = set(closed)  # (kind, n)
         self.unreadable = set(unreadable)  # numbers whose state GitHub will not give
         self.subs = {k: list(v) for k, v in (subs or {}).items()}
@@ -137,7 +139,10 @@ def fake_gh(world):
         if a[:2] == ["issue", "view"]:
             n = int(a[2])
             world.refuse(n, a)
-            items = card.as_items(world.records.get(n, []), OWNER)
+            steps = world.records.get(n, [])
+            # A (login, words) pair is a comment by that person; a plain string is the code owner's words.
+            items = [{"author": {"login": st[0]}, "body": st[1]} if isinstance(st, tuple) else card.as_items([st], OWNER)[0]
+                     for st in steps]
             comments = [{**c, "createdAt": f"2026-10-09T00:00:{i:02d}Z"} for i, c in enumerate(items)]
             return json.dumps({"number": n, "title": f"Issue {n}", "body": "", "comments": comments,
                                "state": "CLOSED" if ("issue", n) in world.closed else "OPEN",
@@ -149,9 +154,9 @@ def fake_gh(world):
             return json.dumps({"number": n, "state": "CLOSED" if ("pr", n) in world.closed else "OPEN",
                                "headRefName": f"try/issue-{issue}" if issue else f"feature-{n}",
                                "body": f"Closes #{issue}" if issue else "", "comments": [],
-                               "reviews": [{"author": {"login": OWNER}, "body": b, "state": st,
+                               "reviews": [{"author": {"login": (r[2] if len(r) > 2 else OWNER)}, "body": r[1], "state": r[0],
                                             "submittedAt": f"2026-10-09T01:00:{i:02d}Z"}
-                                           for i, (st, b) in enumerate(world.reviews.get(n, []))],
+                                           for i, r in enumerate(world.reviews.get(n, []))],
                                "labels": [{"name": x} for x in sorted(world.labels.get(("pr", n), set()))]})
         if a[:1] == ["api"]:
             path = next((x for x in a[1:] if x.lstrip("/").startswith("repos/")), "").lstrip("/")
@@ -223,6 +228,18 @@ def review(n, body, state="commented", login=OWNER, kind="User", issue=None):
                              "head": {"ref": f"try/issue-{issue}" if issue else f"feature-{n}"}, "labels": []}}
 
 
+def run_ends(n, monkeypatch, tmp_path):
+    """Run the end of a run's board step on issue n: `agent board N OUT`."""
+    monkeypatch.setenv("DOKIMA_BOARD", SPEC)
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    return agent.main(["agent", "board", str(n), str(tmp_path)])
+
+
+def said(w, n, words, login=OWNER):
+    """Someone's comment lands in issue n's history before its event reaches the board."""
+    w.records.setdefault(n, []).append(words if login == OWNER else (login, words))
+
+
 def pills(w, *items):
     """Each item's pill, keyed "issue #N" or "pr #N"."""
     return {f"{k} #{n}": w.action(k, n) for k, n in items}
@@ -233,11 +250,12 @@ def pills(w, *items):
 def test_a_check_finishing_never_marks_a_pull_request_for_the_owner(record_property, make):
     """Finished checks never put Needs you on a pull request.
 
-    Proves 297.1. The done-whens checks finish on PR #60 (on autopilot, showing Autopilot), PR #61 (not on autopilot, no pill) and
-    PR #62 (the river stopped on it for the owner, showing Needs you). Afterwards #60 still shows Autopilot, #61 still
-    shows nothing and #62 still shows Needs you. Today a finished check puts Needs you on all three."""
+    Proves 297.1. The done-whens checks finish on PR #60 (for #57 on autopilot, whose plan review sent it back to the
+    planner by itself), PR #61 (for #58, nothing waits) and PR #62 (for #59, whose approving code review waits for the
+    owner to merge, showing Needs you). Afterwards #60 shows Autopilot, #61 nothing and #62 still Needs you."""
     record_property("proves", "297.1")
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 58: 61, 59: 62},
+             records={57: plan_blocked(), 59: code_approved()},
              cards={("pr", 60): {"Status": "Review", "Action": AUTO}, ("pr", 61): {"Status": "Review"},
                     ("pr", 62): {"Status": "Review", "Action": NEEDS}})
     board.sync("workflow_run", checks_done(60, 61, 62), SPEC, REPO)
@@ -246,17 +264,18 @@ def test_a_check_finishing_never_marks_a_pull_request_for_the_owner(record_prope
         f"297.1: after the checks finished, the pull requests show {got}; a finished check must not mark one for the owner"
 
 
-def test_needs_you_set_by_the_river_stays_through_new_commits_and_checks(record_property, make):
+def test_needs_you_set_by_the_river_stays_through_new_commits_and_checks(record_property, make, monkeypatch, tmp_path):
     """A Needs you the river set stays through new commits and finished checks.
 
-    Proves 297.1. The good case first: the river stops for the owner on #59 (as `agent board` does after a run), so #59 and its open
-    PR #62 show Needs you. Then a new commit reaches PR #62 (as when main is merged into it) and its checks finish: both
-    cards must still show Needs you, because nothing answered it. Beside it, PR #60 on autopilot gets a new commit and
-    keeps Autopilot, so a card never ends with neither. Today the new commit wipes Needs you off #59 and #62."""
+    Proves 297.1. The good case first: #59's code review approved and the run ends (`agent board`), so #59 and its open
+    PR #62 show Needs you. Then a new commit reaches PR #62 (as when main is merged into it) and its checks finish:
+    both cards must still show Needs you, because nothing answered it. Beside it, PR #60 for #57 on autopilot, whose
+    river goes on, gets a new commit and keeps Autopilot, so a card never ends with neither."""
     record_property("proves", "297.1")
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 59: 62},
+             records={57: plan_blocked(), 59: code_approved()},
              cards={("pr", 60): {"Status": "Review", "Action": AUTO}, ("issue", 57): {"Status": "Review", "Action": AUTO}})
-    agent.move_card(REPO, "59", "Review", True, SPEC)
+    run_ends(59, monkeypatch, tmp_path)
     got = pills(w, ("issue", 59), ("pr", 62))
     assert got == {"issue #59": NEEDS, "pr #62": NEEDS}, f"297.1: the river stopped for the owner on #59 but the cards show {got}"
     board.sync("pull_request_target", pr_event("synchronize", 62, 59), SPEC, REPO)
@@ -275,30 +294,35 @@ def test_needs_you_set_by_the_river_stays_through_new_commits_and_checks(record_
 def test_a_code_owners_command_clears_needs_you_at_once_and_nothing_else_does(record_property, make):
     """A code owner's command clears Needs you at once; no other comment does.
 
-    Proves 297.2. #57 (on autopilot, with PR #60), #58 (with PR #61) and #59 (no PR) all show Needs you. First, comments that answer
-    nothing: someone who is not a code owner says /work on #57, the bot says /work on #57, and the code owner writes a
-    plain comment with no command on #57; all five cards still show Needs you. Then the code owner says /work on #57:
-    #57 and PR #60 show Autopilot. The code owner says /review on PR #61 (whose description closes #58): #61 and #58
-    show nothing. The code owner says /plan with an answer on #59: #59 shows nothing. Today none of these comments
-    changes a pill."""
+    Proves 297.2. #57 (on autopilot, with PR #60, its reviewer escalated), #58 (with PR #61, its code review approved)
+    and #59 (no PR, its plan approved) all wait on the owner and show Needs you. First, comments that answer nothing,
+    each landing in #57's history: someone who is not a code owner says /work, the bot says /work, and the code owner
+    writes a plain comment; all five cards still show Needs you. Then the code owner says /work on #57: #57 and PR #60
+    show Autopilot. The code owner says /review on PR #61 (whose description closes #58): #61 and #58 show nothing.
+    The code owner says /plan with an answer on #59: #59 shows nothing."""
     record_property("proves", "297.2")
     every = (("issue", 57), ("pr", 60), ("issue", 58), ("pr", 61), ("issue", 59))
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 58: 61},
+             records={57: escalated(), 58: code_approved(), 59: plan_approved()},
              cards={k: {"Status": "Review", "Action": NEEDS} for k in every})
     stranger = "someone-else" if OWNER != "someone-else" else "another-person"
     for body, login, kind in (("/work", stranger, "User"), ("/work", "dokima-runtime[bot]", "Bot"),
                               ("Thanks, that reads right.", OWNER, "User")):
+        said(w, 57, body, login)
         board.sync("issue_comment", comment(57, body, login, kind, labels=[LABEL]), SPEC, REPO)
         got = pills(w, *every)
         assert set(got.values()) == {NEEDS}, \
             f"297.2: {login}'s comment {body!r} on #57 answered nothing, yet the pills changed to {got}"
+    said(w, 57, "/work")
     board.sync("issue_comment", comment(57, "/work", labels=[LABEL]), SPEC, REPO)
     got = pills(w, ("issue", 57), ("pr", 60))
     assert got == {"issue #57": AUTO, "pr #60": AUTO}, \
         f"297.2: the code owner said /work on #57, on autopilot, and the cards show {got}, not Autopilot"
+    said(w, 58, "/review")
     board.sync("issue_comment", comment(61, "/review", pr_body="Closes #58"), SPEC, REPO)
     got = pills(w, ("pr", 61), ("issue", 58))
     assert got == {"pr #61": None, "issue #58": None}, f"297.2: the code owner said /review on PR #61 and the cards show {got}"
+    said(w, 59, "/plan Yes, keep the old name.")
     board.sync("issue_comment", comment(59, "/plan Yes, keep the old name."), SPEC, REPO)
     assert w.action("issue", 59) is None, f"297.2: the code owner answered with /plan on #59 and it shows {w.action('issue', 59)!r}"
 
@@ -306,26 +330,31 @@ def test_a_code_owners_command_clears_needs_you_at_once_and_nothing_else_does(re
 def test_a_code_owners_command_in_a_review_summary_clears_needs_you_at_once(record_property, make):
     """A code owner's command in a review summary clears Needs you at once.
 
-    Proves 297.2. #58 with PR #61 and #57 (on autopilot) with PR #60 all show Needs you. First, reviews that answer nothing: someone who
-    is not a code owner reviews PR #61 with /work, the code owner approves it with /work in the summary (an Approve only
-    ever means merge), and the code owner requests changes with no command; all four cards still show Needs you. Then
-    the code owner reviews PR #61 as a comment starting /review: #61 and #58 show nothing. The code owner requests
-    changes on PR #60 starting /work: #60 and #57 show Autopilot. Today a review changes no pill."""
+    Proves 297.2. #58 with PR #61 and #57 (on autopilot, its reviewer escalated) with PR #60 wait on the owner and all
+    four cards show Needs you. First, reviews on PR #61 that answer nothing: someone who is not a code owner reviews
+    with /work, the code owner approves with /work in the summary (an Approve only ever means merge), and the code
+    owner requests changes with no command; all four cards still show Needs you. Then the code owner reviews PR #61 as
+    a comment starting /review: #61 and #58 show nothing. The code owner requests changes on PR #60 starting /work:
+    #60 and #57 show Autopilot."""
     record_property("proves", "297.2")
     every = (("issue", 58), ("pr", 61), ("issue", 57), ("pr", 60))
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 58: 61},
+             records={57: escalated(), 58: code_approved()},
              cards={k: {"Status": "Review", "Action": NEEDS} for k in every})
     stranger = "someone-else" if OWNER != "someone-else" else "another-person"
     for body, state, login in (("/work", "commented", stranger), ("/work", "approved", OWNER),
                                ("Please rename the helper.", "changes_requested", OWNER)):
+        w.reviews.setdefault(61, []).append((state.upper(), body, login))
         board.sync("pull_request_review", review(61, body, state, login, issue=58), SPEC, REPO)
         got = pills(w, *every)
         assert set(got.values()) == {NEEDS}, \
             f"297.2: {login}'s {state} review {body!r} on PR #61 answered nothing, yet the pills changed to {got}"
+    w.reviews[61].append(("COMMENTED", "/review Look again at the parser."))
     board.sync("pull_request_review", review(61, "/review Look again at the parser.", issue=58), SPEC, REPO)
     got = pills(w, ("pr", 61), ("issue", 58))
     assert got == {"pr #61": None, "issue #58": None}, \
         f"297.2: the code owner's review summary said /review on PR #61 and the cards show {got}"
+    w.reviews.setdefault(60, []).append(("CHANGES_REQUESTED", "/work Rename the helper."))
     board.sync("pull_request_review", review(60, "/work Rename the helper.", "changes_requested", issue=57), SPEC, REPO)
     got = pills(w, ("pr", 60), ("issue", 57))
     assert got == {"pr #60": AUTO, "issue #57": AUTO}, \
@@ -348,23 +377,23 @@ def test_the_board_runs_when_a_pull_request_review_is_submitted(record_property)
 
 # 297.3: Needs you clears when the item closes and never lands on a closed item
 
-def test_needs_you_never_lands_on_a_closed_issue_or_pull_request(record_property, make):
+def test_needs_you_never_lands_on_a_closed_issue_or_pull_request(record_property, make, monkeypatch, tmp_path):
     """Closing clears Needs you, and nothing puts it on a closed item.
 
-    Proves 297.3. Closing: #57 (on autopilot) closes and shows Autopilot; merged PR #60 and its #56 lose Needs you. Then the river
-    stops on #57 after it closed (a run that ended after the owner merged) and #57 must keep Autopilot; it stops on
-    closed #58, not on autopilot, and #58 must show nothing; and a bot comment saying a plan is ready lands on closed
-    #58 and must not mark it. Beside them, the river stops on open #59 and #59 and its PR #62 show Needs you, and on
-    #63, whose state GitHub cannot give, which shows Needs you so nothing waiting is hidden. Checks that finish after
-    PR #60 merged must not mark it either. Today the river, the checks and the bot comment put Needs you on closed
-    items."""
+    Proves 297.3. Closing: #57 (on autopilot, its reviewer escalated) closes; merged PR #60 and its #56 (code review
+    approved) lose Needs you. A closed item shows no pill at all, Autopilot included (#330). Then a run ends on #57
+    after it closed (a run that ended after the owner merged) and #57 must still show nothing; it ends on closed #58,
+    and #58 must show nothing; and a bot comment saying a plan is ready lands on closed #58 and must not mark it.
+    Beside them, a run ends on open #59 (code review approved) and #59 and its PR #62 show Needs you. Checks that
+    finish after PR #60 merged must not mark it either."""
     record_property("proves", "297.3")
-    w = make(labels={("issue", 57): {LABEL}}, prs={56: 60, 59: 62}, unreadable={63},
+    w = make(labels={("issue", 57): {LABEL}}, prs={56: 60, 59: 62},
+             records={57: escalated(), 56: code_approved(), 58: code_approved(), 59: code_approved()},
              cards={("issue", 57): {"Status": "Review", "Action": NEEDS}, ("issue", 56): {"Status": "Review", "Action": NEEDS},
                     ("pr", 60): {"Status": "Review", "Action": NEEDS}, ("issue", 58): {"Status": "Done"}})
     w.closed |= {("issue", 57)}
     board.sync("issues", {"action": "closed", "issue": {"number": 57, "labels": [{"name": LABEL}], "state": "closed"}}, SPEC, REPO)
-    assert w.action("issue", 57) == AUTO, f"297.3: #57, on autopilot, closed and shows {w.action('issue', 57)!r}, not Autopilot"
+    assert w.action("issue", 57) is None, f"297.3: #57, on autopilot, closed and shows {w.action('issue', 57)!r}, not nothing"
     w.closed |= {("pr", 60), ("issue", 56)}
     board.sync("pull_request_target", pr_event("closed", 60, 56, merged=True), SPEC, REPO)
     got = pills(w, ("pr", 60), ("issue", 56))
@@ -372,24 +401,21 @@ def test_needs_you_never_lands_on_a_closed_issue_or_pull_request(record_property
     board.sync("workflow_run", checks_done(60), SPEC, REPO)
     assert w.action("pr", 60) is None, f"297.3: checks finishing after PR #60 merged marked it {w.action('pr', 60)!r}"
     w.closed |= {("issue", 58)}
-    agent.move_card(REPO, "57", "Review", True, SPEC)
-    assert w.action("issue", 57) == AUTO, f"297.3: the river stopped on closed #57 and it shows {w.action('issue', 57)!r}, not Autopilot"
-    agent.move_card(REPO, "58", "Review", True, SPEC)
-    assert w.action("issue", 58) is None, f"297.3: the river stopped on closed #58 and it shows {w.action('issue', 58)!r}"
+    run_ends(57, monkeypatch, tmp_path)
+    assert w.action("issue", 57) is None, f"297.3: a run ended on closed #57 and it shows {w.action('issue', 57)!r}"
+    run_ends(58, monkeypatch, tmp_path)
+    assert w.action("issue", 58) is None, f"297.3: a run ended on closed #58 and it shows {w.action('issue', 58)!r}"
     board.sync("issue_comment", comment(58, "Plan written above, tests on `work/issue-58`.", "dokima-runtime[bot]", "Bot",
                                         state="closed"), SPEC, REPO)
     assert w.action("issue", 58) is None, f"297.3: a bot comment marked closed #58 with {w.action('issue', 58)!r}"
-    agent.move_card(REPO, "59", "Review", True, SPEC)
+    run_ends(59, monkeypatch, tmp_path)
     got = pills(w, ("issue", 59), ("pr", 62))
     assert got == {"issue #59": NEEDS, "pr #62": NEEDS}, f"297.3: the river stopped on open #59 and the cards show {got}"
-    agent.move_card(REPO, "63", "Plan", True, SPEC)
-    assert w.action("issue", 63) == NEEDS, \
-        f"297.3: GitHub could not say whether #63 is closed and it shows {w.action('issue', 63)!r}; it must show Needs you"
 
 
 # 297.4: a parent shows Needs you only when the parent itself waits on the owner
 
-def test_a_parent_shows_needs_you_only_for_its_own_stop(record_property, make):
+def test_a_parent_shows_needs_you_only_for_its_own_stop(record_property, make, monkeypatch, tmp_path):
     """A parent shows Needs you only when its own split waits for /work.
 
     Proves 297.4. #139 (on autopilot) has its split filed into #201 and #202. #201's river stops for the owner (its reviewer
@@ -405,12 +431,12 @@ def test_a_parent_shows_needs_you_only_for_its_own_stop(record_property, make):
                             141: split_planned(), 201: escalated("plan")})
     w = make(cards={("issue", 139): {"Status": "Work", "Action": AUTO}, ("issue", 201): {"Status": "Plan", "Action": AUTO},
                     ("issue", 141): {"Status": "Plan"}}, **parents)
-    agent.move_card(REPO, "201", "Plan", True, SPEC)
+    run_ends(201, monkeypatch, tmp_path)
     w.closed |= {("pr", 210), ("issue", 202)}
     board.sync("pull_request_target", pr_event("closed", 210, 202, merged=True), SPEC, REPO)
     got = pills(w, ("issue", 201), ("issue", 139))
     assert got == {"issue #201": NEEDS, "issue #139": AUTO}, f"297.4: a story stopped and another merged, and the cards show {got}"
-    agent.move_card(REPO, "141", "Plan", True, SPEC)
+    run_ends(141, monkeypatch, tmp_path)
     w.closed |= {("pr", 211), ("issue", 300)}
     board.sync("pull_request_target", pr_event("closed", 211, 300, merged=True), SPEC, REPO)
     assert w.action("issue", 141) == NEEDS, \
@@ -433,11 +459,11 @@ def test_a_merge_sweeps_every_pill_on_the_board_to_what_it_should_be(record_prop
     autopilot, with PR #73) and #68 show Needs you though their plan review sent them back to the planner by itself;
     #72 shows Needs you though the code owner already answered its approved plan with /work; #66 (on autopilot) shows
     no pill; #67, not on autopilot, shows Autopilot; #69 (on autopilot), whose reviewer escalated, lost its Needs you;
-    and #59, whose approved plan waits for /work, shows Needs you with its PR #62. Afterwards: #57, #64, #65, #73 and
-    #66 show Autopilot; #58, #61, #68, #72, #67, #70 and #71 show nothing; #69, #59 and #62 show Needs you. Today the
-    merge leaves every old pill as it was."""
+    and #59, whose approved plan waits for /work, shows Needs you with its PR #62. Afterwards: #65, #73 and #66 show
+    Autopilot; #57, #64, #58, #61, #68, #72, #67, #70 and #71 show nothing, since a closed item shows no pill whatever
+    its labels (#330); #69, #59 and #62 show Needs you."""
     record_property("proves", "297.5")
-    want = {"issue #57": AUTO, "pr #64": AUTO, "issue #58": None, "pr #61": None, "issue #65": AUTO, "pr #73": AUTO,
+    want = {"issue #57": None, "pr #64": None, "issue #58": None, "pr #61": None, "issue #65": AUTO, "pr #73": AUTO,
             "issue #68": None, "issue #72": None, "issue #66": AUTO, "issue #67": None, "issue #69": NEEDS,
             "issue #59": NEEDS, "pr #62": NEEDS, "pr #70": None, "issue #71": None}
     shown = {("issue", 57): NEEDS, ("pr", 64): NEEDS, ("issue", 58): NEEDS, ("pr", 61): NEEDS, ("issue", 65): NEEDS,
@@ -501,16 +527,17 @@ def test_an_approve_starting_with_a_command_never_clears_needs_you_in_the_sweep(
 
 # 297.6: an item on autopilot shows exactly one pill, Autopilot or Needs you
 
-def test_an_item_on_autopilot_always_shows_exactly_one_pill(record_property, make):
-    """An item on autopilot always shows Autopilot, or Needs you while it waits on you.
+def test_an_item_on_autopilot_always_shows_exactly_one_pill(record_property, make, monkeypatch, tmp_path):
+    """An open item on autopilot shows Autopilot, or Needs you while it waits.
 
-    Proves 297.6. #57 (on autopilot) and its PR #60 go through every moment the board changes: the river goes on, the work label,
-    a new commit, finished checks, the river stops for the owner, another new commit and finished checks, the code
-    owner's /review, and the merge. After each one both cards must show Autopilot, or Needs you exactly while the river
-    waits on the owner. Beside it #58, not on autopilot, with PR #61, never shows Autopilot. Today finished checks put
-    Needs you on PR #60 though nothing waits, and a new commit takes it away while the owner is waited on."""
+    Proves 297.6. #57 (on autopilot) and its PR #60 go through every moment the board changes: a run ends and the river
+    goes on (its plan review sent it back to the planner), a new commit, finished checks, a run ends and the river
+    stops for the owner (its code review approved), another new commit and finished checks, and the code owner's
+    /review. After each one both cards must show Autopilot, or Needs you exactly while the river waits on the owner.
+    Beside it #58, not on autopilot, with PR #61, never shows Autopilot. Once merged, both show no pill (#330)."""
     record_property("proves", "297.6")
-    w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 58: 61})
+    w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60, 58: 61},
+             records={57: plan_blocked(), 58: plan_blocked()})
     on, off = (("issue", 57), ("pr", 60)), (("issue", 58), ("pr", 61))
 
     def expect(moment, pill, other=None):
@@ -520,28 +547,28 @@ def test_an_item_on_autopilot_always_shows_exactly_one_pill(record_property, mak
         assert AUTO not in got.values() and (other is None or got == {"issue #58": other, "pr #61": other}), \
             f"297.6: after {moment}, #58 and PR #61, not on autopilot, show {got}"
 
-    for n in ("57", "58"):
-        agent.move_card(REPO, n, "Plan", False, SPEC)
+    for n in (57, 58):
+        run_ends(n, monkeypatch, tmp_path)
     expect("the river went on", AUTO, None)
-    board.sync("issues", {"action": "labeled", "label": {"name": "work"}, "issue": {"number": 57, "labels": [{"name": LABEL}]}}, SPEC, REPO)
-    expect("the work label", AUTO)
     for pr, n in ((60, 57), (61, 58)):
         board.sync("pull_request_target", pr_event("synchronize", pr, n), SPEC, REPO)
     board.sync("workflow_run", checks_done(60, 61), SPEC, REPO)
     expect("a new commit and finished checks", AUTO, None)
-    for n in ("57", "58"):
-        agent.move_card(REPO, n, "Review", True, SPEC)
+    for n in (57, 58):
+        w.records[n] = code_approved()
+        run_ends(n, monkeypatch, tmp_path)
     expect("the river stopped for the owner", NEEDS, NEEDS)
     for pr, n in ((60, 57), (61, 58)):
         board.sync("pull_request_target", pr_event("synchronize", pr, n), SPEC, REPO)
     board.sync("workflow_run", checks_done(60, 61), SPEC, REPO)
     expect("a new commit and finished checks while the owner is waited on", NEEDS, NEEDS)
-    board.sync("issue_comment", comment(60, "/review", pr_body="Closes #57", labels=[LABEL]), SPEC, REPO)
-    board.sync("issue_comment", comment(61, "/review", pr_body="Closes #58"), SPEC, REPO)
+    for pr, n in ((60, 57), (61, 58)):
+        said(w, n, "/review")
+        board.sync("issue_comment", comment(pr, "/review", pr_body=f"Closes #{n}", labels=[LABEL] if n == 57 else []), SPEC, REPO)
     expect("the code owner's /review", AUTO, None)
     w.closed |= {("pr", 60), ("issue", 57)}
     board.sync("pull_request_target", pr_event("closed", 60, 57, merged=True), SPEC, REPO)
-    assert pills(w, *on) == {"issue #57": AUTO, "pr #60": AUTO}, f"297.6: after the merge, #57 and PR #60 show {pills(w, *on)}"
+    assert pills(w, *on) == {"issue #57": None, "pr #60": None}, f"297.6: after the merge, #57 and PR #60 show {pills(w, *on)}"
 
 
 # 297.7: a sweep that cannot read an item leaves its pill and says so
