@@ -78,6 +78,7 @@ class World:
         self.prs = {}  # n -> {"issue", "state" (OPEN, MERGED, CLOSED), "body", "sha", "checks"}
         self.refused = set()  # numbers GitHub will not answer about
         self.writes, self.calls, self.unknown = [], [], []
+        self.opened = []  # (board spec, repo) each time a board was opened
 
     def issue(self, n, state="open", records=(), card=None, labels=()):
         self.issues[n] = {"state": state, "records": list(records), "labels": list(labels),
@@ -109,7 +110,8 @@ def fake_board(world):
     """A stand-in for dokima.board.Board that reads the World's cards and logs every write."""
 
     class FakeBoard:
-        def __init__(self, *a, **k):
+        def __init__(self, spec=None, repo=None, *a, **k):
+            world.opened.append((spec, repo))
             self.fields = {"Status": ("S", {o: "s-" + o for o in ("Backlog", "Plan", "Work", "Review", "Done")}),
                            "Action": ("W", {NEEDS: "w-1", AUTO: "w-2"}), "Priority": ("P", {})}
 
@@ -556,17 +558,60 @@ def test_the_board_lists_every_card_with_its_column(monkeypatch, record_property
     assert got == want, f"333.1: the board listed its cards' (column, pill) as {got}, not {want}"
 
 
-# 333.3: the scan only reads
+def test_the_scan_names_an_open_card_with_no_column(world, capsys, record_property):
+    """An open card in no column at all is named as in the wrong column.
+
+    Proves 333.1.
+    Open #72 with no record is on the board with no Status; open #76 with no record sits in Backlog, both bodies the
+    card Dokima draws now. The scan must name #72, not name #76, and exit 1."""
+    record_property("proves", "333.1")
+    need_scan("333.1")
+    w = world
+    for n, column in ((72, None), (76, "Backlog")):
+        w.issue(n)
+        w.place("issue", n, column)
+    make_true(w, ("issue", 72), ("issue", 76))
+    code, lines = run(w, capsys)
+    assert named(lines, "issue", 72) and code == 1, f"333.1: open #72 in no column was not named (exit {code}): {lines}"
+    assert not named(lines, "issue", 76), f"333.1: the scan named #76, which matches its state: {lines}"
+
+
+# 333.3 (manual, with this automated part): the scan reads the board and repo the owner names
+
+def test_the_scan_checks_the_board_and_repo_the_owner_names(world, capsys, monkeypatch, record_property):
+    """The scan checks exactly the board and repo the owner names when running it.
+
+    Proves 333.3. The live scan itself is manual: after #330 ships, the owner runs
+    `DOKIMA_BOARD=dokima-dev/N REPO=dokima-dev/dokima python3 -m dokima.scan` once, sees it find nothing, and opens the
+    PRs of #246 and #312 to see Merged with every check passed. This part runs the scan with DOKIMA_BOARD set to o/9
+    and then o/4 and checks it opens exactly that board for repo o/r each time, and says all 1 card matches."""
+    record_property("proves", "333.3")
+    need_scan("333.3")
+    w = world
+    w.issue(76)
+    w.place("issue", 76, "Backlog")
+    make_true(w, ("issue", 76))
+    for spec in ("o/9", "o/4"):
+        monkeypatch.setenv("DOKIMA_BOARD", spec)
+        w.opened.clear()
+        code, lines = run(w, capsys)
+        assert w.opened and set(w.opened) == {(spec, REPO)}, \
+            f"333.3: with DOKIMA_BOARD={spec} and REPO={REPO} the scan opened {w.opened}"
+        assert code == 0 and any(re.fullmatch(r"All 1 cards? on the board match(es)? their state\.", x) for x in lines), \
+            f"333.3: the scan of board {spec} with one true card gave exit {code}: {lines}"
+
+
+# 333.4: the scan only reads
 
 def test_the_scan_never_moves_a_card_or_edits_a_body(world, capsys, record_property):
     """The scan only reads: on a board of wrong cards it writes nothing.
 
-    Proves 333.3.
+    Proves 333.4.
     Closed #57 in Review with Needs you, open #71 with no record in Work, #312 with an old card and merged PR #260 with
     an old card, and PR #262 of open #261 that is not on the board. The scan must name what is wrong, and GitHub must
     log no write: no card moved, no pill set, no item added to the board, no label, no body edited and no comment."""
-    record_property("proves", "333.3")
-    need_scan("333.3")
+    record_property("proves", "333.4")
+    need_scan("333.4")
     w = world
     w.issue(57, state="closed", card=OLD_CARD)
     w.issue(71, card=OLD_CARD)
@@ -583,21 +628,21 @@ def test_the_scan_never_moves_a_card_or_edits_a_body(world, capsys, record_prope
     w.place("issue", 261, "Review", NEEDS)
     code, lines = run(w, capsys)
     assert code == 1 and named(lines, "issue", 57) and named(lines, "issue", 71), \
-        f"333.3: the scan did not name the wrong cards it was given (exit {code}): {lines}"
-    assert not w.writes, f"333.3: the scan changed what it checks: {w.writes}"
+        f"333.4: the scan did not name the wrong cards it was given (exit {code}): {lines}"
+    assert not w.writes, f"333.4: the scan changed what it checks: {w.writes}"
 
 
-# 333.4: a card the scan cannot read is named, and the scan fails
+# 333.5: a card the scan cannot read is named, and the scan fails
 
 def test_a_card_the_scan_cannot_read_is_named_and_the_scan_fails(world, capsys, record_property):
     """A card GitHub will not give is named as unread, and the scan exits 1.
 
-    Proves 333.4.
+    Proves 333.5.
     #63 sits in Plan and GitHub answers HTTP 502 for anything about it; #71 has no record and sits in Plan; #76 has no
     record and sits in Backlog. The scan must name #63 with GitHub's reason (502), still name #71, not name #76, and
     exit 1, never saying all cards match."""
-    record_property("proves", "333.4")
-    need_scan("333.4")
+    record_property("proves", "333.5")
+    need_scan("333.5")
     w = world
     for n in (63, 71, 76):
         w.issue(n)
@@ -609,21 +654,21 @@ def test_a_card_the_scan_cannot_read_is_named_and_the_scan_fails(world, capsys, 
     w.refused.add(63)
     code, lines = run(w, capsys)
     got = named(lines, "issue", 63)
-    assert got and any("502" in x for x in got), f"333.4: the scan did not name #63 with GitHub's reason: {lines}"
-    assert named(lines, "issue", 71), f"333.4: one unreadable card stopped the scan naming #71: {lines}"
-    assert not named(lines, "issue", 76), f"333.4: the scan named #76, which matches its state: {lines}"
-    assert not any("match their state" in x for x in lines), f"333.4: the scan said all cards match though #63 was unread: {lines}"
-    assert code == 1, f"333.4: the scan exited {code} with an unread card, not 1"
+    assert got and any("502" in x for x in got), f"333.5: the scan did not name #63 with GitHub's reason: {lines}"
+    assert named(lines, "issue", 71), f"333.5: one unreadable card stopped the scan naming #71: {lines}"
+    assert not named(lines, "issue", 76), f"333.5: the scan named #76, which matches its state: {lines}"
+    assert not any("match their state" in x for x in lines), f"333.5: the scan said all cards match though #63 was unread: {lines}"
+    assert code == 1, f"333.5: the scan exited {code} with an unread card, not 1"
 
 
 def test_a_scan_that_reads_every_card_does_not_fail_for_it(world, capsys, record_property):
     """Beside the unread card: the same board with #63 readable and true passes.
 
-    Proves 333.4.
+    Proves 333.5.
     #63 (no record, in Backlog) and #76 (no record, in Backlog), both bodies the card Dokima draws now. The scan must
     say all 2 cards match and exit 0."""
-    record_property("proves", "333.4")
-    need_scan("333.4")
+    record_property("proves", "333.5")
+    need_scan("333.5")
     w = world
     for n in (63, 76):
         w.issue(n)
@@ -631,7 +676,7 @@ def test_a_scan_that_reads_every_card_does_not_fail_for_it(world, capsys, record
     make_true(w, ("issue", 63), ("issue", 76))
     code, lines = run(w, capsys)
     assert "All 2 cards on the board match their state." in lines and code == 0, \
-        f"333.4: a board of two true cards gave exit {code}: {lines}"
+        f"333.5: a board of two true cards gave exit {code}: {lines}"
 
 
 # 333.2: the PR cards of #246 and #312 pass only when they show Merged with every check passed
