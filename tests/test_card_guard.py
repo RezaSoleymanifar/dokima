@@ -1,6 +1,8 @@
 import os
 import re
 
+from test_start import Ctx, evaluate
+
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 
@@ -10,18 +12,11 @@ def guard():
     return re.sub(r"\$\{\{(.*)\}\}", r"\1", line).strip()
 
 
-class Ctx(dict):
-    __getattr__ = dict.__getitem__
-
-
 def runs(event_name, action=None, sender="User"):
-    """Evaluate the job's `if:` for one event (only ==, !=, &&, || are supported)."""
-    expr = guard().replace("&&", " and ").replace("||", " or ")
-    expr = expr.replace("github.event_name", repr(event_name))
-    expr = expr.replace("github.event.action", repr(action))
-    expr = expr.replace("github.event.sender.type", repr(sender))
-    assert "github." not in expr, f"guard uses an unexpected context: {expr}"
-    return eval(expr)
+    """Evaluate the job's `if:` for one issue event the way GitHub reads it (test_start's evaluator)."""
+    event = {"action": action, "sender": {"type": sender}, "issue": {"number": 1}}
+    github = Ctx(event_name=event_name, event=event)
+    return evaluate(guard(), {"github": github}, {"failed": False})
 
 
 def test_bot_opened_issue_gets_a_card(record_property):
