@@ -2,19 +2,23 @@
 
 Story 5 of #231.
 
-GitHub Actions has no event for a blocked-by link being added or removed, so the cards catch up on a schedule: card.yml
-runs `python3 dokima/card.py` on a cron, and on that event (GITHUB_EVENT_NAME=schedule, no ISSUE_NUMBER) card.py
-sweeps every open issue. It reads GitHub's own blocked-by links (GET repos/o/r/issues/N/dependencies/blocked_by and
-.../blocking) and redraws the card of each issue whose blocking links, or loop of issues blocking each other, differ
-from what its card shows. Every redraw, the sweep's or card.yml's own with ISSUE_NUMBER, draws the Blocked by and
-Blocks lines from GitHub's links read right then.
+GitHub Actions has no event for a blocked-by link being added or removed, so, as the owner answered on #254, the cards
+update on every event GitHub does announce on either issue, with a schedule only as a backstop. card.yml runs
+`python3 dokima/card.py` on every issues and issue_comment event a person causes on an issue (ISSUE_NUMBER is that
+issue, GITHUB_EVENT_NAME issues or issue_comment): it redraws that issue's card and the card of every issue it blocks
+or is blocked by, on GitHub now or on its card before, so a link removed by hand leaves the other card too. card.yml
+also runs on a cron (GITHUB_EVENT_NAME=schedule, no ISSUE_NUMBER), and then card.py sweeps every open issue. Both read
+GitHub's own blocked-by links (GET repos/o/r/issues/N/dependencies/blocked_by and .../blocking) and rewrite another
+issue's card only when its blocking links, or loop of issues blocking each other, differ from what its card shows.
+Every redraw draws the Blocked by and Blocks lines from GitHub's links read right then.
 
 Every test runs the real `python3 dokima/card.py` as a subprocess against the fake GitHub of
 tests/test_plan_links_recorded.py (a `gh` first on PATH keeping its state in one JSON file), extended here with two
 things: GitHub failing to list one issue's blocked-by links (state "unreadable": {issue: GitHub's error}), and a
 project board reached through dokima.board.Board's own GraphQL calls, as DOKIMA_BOARD="o/1" names it, whose Action
 writes are logged as {"op": "field", "item": "ITEM_issue_N", "field": "Action", "option": "Needs you" or None}.
-The sweep lists open issues with `gh api repos/o/r/issues`, which the fake answers.
+The sweep lists open issues with `gh api repos/o/r/issues`, which the fake answers. card.yml itself is read as text:
+its triggers, and its job's one-line `if:` evaluated against the events GitHub would send.
 """
 import json
 import os
@@ -127,6 +131,16 @@ class HandHub(Hub):
         assert p.returncode == 0, (f"{k}: the scheduled run of card.yml (`python3 dokima/card.py`, event schedule) "
                                    f"failed instead of sweeping the cards: {p.stderr[-1500:]}")
 
+    def event(self, n, name, k):
+        """Run card.yml for a person's change on issue n: `python3 dokima/card.py` with ISSUE_NUMBER=n and
+        GITHUB_EVENT_NAME `name` (issues or issue_comment); fails naming k."""
+        env = {**self.env, "ISSUE_NUMBER": str(n), "GITHUB_EVENT_NAME": name}
+        for v in ("RUN_TITLE", "PR_NUMBER", "HEAD_SHA"):
+            env.pop(v, None)
+        p = subprocess.run([sys.executable, "dokima/card.py"], cwd=ROOT, env=env, capture_output=True, text=True,
+                           timeout=120)
+        assert p.returncode == 0, f"{k}: card.yml's run for a change on #{n} ({name}) failed: {p.stderr[-1500:]}"
+
     def top(self, n):
         """The card part of issue n's body, above the owner's part."""
         return self.body(n).split(body.MARKER, 1)[0]
@@ -202,6 +216,75 @@ def test_a_hand_link_between_two_other_issues_shows_on_their_cards_only(tmp_path
     assert hub.card_links(N) == {k: set() for k in LABELS}, f"254.1: #252's card shows a link: {hub.card_links(N)}"
 
 
+def test_a_change_on_the_blocked_issue_redraws_the_blocker_right_away(tmp_path, record_property):
+    """A person's change on the blocked issue updates both cards right away, with no schedule.
+
+    GitHub gets #252 blocked by #301 by hand, then a person changes #252 (an issues event). That one run, with no
+    scheduled run, shows #301 on #252's Blocked by line and #252 on #301's Blocks line, posts no comment, and leaves
+    the unrelated #302 and #303 untouched. Proves 254.1."""
+    record_property("proves", "254.1")
+    hub = HandHub(tmp_path)
+    hub.set_links({N: [301]})
+    hub.event(N, "issues", "254.1")
+    assert hub.card_links(N) == {"blocked_by": {301}, "blocks": set(), "relates_to": set()}, \
+        f"254.1: a change on #252 did not show its hand-made link to #301 on its card: {hub.card_links(N)}"
+    assert hub.card_links(301) == {"blocked_by": set(), "blocks": {N}, "relates_to": set()}, \
+        f"254.1: a change on #252 did not update #301's card to show it blocks #252: {hub.card_links(301)}"
+    for n in (N, 301):
+        assert hub.comments(n) == [], f"254.1: a comment was posted on #{n} for the link: {hub.comments(n)}"
+    touched = {w["issue"] for w in hub.writes("body")}
+    assert not touched & {302, 303}, f"254.1: a change on #252 rewrote unrelated cards: {sorted(touched & {302, 303})}"
+
+
+def test_a_comment_on_the_blocker_redraws_the_blocked_issue_right_away(tmp_path, record_property):
+    """A person's comment on the blocker updates both cards right away, with no schedule.
+
+    GitHub gets #252 blocked by #301 by hand, then a person comments on #301 (an issue_comment event). That one run
+    shows #252 on #301's Blocks line and #301 on #252's Blocked by line, with no comment from the bot. Proves 254.1."""
+    record_property("proves", "254.1")
+    hub = HandHub(tmp_path)
+    hub.set_links({N: [301]})
+    hub.event(301, "issue_comment", "254.1")
+    assert hub.card_links(301)["blocks"] == {N}, \
+        f"254.1: a comment on #301 did not show on its card that it blocks #252: {hub.card_links(301)}"
+    assert hub.card_links(N)["blocked_by"] == {301}, \
+        f"254.1: a comment on #301 did not update #252's card to show #301 blocks it: {hub.card_links(N)}"
+    for n in (N, 301):
+        assert hub.bot_comments(n) == [], f"254.1: the bot posted a comment on #{n} for the link"
+
+
+def test_a_link_removed_by_hand_leaves_both_cards_on_a_change_to_either_issue(tmp_path, record_property):
+    """A link removed by hand leaves both cards once a person changes either issue.
+
+    An approved plan records #252 blocked by #301; a person removes it by hand and then changes #301, the blocker:
+    neither card shows the link. Then #303 blocked by #302 is added by hand and both cards show it after a change on
+    #303; it is removed by hand and a change on #303, the blocked issue, clears #302's card too. No comment is posted
+    for any of it. Proves 254.1."""
+    record_property("proves", "254.1")
+    hub = HandHub(tmp_path)
+    hub.approve(links(blocked_by=[301]))
+    assert hub.card_links(N)["blocked_by"] == {301} and hub.card_links(301)["blocks"] == {N}, \
+        "test setup: the approved plan's link is not on both cards"
+    before = {n: len(hub.comments(n)) for n in (N, 301, 302, 303)}
+    hub.set_links({})
+    hub.event(301, "issues", "254.1")
+    assert hub.card_links(301)["blocks"] == set(), \
+        f"254.1: after a change on #301, its card still shows it blocks #252: {hub.card_links(301)}"
+    assert hub.card_links(N)["blocked_by"] == set(), \
+        f"254.1: a change on #301 did not clear the removed link from #252's card: {hub.card_links(N)}"
+    hub.set_links({303: [302]})
+    hub.event(303, "issues", "254.1")
+    assert hub.card_links(303)["blocked_by"] == {302} and hub.card_links(302)["blocks"] == {303}, \
+        f"254.1: a change on #303 did not show #303 blocked by #302 on both cards: {hub.card_links(303)}, {hub.card_links(302)}"
+    hub.set_links({})
+    hub.event(303, "issues", "254.1")
+    assert hub.card_links(303)["blocked_by"] == set(), f"254.1: #303's card still shows #302: {hub.card_links(303)}"
+    assert hub.card_links(302)["blocks"] == set(), \
+        f"254.1: a change on #303 did not clear the removed link from #302's card: {hub.card_links(302)}"
+    for n in (N, 301, 302, 303):
+        assert len(hub.comments(n)) == before[n], f"254.1: a comment was posted on #{n} for a link"
+
+
 # 254.2 ---------------------------------------------------------------------------------------------------------------
 
 def test_two_issues_blocking_each_other_by_hand_are_named_on_both_cards(tmp_path, record_property):
@@ -215,8 +298,8 @@ def test_two_issues_blocking_each_other_by_hand_are_named_on_both_cards(tmp_path
     hub.sweep("254.2")
     for n in (N, 301):
         line = hub.loop_line(n)
-        assert line and numbers(line) >= {N, 301}, \
-            f"254.2: #{n}'s card has no line saying #252 and #301 block each other: {hub.top(n)!r}"
+        assert line and numbers(line) == {N, 301}, \
+            f"254.2: #{n}'s card has no line saying exactly #252 and #301 block each other: {hub.top(n)!r}"
         assert hub.bot_comments(n) == [], f"254.2: off autopilot a comment was posted on #{n}"
         assert "Needs you" not in hub.actions(n), f"254.2: off autopilot #{n} got the Needs you pill"
 
@@ -232,8 +315,8 @@ def test_a_loop_through_other_issues_names_every_issue_on_every_card_in_it(tmp_p
     hub.sweep("254.2")
     for n in (N, 301, 302):
         line = hub.loop_line(n)
-        assert line and numbers(line) >= {N, 301, 302}, \
-            f"254.2: #{n}'s card does not name #252, #301 and #302 as blocking each other: {line!r}"
+        assert line and numbers(line) == {N, 301, 302}, \
+            f"254.2: #{n}'s card does not name exactly #252, #301 and #302 as blocking each other: {line!r}"
     assert hub.loop_line(303) is None, f"254.2: #303 is not in the loop but its card says it is"
 
 
@@ -248,7 +331,7 @@ def test_the_loop_line_stays_on_a_later_redraw_and_leaves_once_the_loop_is_gone(
     hub.set_links({N: [301], 301: [N]})
     hub.sweep("254.2")
     hub.redraw(N)
-    assert hub.loop_line(N) and numbers(hub.loop_line(N)) >= {N, 301}, \
+    assert hub.loop_line(N) and numbers(hub.loop_line(N)) == {N, 301}, \
         f"254.2: card.yml's redraw of #252 dropped the line naming the loop: {hub.top(N)!r}"
     hub.set_links({N: [301]})
     hub.sweep("254.2")
@@ -348,17 +431,124 @@ def minutes(field):
     return sorted(out)
 
 
-def test_card_yml_runs_the_sweep_at_least_every_15_minutes(record_property):
-    """card.yml runs by itself at least every 15 minutes, with the board it needs.
+def on_block(text):
+    """The lines of card.yml's `on:` block."""
+    m = re.search(r"^on:\n((?:[ \t]+.*\n|\n)+)", text, re.M)
+    return m.group(1) if m else ""
 
-    Reads .github/workflows/card.yml: its triggers include a schedule whose cron fires every hour of every day with
-    no gap over 15 minutes, its step still runs `python3 dokima/card.py`, and that step is given DOKIMA_BOARD so a
-    loop on autopilot can set Needs you. Proves 254.4."""
+
+def trigger(on, name):
+    """The activity types card.yml lists for one trigger.
+
+    None when the trigger is absent, "all" when it lists no types."""
+    lines = on.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s+)" + re.escape(name) + r":\s*(\{\}|null)?\s*$", line)
+        if not m:
+            continue
+        indent, block = len(m.group(1)), []
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            block.append(nxt)
+        text = "\n".join(block)
+        if "types:" not in text:
+            return "all"
+        inline = re.search(r"types:\s*\[([^\]]*)\]", text)
+        if inline:
+            return {t.strip().strip("'\"") for t in inline.group(1).split(",") if t.strip()}
+        return set(re.findall(r"^\s*-\s*['\"]?(\w+)", text.split("types:", 1)[1], re.M))
+    return None
+
+
+def job_if(text):
+    """card.yml's job condition, a one-line GitHub expression, as a function of the `github` context.
+
+    Reads the first `if:` under `jobs:` and turns GitHub's ==, !=, &&, || and ! on context paths and quoted strings
+    into Python; a missing path is null, as on GitHub. A job with no `if:` runs on every event."""
+    jobs = text.split("\njobs:", 1)[1]
+    m = re.search(r"^\s+if:\s*(.+?)\s*$", jobs, re.M)
+    if not m:
+        return lambda ctx: True
+    expr = m.group(1).strip()
+    if expr[:1] in "'\"" and expr[-1:] == expr[:1]:
+        expr = expr[1:-1]
+    expr = re.sub(r"^\$\{\{(.*)\}\}$", r"\1", expr.strip()).strip()
+    out = []
+    for tok in re.findall(r"'[^']*'|&&|\|\||==|!=|!|\(|\)|[A-Za-z_][\w.\-]*|\S", expr):
+        if tok.startswith("'"):
+            out.append(repr(tok[1:-1]))
+        elif tok in ("&&", "||", "!"):
+            out.append({"&&": " and ", "||": " or ", "!": " not "}[tok])
+        elif tok in ("==", "!=", "(", ")"):
+            out.append(f" {tok} ")
+        elif tok in ("true", "false", "null"):
+            out.append({"true": "True", "false": "False", "null": "None"}[tok])
+        elif re.fullmatch(r"[A-Za-z_][\w.\-]*", tok):
+            out.append(f"get({tok!r})")
+        else:
+            raise AssertionError(f"254.4: card.yml's job `if:` uses {tok!r}, which this test cannot read: {expr}")
+    code = "".join(out)
+
+    def run(ctx):
+        def get(path):
+            v = ctx
+            for part in path.split("."):
+                v = v.get(part) if isinstance(v, dict) else None
+            return v
+        return bool(eval(code, {"get": get}))
+    return run
+
+
+def ctx(event, action=None, sender="User", pr=False):
+    """The `github` context of one event GitHub would send card.yml."""
+    if event == "schedule":
+        e = {}
+    elif event == "workflow_run":
+        e = {"action": "completed", "sender": {"type": "Bot"}, "workflow_run": {"head_sha": "abc"}}
+    else:
+        e = {"action": action, "sender": {"type": sender},
+             "issue": {"number": N, **({"pull_request": {"url": "u"}} if pr else {})}}
+    return {"github": {"event_name": event, "event": e}}
+
+
+def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record_property):
+    """card.yml starts on a person's every change to an issue, and every 15 minutes.
+
+    Reads .github/workflows/card.yml. Its issues trigger covers opening, editing, closing, reopening, labelling and
+    assigning (or lists no types), and it has an issue_comment trigger for new, edited and deleted comments. Its job's
+    `if:` lets every one of those through when a person causes it, lets the schedule, workflow_run and the bot opening
+    an issue through as today, and stops the bot's own edits and comments and any comment on a pull request. Its
+    schedule fires every hour of every day with no gap over 15 minutes, its step still runs `python3 dokima/card.py`
+    with the event's issue as ISSUE_NUMBER, and it is given DOKIMA_BOARD so a loop on autopilot can set Needs you.
+    Proves 254.4."""
     record_property("proves", "254.4")
     text = open(CARD_YML).read()
-    on = re.search(r"^on:\n((?:[ \t]+.*\n|\n)+)", text, re.M)
-    assert on and re.search(r"^\s+schedule:", on.group(1), re.M), "254.4: card.yml has no schedule trigger"
-    crons = re.findall(r"cron:\s*['\"]([^'\"]+)['\"]", on.group(1))
+    on = on_block(text)
+    issues = trigger(on, "issues")
+    want = {"opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"}
+    assert issues == "all" or (issues and want <= issues), \
+        f"254.4: card.yml's issues trigger misses changes a person makes: {sorted(want - (issues or set()))}"
+    comments = trigger(on, "issue_comment")
+    assert comments == "all" or (comments and {"created", "edited", "deleted"} <= comments), \
+        f"254.4: card.yml does not start on every comment on an issue (issue_comment trigger: {comments})"
+    allowed = job_if(text)
+    for kind in sorted(want):
+        assert allowed(ctx("issues", kind)), f"254.4: card.yml's job skips a person's issues event {kind!r}"
+    for kind in ("created", "edited", "deleted"):
+        assert allowed(ctx("issue_comment", kind)), f"254.4: card.yml's job skips a person's comment ({kind}) on an issue"
+        assert not allowed(ctx("issue_comment", kind, pr=True)), \
+            f"254.4: card.yml's job runs on a comment ({kind}) on a pull request, which would draw an issue card on it"
+        assert not allowed(ctx("issue_comment", kind, sender="Bot")), \
+            f"254.4: card.yml's job runs on the bot's own comment ({kind})"
+    assert not allowed(ctx("issues", "edited", sender="Bot")), \
+        "254.4: card.yml's job runs on the bot's own edit, so every card it writes would start another run"
+    assert allowed(ctx("issues", "opened", sender="Bot")), \
+        "254.4: card.yml's job no longer draws a card on an issue the bot opens"
+    assert allowed(ctx("schedule")), "254.4: card.yml's job skips its scheduled run"
+    assert allowed(ctx("workflow_run")), "254.4: card.yml's job skips workflow_run, the checks and worker finishing"
+    assert re.search(r"^\s+schedule:", on, re.M), "254.4: card.yml has no schedule trigger"
+    crons = re.findall(r"cron:\s*['\"]([^'\"]+)['\"]", on)
     assert crons, "254.4: card.yml's schedule has no cron"
     best = None
     for cron in crons:
@@ -369,6 +559,8 @@ def test_card_yml_runs_the_sweep_at_least_every_15_minutes(record_property):
             best = gap if best is None else min(best, gap)
     assert best is not None and best <= 15, f"254.4: card.yml's schedule {crons} leaves more than 15 minutes between runs"
     assert re.search(r"run:\s*python3 dokima/card\.py\s*$", text, re.M), "254.4: card.yml no longer runs dokima/card.py"
+    assert re.search(r"ISSUE_NUMBER:\s*\$\{\{\s*github\.event\.issue\.number\s*\}\}", text), \
+        "254.4: card.yml's step is not given the event's issue as ISSUE_NUMBER"
     assert re.search(r"DOKIMA_BOARD:\s*\$\{\{\s*vars\.DOKIMA_BOARD\s*\}\}", text), \
         "254.4: card.yml's step is not given DOKIMA_BOARD, so a loop cannot set Needs you"
 
@@ -389,3 +581,21 @@ def test_the_scheduled_run_redraws_only_cards_whose_links_changed(tmp_path, reco
     count = len(hub.writes())
     hub.sweep("254.5")
     assert hub.writes()[count:] == [], f"254.5: a scheduled run with nothing changed wrote {hub.writes()[count:]}"
+
+
+def test_a_run_for_one_issue_rewrites_no_other_card_whose_links_did_not_change(tmp_path, record_property):
+    """A change on one issue rewrites another issue's card only when that card's links changed.
+
+    A person adds #252 blocked by #301 by hand and changes #252: #301's card is rewritten, #302's and #303's are not.
+    A second change on #252, a comment with no link changed, rewrites no card but #252's own. Proves 254.5."""
+    record_property("proves", "254.5")
+    hub = HandHub(tmp_path)
+    hub.set_links({N: [301]})
+    hub.event(N, "issues", "254.5")
+    first = {w["issue"] for w in hub.writes("body")}
+    assert 301 in first and not first & {302, 303}, \
+        f"254.5: a change on #252 should rewrite #301's card and no unrelated one; it rewrote {sorted(first)}"
+    count = len(hub.writes())
+    hub.event(N, "issue_comment", "254.5")
+    again = {w["issue"] for w in hub.writes()[count:] if w["op"] == "body"}
+    assert again <= {N}, f"254.5: a change on #252 with no link changed rewrote other cards: {sorted(again - {N})}"
