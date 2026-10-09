@@ -574,6 +574,7 @@ def test_merged_once_the_pr_is_merged(record_property):
     Merged with no to-do and no Ready for approval; then with the PR open and closed unmerged, and checks neither says
     Merged."""
     record_property("proves", "181.4")
+    record_property("proves", "344.2")
     f = found_for(APPROVED_WORK, pr=dict(PR, merged=True, state="closed"), check_runs=swap("40.2", conclusion="failure"))
     assert status(f, "181.4") == ("Merged", None), f"181.4: a merged PR shows {status(f, '181.4')}, not Merged"
     line = status_line(draw(f))
