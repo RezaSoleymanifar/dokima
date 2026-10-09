@@ -32,10 +32,9 @@ You create these labels in your repo; the drift audit reports any that are missi
 | `plan` | Starts the planner, the same as `/plan`. Only a code owner's label counts; anyone else's starts nothing. |
 | `work` | Starts the worker on the issue's plan as it stands. Removing it stops a running build. Only a code owner's label counts; anyone else's starts nothing. |
 | `autopilot` | Marks an issue or pull request on autopilot and shows its Autopilot pill. `/autopilot start` and `/autopilot stop` set and clear it across a whole tree. Anyone with triage or write access adds it. |
-| `blocker` | Sets the issue's Priority on the board to Blocker. Anyone with triage or write access adds it. |
 | `high` | Sets the issue's Priority on the board to High. Anyone with triage or write access adds it. |
 | `parked` | Sets the issue's Priority on the board to Parked. Anyone with triage or write access adds it. |
 
-With two priority labels, the higher one wins. Priority needs the optional project board; see [Configuration](Configuration).
+There is no Blocker label. Code sets the Blocker priority on every open issue that blocks another open issue by GitHub's blocked-by links, never by hand. Otherwise Priority follows the high or parked label; with both, High wins. Priority needs the optional project board; see [Configuration](Configuration).
 
 To approve a plan, say `/work`.
