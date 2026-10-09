@@ -1,12 +1,20 @@
 name: board
 # Keeps the project board's Status and "Waiting on" current at every stage moment,
+<<<<<<< HEAD
 # and its Priority in step with the blocker, high and parked labels. A code owner's
 # command in a review clears Needs you at once, and every merge sweeps every pill.
+=======
+# its Priority Blocker on open issues that block an open issue (from blocked-by links,
+# read on close, reopen and every 15 minutes, since GitHub sends no event for a link),
+# and otherwise in step with the high and parked labels.
+>>>>>>> origin/main
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
 # names a board ("org/number").
 on:
   issues:
-    types: [labeled, unlabeled, closed]
+    types: [labeled, unlabeled, closed, reopened]
+  schedule:
+    - cron: "*/15 * * * *"
   issue_comment:
     types: [created]
   # pull_request_target runs main's copy of this file, so the keys environment opens;
