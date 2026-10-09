@@ -1,43 +1,36 @@
 name: card
 # Writes the card at the top of the issue and its PR whenever the checks or the
-<<<<<<< HEAD
 # worker finish, the owner reviews a PR (its commands run), a PR merges, or a
-# person opens or edits an issue. These triggers always use the default branch's
+# person changes or comments on an issue; the cards of the issues it blocks or
+# is blocked by follow when their links changed. GitHub announces no event for a
+# blocked-by link added or removed by hand, so a run every 15 minutes catches up
+# the cards whose links changed. These triggers always use the default branch's
 # copy of this file and of dokima/card.py, so the work being judged cannot change
 # how it is reported. When the card code changes on main, every merged PR whose
 # card no longer matches a fresh drawing is redrawn once, on it and its issue.
-=======
-# worker finish, or a person changes or comments on an issue; the cards of the
-# issues it blocks or is blocked by follow when their links changed. GitHub
-# announces no event for a blocked-by link added or removed by hand, so a run
-# every 15 minutes catches up the cards whose links changed. These triggers
-# always use the default branch's copy of this file and of dokima/card.py, so
-# the work being judged cannot change how it is reported.
->>>>>>> origin/main
 on:
   workflow_run:
     workflows: [done-whens, full suite, worker, commands]
     types: [completed]
   issues:
-<<<<<<< HEAD
-    types: [opened, edited]
+  issue_comment:
   pull_request_target:
     types: [closed]
   push:
     branches: [main]
     paths: [dokima/card.py]
-# Each issue and each PR has its own queue, so a waiting redraw is only ever replaced by a newer redraw of the same
-# one. A run that draws nothing (the card's own edit of the issue, a command in an issue comment) waits alone.
-=======
-  issue_comment:
   schedule:
     - cron: '*/15 * * * *'
->>>>>>> origin/main
+# Each issue and each PR has its own queue, so a waiting redraw is only ever replaced by a newer redraw of the same
+# one. The sweep has its own, and a run that draws nothing (the card's own edit of or comment on the issue, a comment
+# on a PR, a command in an issue comment) waits alone.
 concurrency:
   group: >-
     ${{ github.event_name == 'push' && 'card-merged'
     || github.event_name == 'pull_request_target' && format('card-pr-{0}', github.event.pull_request.number)
+    || github.event_name == 'schedule' && 'card-sweep'
     || github.event_name == 'issues' && (github.event.action == 'opened' || github.event.sender.type != 'Bot') && format('card-issue-{0}', github.event.issue.number)
+    || github.event_name == 'issue_comment' && github.event.sender.type != 'Bot' && !github.event.issue.pull_request && format('card-issue-{0}', github.event.issue.number)
     || github.event_name == 'workflow_run' && github.event.workflow_run.name == 'commands' && github.event.workflow_run.event == 'issue_comment' && format('card-idle-{0}', github.run_id)
     || github.event_name == 'workflow_run' && github.event.workflow_run.pull_requests[0].number && format('card-pr-{0}', github.event.workflow_run.pull_requests[0].number)
     || github.event_name == 'workflow_run' && format('card-run-{0}-{1}', github.event.workflow_run.head_sha, github.event.workflow_run.display_title)
@@ -53,8 +46,9 @@ jobs:
   card:
     environment: keys
     # The bot's own edits and comments (the card itself) don't trigger another card, and a comment on a pull
-    # request draws no issue card on it; an issue deleted or moved away has no card left to draw.
-    if: github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
+    # request draws no issue card on it; an issue deleted or moved away has no card left to draw. A merge and a
+    # push to main draw whoever made them, the bot merging on autopilot too.
+    if: github.event_name == 'workflow_run' || github.event_name == 'pull_request_target' || github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

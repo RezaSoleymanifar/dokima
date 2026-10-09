@@ -609,7 +609,6 @@ def gallery(repo, out):
         print(f"Drew {name}.md")
 
 
-<<<<<<< HEAD
 def merged_prs(repo):
     """Every merged pull request that carries a card, page by page."""
     out, page = [], 1
@@ -632,7 +631,8 @@ def redraw_merged(repo):
             print(f"PR #{p['number']} closes no issue; its card is left as it is.")
             continue
         draw(repo, number, p["number"], stale_only=True)
-=======
+
+
 def refresh(repo, numbers, cache, bodies=None):
     """Redraw each card whose blocking links or loop on GitHub differ from what it shows.
 
@@ -692,7 +692,6 @@ def stop_for_loop(repo, number, loop, owners):
         from dokima import board
         b = board.Board(spec, repo)
         b.set(b.item("issue", int(number)), "Action", "Needs you")
->>>>>>> origin/main
 
 
 def main():
@@ -700,14 +699,11 @@ def main():
         gallery(os.environ.get("REPO") or "dokima-dev/dokima", sys.argv[2])
         return
     repo = os.environ["REPO"]
-<<<<<<< HEAD
     if sys.argv[1:] == ["merged"]:
         redraw_merged(repo)
         return
-=======
     if not os.environ.get("ISSUE_NUMBER") and os.environ.get("GITHUB_EVENT_NAME") == "schedule":
         sys.exit(1 if sweep(repo) else 0)
->>>>>>> origin/main
     number, pr_number = find_work(repo)
     if not number:
         print("No issue for this event; nothing to write.")
@@ -718,7 +714,6 @@ def main():
         sys.exit(1)
 
 
-<<<<<<< HEAD
 def stale(current, card):
     """True when the issue's text with a fresh card differs from what it holds now."""
     try:
@@ -727,21 +722,14 @@ def stale(current, card):
         return True
 
 
-def draw(repo, number, pr_number, plans=None, noted=None, stale_only=False):
-=======
-def draw(repo, number, pr_number, plans=None, noted=None, cache=None):
->>>>>>> origin/main
+def draw(repo, number, pr_number, plans=None, noted=None, stale_only=False, cache=None):
     """Write the card at the top of the issue and its PR.
 
     Returns the blocking links and loop its card showed before and shows now.
     `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
-<<<<<<< HEAD
-    (False) issues from the index of those whose approved plans link here. With `stale_only`, a page whose card already
-    matches a fresh drawing is left alone.
-=======
     (False) issues from the index of those whose approved plans link here. The Blocked by and Blocks lines are
-    GitHub's own blocked-by links, read now; `cache` keeps what this run already read.
->>>>>>> origin/main
+    GitHub's own blocked-by links, read now; `cache` keeps what this run already read. With `stale_only`, a page
+    whose card already matches a fresh drawing is left alone.
     """
     cache = {} if cache is None else cache
     issue = plan.fetch_issue(repo, number)
@@ -758,17 +746,12 @@ def draw(repo, number, pr_number, plans=None, noted=None, cache=None):
                        "blocked_by": now.get("blocked_by") or [], "blocks": now.get("blocks") or []}
     pr = found["pr"]
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
-<<<<<<< HEAD
     card = render(repo, issue, found)
     if not stale_only or stale(issue["current_body"] or "", card):
         if body.save(repo, number, issue["current_body"] or "", card):
             print(f"Card written into issue #{number}")
-=======
-    if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
-        print(f"Card written into issue #{number}")
     if now.get("loop") and now["loop"] != before.get("loop"):
         stop_for_loop(repo, number, now["loop"], found.get("owners"))
->>>>>>> origin/main
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
     if pr and (not stale_only or pr_body(card, pr.get("body")) != pr.get("body")):
         with open("pr.md", "w") as f:
