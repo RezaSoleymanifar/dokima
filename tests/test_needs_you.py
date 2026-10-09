@@ -443,6 +443,27 @@ def test_a_merge_sweeps_every_pill_on_the_board_to_what_it_should_be(record_prop
     assert not wrong, f"297.5: after the merge's sweep these cards show the wrong pill: {wrong}"
 
 
+def test_every_later_merge_sweeps_again(record_property, make):
+    """A pill that drifts after one merge is put right again at the next merge.
+
+    Proves 297.5. PR #70 (closing #71) merges and its sweep sets #66 (on autopilot, nothing waits) to Autopilot and
+    #67 (not on autopilot) to nothing. Then both drift: #66 shows Needs you and #67 shows Autopilot. PR #74 (closing
+    #75) merges, and its sweep must put #66 back to Autopilot and #67 back to nothing. A sweep that runs only once,
+    at the first merge, leaves both wrong. Today neither merge sweeps."""
+    record_property("proves", "297.5")
+    w = make(labels={("issue", 66): {LABEL}}, closed={("pr", 70), ("issue", 71), ("pr", 74), ("issue", 75)},
+             cards={("issue", 66): {"Status": "Plan"}, ("issue", 67): {"Status": "Plan", "Action": AUTO}})
+    board.sync("pull_request_target", pr_event("closed", 70, 71, merged=True), SPEC, REPO)
+    got = pills(w, ("issue", 66), ("issue", 67))
+    assert got == {"issue #66": AUTO, "issue #67": None}, f"297.5: after the first merge's sweep the cards show {got}"
+    w.cards[("issue", 66)]["Action"] = NEEDS
+    w.cards[("issue", 67)]["Action"] = AUTO
+    board.sync("pull_request_target", pr_event("closed", 74, 75, merged=True), SPEC, REPO)
+    got = pills(w, ("issue", 66), ("issue", 67))
+    assert got == {"issue #66": AUTO, "issue #67": None}, \
+        f"297.5: after a second merge, drifted pills were not swept again: {got}"
+
+
 # 297.6: an item on autopilot shows exactly one pill, Autopilot or Needs you
 
 def test_an_item_on_autopilot_always_shows_exactly_one_pill(record_property, make):
