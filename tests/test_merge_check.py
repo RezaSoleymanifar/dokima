@@ -1,6 +1,6 @@
 """The merge check reads its criteria and their tests from the newest plan the reviewer approved (issue #168).
 
-Every test here runs the real command the Acceptance criteria workflow runs, `python3 -m dokima.checks matrix`, from the repo
+Every test here runs the real command the "Acceptance criteria" workflow runs, `python3 -m dokima.checks matrix`, from the repo
 root, with GitHub faked: a stub `gh` on PATH answers from a JSON file in a temp folder, and the pull request event is a
 temp file. The issue's records are real record comments, drawn by dokima.agent.render, so the check reads exactly what
 the bot posts. Nothing here touches the network.

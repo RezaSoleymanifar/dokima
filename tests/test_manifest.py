@@ -382,7 +382,7 @@ def test_the_guard_passes_settings_the_manifest_declares(record_property, tmp_pa
                   permission-administration: read
         """)
     write(str(tmp_path), "dokima/fine.py", """\
-        DONE_WHENS = "all done-whens passed"
+        GATE = "all done-whens passed"
 
 
         def fine(board, rest, gh, iid, path, runs, repo):
@@ -391,10 +391,10 @@ def test_the_guard_passes_settings_the_manifest_declares(record_property, tmp_pa
             rest("POST", path, **{"labels[]": "autopilot"})
             gh("api", "-X", "POST", path, "-f", "labels[]=autopilot")
             tests = next(r for r in runs if r["name"] == "all tests")
-            whens = next(r for r in runs if r["name"] == DONE_WHENS)
+            gate = next(r for r in runs if r["name"] == GATE)
             gh("api", f"repos/{repo}/branches/main/protection")
             rest("GET", f"repos/{repo}/rules/branches/main")
-            return tests, whens
+            return tests, gate
         """)
     assert m.undeclared(str(tmp_path)) == [], f"282.3: the guard reported declared settings: {m.undeclared(str(tmp_path))}"
     assert m.undeclared(ROOT) == [], f"282.3: code or workflows in this repo rely on settings the manifest leaves out: {m.undeclared(ROOT)}"
