@@ -150,19 +150,19 @@ def test_the_parent_says_why_it_closed_in_one_line_as_on_autopilot(record_proper
 def test_a_parent_already_closed_is_left_alone(record_property, tmp_path):
     """A parent closed before its last sub-issue is never closed again or commented on.
 
-    Proves 367.5. #57 has #101 and #102, nothing on autopilot; #57 was closed by hand as not planned and #102 is closed. Closing #101
+    Proves 367.6. #57 has #101 and #102, nothing on autopilot; #57 was closed by hand as not planned and #102 is closed. Closing #101
     must leave #57 closed as not planned with no new comment and fail no workflow. Beside it, the same tree with #57
     open must close #57, so the run does act on an open parent."""
-    record_property("proves", "367.5")
+    record_property("proves", "367.6")
     m = Repo(tmp_path / "already", {57: [101, 102]}, {}, closed=[102])
     closed_not_planned(m, 57)
     m.close(101)
-    assert not m.failed, f"367.5 (already closed): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
+    assert not m.failed, f"367.6 (already closed): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
     assert m.state(57) == ("closed", "not_planned"), \
-        f"367.5 (already closed): #57 was closed again: it is now {m.state(57)}, expected closed as not planned"
-    assert m.new_comments(57) == [], f"367.5 (already closed): #57 got comments: {m.new_comments(57)}"
+        f"367.6 (already closed): #57 was closed again: it is now {m.state(57)}, expected closed as not planned"
+    assert m.new_comments(57) == [], f"367.6 (already closed): #57 got comments: {m.new_comments(57)}"
 
     m = Repo(tmp_path / "open", {57: [101, 102]}, {}, closed=[102])
     m.close(101)
     assert m.state(57) == ("closed", "completed"), \
-        f"367.5 (open parent): #57 is {m.state(57)} after its last sub-issue closed, expected closed as completed\n{m.tail()}"
+        f"367.6 (open parent): #57 is {m.state(57)} after its last sub-issue closed, expected closed as completed\n{m.tail()}"
