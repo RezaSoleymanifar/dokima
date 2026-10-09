@@ -63,13 +63,17 @@ COMMAND_FACTS = {
     "/issue": ["planned"],
 }
 LABEL_FACTS = {
-    "plan": ["planner"],
-    "work": ["worker"],
+    "plan": ["planner", "code owner"],
+    "work": ["worker", "code owner"],
     "autopilot": ["/autopilot start"],
     "blocker": ["priority"],
     "high": ["priority"],
     "parked": ["priority"],
 }
+
+# Labels whose workflow does not check the sender: anyone who can label an issue (triage or write access) adds them.
+# The plan and work labels count only from a code owner (planner.yml and worker.yml, "Only a code owner's label counts").
+ANYONE_LABELS = ("autopilot", "blocker", "high", "parked")
 
 
 def command_problems(text):
@@ -91,6 +95,8 @@ def command_problems(text):
         for word in LABEL_FACTS.get(name, []):
             if word.lower() not in line.lower():
                 problems.append(f"label {name}'s entry does not mention {word!r}")
+        if name in ANYONE_LABELS and not re.search(r"triage|write access", line, re.I):
+            problems.append(f"label {name}'s entry does not say who may add it (triage or write access)")
     known = set(commands()) | set(manifest.LABELS)
     for name in entries(text):
         if name not in known:
@@ -106,7 +112,9 @@ def test_commands_and_labels(record_property):
 
     Reads the commands from dokima/agent.py and the labels from dokima/manifest.py, finds each one's row or bullet on
     the page, checks it names what it starts or sets, that /issue is marked planned, that no command or label the code
-    lacks is listed, and that the page says only a code owner's commands count. Proves 308.1."""
+    lacks is listed, and that the page says only a code owner's commands count. Each label's entry says who may add
+    it: the plan and work entries say only a code owner's label counts, the others say triage or write access.
+    Proves 308.1."""
     record_property("proves", "308.1")
     text = read(COMMANDS_PAGE, "308.1")
     problems = command_problems(text)
@@ -115,17 +123,23 @@ def test_commands_and_labels(record_property):
         "308.1: the page does not say only a code owner (from CODEOWNERS) may use the commands"
     assert "approv" not in entry(text, "work").lower(), \
         "308.1: the work label's entry still says it approves a plan; /work does"
-    assert re.search(r"triage|write access", text, re.I), "308.1: the page does not say who may add a label"
 
 
 def test_the_card(record_property):
     """The card page explains every field on the card and run records today.
 
-    Takes the stages and circle states from dokima/card.py and checks each is on the page, with the Next line, the
-    Needs you and Autopilot pills, Verified by, the Definition of Done row and the run record's footnote; then checks
-    the old work-label approval and the old Before/After example are gone, and that /work approves. Proves 308.2."""
+    Takes the stages, circle states and every named field (FIELD_ICONS) from dokima/card.py and checks each is on the
+    page, with the Next line, the Needs you and Autopilot pills, Verified by, the Definition of Done row and the run
+    record's footnote; then checks the old work-label approval and the old Before/After example are gone, and that
+    /work approves. The stats icon marks the footnote, so the footnote's model, turns, tokens and cost stand for it.
+    Proves 308.2."""
     record_property("proves", "308.2")
     text = read(CARD_PAGE, "308.2")
+    for field in card.FIELD_ICONS:
+        if field == "stats":
+            continue
+        pattern = r"\s+".join(rf"{re.escape(w)}s?" for w in field.split())
+        assert re.search(rf"\b{pattern}\b", text, re.I), f"308.2: the card page does not explain {field}"
     missing = [s for s in sorted(card.STAGES) if s not in text]
     assert not missing, f"308.2: the card page does not name the stages {missing}"
     missing = [s for s in card.ICON_FILE if s not in text.lower()]
