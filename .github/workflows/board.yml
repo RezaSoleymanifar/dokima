@@ -1,14 +1,17 @@
 name: board
-# Keeps the project board's Status and "Waiting on" current at every stage moment,
-# its Priority Blocker on open issues that block an open issue (from blocked-by links,
-# read on close, reopen and every 15 minutes, since GitHub sends no event for a link),
-# and otherwise in step with the high and parked labels. A code owner's command in a
-# review clears Needs you at once, and every merge sweeps every pill.
+# Puts every card in the column and pill its issue's state on GitHub gives now, on
+# every event about an issue or its pull request and every 15 minutes (only what
+# changed since the last sweep that succeeded); keeps its Priority Blocker on open
+# issues that block an open issue (from blocked-by links, read on close, reopen and
+# every 15 minutes, since GitHub sends no event for a link), and otherwise in step
+# with the high and parked labels. Every merge sweeps every card.
+# An issue and its pull requests share one queue, so the newest recompute waits for the
+# running one and is never cancelled, while other issues' runs go on beside it.
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
 # names a board ("org/number").
 on:
   issues:
-    types: [labeled, unlabeled, closed, reopened]
+    types: [opened, edited, labeled, unlabeled, closed, reopened]
   schedule:
     - cron: "*/15 * * * *"
   issue_comment:
@@ -19,16 +22,34 @@ on:
     types: [opened, reopened, synchronize, closed]
   pull_request_review:
     types: [submitted]
+  pull_request_review_comment:
+    types: [created]
   workflow_run:
     workflows: [done-whens]
     types: [completed]
 permissions:
   contents: read
-concurrency:
-  group: board-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
 jobs:
+  queue:
+    if: vars.DOKIMA_BOARD != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      group: ${{ steps.queue.outputs.group }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - id: queue
+        run: python3 -m dokima.board queue
   sync:
+    needs: queue
+    concurrency:
+      group: ${{ needs.queue.outputs.group }}
+      cancel-in-progress: false
     environment: keys
     if: vars.DOKIMA_BOARD != ''
     runs-on: ubuntu-24.04
