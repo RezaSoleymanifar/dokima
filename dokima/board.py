@@ -1,5 +1,8 @@
 """Keep the project board's Status, Action ("Needs you" or "Autopilot") and Priority current, from GitHub events.
 
+Priority is Blocker on an open issue that blocks another open issue, read from GitHub's blocked-by links when an issue
+closes or reopens and every 15 minutes on schedule; otherwise it follows the high or parked label.
+
     python3 -m dokima.board     # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number")
 
 Without DOKIMA_BOARD the sync does nothing. Rules live in decide(); everything else is plumbing.
@@ -14,7 +17,7 @@ from dokima import manifest
 
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
-PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
+PRIORITY = {"high": "High", "parked": "Parked"}  # highest first; Blocker comes from blocked-by links, not a label
 AUTOPILOT = "autopilot"
 
 
@@ -58,7 +61,7 @@ def priority(event, p):
     if event != "issues" or p["action"] not in ("labeled", "unlabeled") or p["label"]["name"] not in PRIORITY:
         return None
     names = {label["name"] for label in p["issue"].get("labels") or []}
-    return p["issue"]["number"], next((option for label, option in PRIORITY.items() if label in names), None)
+    return p["issue"]["number"], label_priority(names)
 
 
 def gql(query, **variables):
@@ -112,11 +115,42 @@ class Board:
         node = self.q('query($i:ID!,$f:String!){node(id:$i){... on ProjectV2Item{fieldValueByName(name:$f){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}', i=iid, f=field)["node"]
         return ((node or {}).get("fieldValueByName") or {}).get("name")
 
-    def autopilot(self, kind, number):
-        """Whether the issue or PR carries the autopilot label."""
+    def labels(self, kind, number):
+        """The names of the labels the issue or PR carries."""
         field = "issue" if kind == "issue" else "pullRequest"
         node = self.q(f'query($o:String!,$r:String!,$n:Int!){{repository(owner:$o,name:$r){{{field}(number:$n){{labels(first:100){{nodes{{name}}}}}}}}}}', o=self.repo_owner, r=self.repo_name, n=int(number))["repository"][field]
-        return AUTOPILOT in {label["name"] for label in node["labels"]["nodes"]}
+        return {label["name"] for label in node["labels"]["nodes"]}
+
+    def autopilot(self, kind, number):
+        """Whether the issue or PR carries the autopilot label."""
+        return AUTOPILOT in self.labels(kind, number)
+
+    def dependencies(self, number, side):
+        """[{number, state}] of the issues this one blocks ("blocking") or is blocked by ("blocked_by"); raises
+        subprocess.CalledProcessError when GitHub refuses, never answering none."""
+        out, page = [], 1
+        while True:
+            got = self.rest("GET", f"repos/{self.repo_owner}/{self.repo_name}/issues/{number}/dependencies/{side}?per_page=100&page={page}")
+            out += [{"number": i["number"], "state": i["state"]} for i in got]
+            if len(got) < 100:
+                return out
+            page += 1
+
+    def blocking(self, number):
+        return self.dependencies(number, "blocking")
+
+    def blocked_by(self, number):
+        return self.dependencies(number, "blocked_by")
+
+    def open_issues(self):
+        """The numbers of every open issue in the repo, pull requests left out."""
+        out, page = [], 1
+        while True:
+            got = self.rest("GET", f"repos/{self.repo_owner}/{self.repo_name}/issues?state=open&per_page=100&page={page}")
+            out += [i["number"] for i in got if "pull_request" not in i]
+            if len(got) < 100:
+                return out
+            page += 1
 
     def open_pr(self, number):
         """The open pull request built for the issue (from its try branch), or None."""
@@ -207,10 +241,60 @@ def fix_view(board):
         raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {(e.stderr or str(e)).strip()}") from e
 
 
+def label_priority(labels):
+    """The pill the highest priority label gives, or None."""
+    return next((option for label, option in PRIORITY.items() if label in labels), None)
+
+
+def blockers(event, p):
+    """What may have moved a Blocker pill, or None.
+
+    "all" on schedule, or (number, state) of the issue that closed or reopened."""
+    if event == "schedule":
+        return "all"
+    if event == "issues" and p["action"] in ("closed", "reopened"):
+        return p["issue"]["number"], "closed" if p["action"] == "closed" else "open"
+    return None
+
+
+def recompute(board, touched):
+    """Set Blocker on open issues blocking an open issue, else the label's pill.
+
+    Writes only pills that change: every open issue for "all", else the issue that closed or reopened and the issues
+    blocking it. An issue whose links GitHub will not list keeps its pill; the rest are still set, then the run fails naming it."""
+    failed = []
+
+    def refused(n, e):
+        failed.append(f"#{n}: {(e.stderr or str(e)).strip()}")
+
+    if touched == "all":
+        todo = {n: "open" for n in board.open_issues()}
+    else:
+        n, state = touched
+        todo = {n: state}
+        try:
+            todo.update((m["number"], m["state"]) for m in board.blocked_by(n))
+        except subprocess.CalledProcessError as e:
+            refused(n, e)
+    for n, state in todo.items():
+        try:
+            blocks = state == "open" and any(m["state"] == "open" for m in board.blocking(n))
+        except subprocess.CalledProcessError as e:
+            refused(n, e)
+            continue
+        want = "Blocker" if blocks else label_priority(board.labels("issue", n))
+        iid = board.item("issue", n)
+        if board.value(iid, "Priority") != want:
+            board.set(iid, "Priority", want)
+    if failed:
+        raise RuntimeError("Could not list the blocked-by links of " + "; ".join(failed) + "; their pills were left as they are")
+
+
 def sync(event, payload, spec, repo, q=gql, rest=api):
     changes, pill = decide(event, payload), priority(event, payload)
     on_off, pr = switched(event, payload), opened(event, payload)
-    if not spec or not (changes or pill or on_off):
+    touched = blockers(event, payload)
+    if not spec or not (changes or pill or on_off or touched is not None):
         return []
     board = Board(spec, repo, q, rest)
     if pr and any(board.autopilot("issue", n) for n in pr[1]) and not board.autopilot("pr", pr[0]):
@@ -221,13 +305,18 @@ def sync(event, payload, spec, repo, q=gql, rest=api):
         board.set(iid, "Status", status)
         board.set(iid, "Action", action(board, kind, number, needs_you))
     if pill and "Priority" in board.fields:
+        # A label never takes Blocker away: only the links do, on the next close, reopen or scheduled run.
         number, option = pill
-        board.set(board.item("issue", number), "Priority", option)
+        iid = board.item("issue", number)
+        if board.value(iid, "Priority") != "Blocker":
+            board.set(iid, "Priority", option)
     if on_off:
         switch(board, on_off)
     if event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged"):
         # An old Autopilot view is fixed on the next merge, after the merged cards have moved.
         fix_view(board)
+    if touched is not None and "Priority" in board.fields:
+        recompute(board, touched)
     return changes
 
 
