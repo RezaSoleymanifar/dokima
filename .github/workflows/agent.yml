@@ -387,6 +387,15 @@ jobs:
           else
             gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file "$OUT/comment.md"
           fi
+      # The record changes what the issue's and its PR's card show, so both are redrawn now, by main's copy of the
+      # card code (PYTHONPATH is the runtime copied from main). A card that cannot be redrawn never fails the run.
+      - name: Redraw the card on the issue and its PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ env.N }}
+        run: python3 -m dokima.card || echo "::warning title=Card not redrawn::the card could not be redrawn after the record"
       # An approved plan changes what the plan check reads, but GitHub runs it only on a new commit: code runs it
       # again on the pull request's head, with the app's key (minted after the agent finished), once the record is up.
       - name: Run the plan check again once the plan is approved

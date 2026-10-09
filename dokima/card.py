@@ -40,6 +40,8 @@ FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-re
                "files changed": "files-changed", "question": "question", "blocker": "blocker", "note": "note",
                "outside the plan": "outside-the-plan", "issue found": "issue-found", "related": "related",
                "blocked by": "blocked-by", "blocks": "blocks", "stats": "stats"}
+# A sentence ends at ., ? or ! followed by space and a word that is not lowercase, so `dokima.audit` does not end one.
+SENTENCE_END = re.compile(r"[.?!](\s+)(?=[^\sa-z])")
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
 
 
@@ -246,7 +248,11 @@ def criterion_item(repo, label, c, check, tests):
     then Source linking to where the owner asked for it, when it has one."""
     words = escape(c.get("text"))
     if check:
-        words = f'<a href="{check["html_url"]}">{words}</a>'
+        # Only the criterion's first sentence is the link; the explanation after it stays plain text.
+        text = c.get("text") or ""
+        end = SENTENCE_END.search(text)
+        sentence, rest = (text[:end.start(1)], text[end.end(1):]) if end else (text, "")
+        words = f'<a href="{check["html_url"]}">{escape(sentence)}</a>' + (f" {escape(rest)}" if rest else "")
     out = [f"- {circle(repo, state(check))} **{label}:** {words}"]
     for t in tests:
         if t and t.get("verified_by"):
@@ -516,11 +522,38 @@ def gallery(repo, out):
         print(f"Drew {name}.md")
 
 
+def merged_prs(repo):
+    """Every merged pull request that carries a card, page by page."""
+    out, page = [], 1
+    while True:
+        prs = json.loads(gh("api", f"repos/{repo}/pulls?state=closed&per_page=100&page={page}"))
+        out += [p for p in prs if p.get("merged_at") and plan.CARD_START in (p.get("body") or "")]
+        if len(prs) < 100:
+            return out
+        page += 1
+
+
+def redraw_merged(repo):
+    """Redraw each merged pull request's stale card, on it and its issue.
+
+    A card is stale when it no longer matches a fresh drawing. Runs when the card code changes on main; a card
+    already right is left alone."""
+    for p in merged_prs(repo):
+        number = plan.pr_issue_number(repo, p["number"])
+        if not number:
+            print(f"PR #{p['number']} closes no issue; its card is left as it is.")
+            continue
+        draw(repo, number, p["number"], stale_only=True)
+
+
 def main():
     if sys.argv[1:2] == ["gallery"] and len(sys.argv) == 3:
         gallery(os.environ.get("REPO") or "dokima-dev/dokima", sys.argv[2])
         return
     repo = os.environ["REPO"]
+    if sys.argv[1:] == ["merged"]:
+        redraw_merged(repo)
+        return
     number, pr_number = find_work(repo)
     if not number:
         print("No issue for this event; nothing to write.")
@@ -528,11 +561,20 @@ def main():
     draw(repo, number, pr_number)
 
 
-def draw(repo, number, pr_number, plans=None, noted=None):
+def stale(current, card):
+    """True when the issue's text with a fresh card differs from what it holds now."""
+    try:
+        return body.redraw(current, card) != current
+    except body.Refused:
+        return True
+
+
+def draw(repo, number, pr_number, plans=None, noted=None, stale_only=False):
     """Write the card at the top of the issue and its PR.
 
     `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
-    (False) issues from the index of those whose approved plans link here.
+    (False) issues from the index of those whose approved plans link here. With `stale_only`, a page whose card already
+    matches a fresh drawing is left alone.
     """
     issue = plan.fetch_issue(repo, number)
     found = gather(repo, number, pr_number)
@@ -543,12 +585,14 @@ def draw(repo, number, pr_number, plans=None, noted=None):
     found["linked"] = their_links(repo, number, found["sources"], plans)
     pr = found["pr"]
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
-    if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
-        print(f"Card written into issue #{number}")
+    card = render(repo, issue, found)
+    if not stale_only or stale(issue["current_body"] or "", card):
+        if body.save(repo, number, issue["current_body"] or "", card):
+            print(f"Card written into issue #{number}")
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
-    if pr:
+    if pr and (not stale_only or pr_body(card, pr.get("body")) != pr.get("body")):
         with open("pr.md", "w") as f:
-            f.write(pr_body(render(repo, issue, found), pr.get("body")))
+            f.write(pr_body(card, pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
 
