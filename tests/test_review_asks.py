@@ -32,10 +32,10 @@ SPLIT = {"kind": "feature", "feature": "f", "stories": [
 ASKS = [{"ask": "Paint the door blue", "source": "https://github.com/o/r/issues/9", "criterion": "9.1"},
         {"ask": "Oil the hinges", "source": "https://github.com/o/r/issues/9#issuecomment-12", "criterion": "9.2"}]
 APPROVE = {"previous_step": {"did": ["Wrote three criteria."], "decided": [], "open": []},
-           "verdict": "approve", "summary": "Every ask has a criterion and a test.", "blockers": [], "asks": ASKS}
+           "verdict": "approve", "summary": "Every ask has a criterion and a test.", "asks": ASKS}
 BLOCK = {**APPROVE, "verdict": "block", "summary": "One ask has no criterion.",
-         "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "An ask is dropped.",
-                       "evidence": "issue #9", "fix": "Add a criterion for it.", "fixer": "planner"}]}
+         "raises": [{"kind": "blocker", "to": "planner", "label": "9.1", "text": "An ask is dropped.",
+                     "evidence": "issue #9"}]}
 
 
 def run(*args, stage=None):
@@ -190,11 +190,11 @@ def load_json(path):
 def test_real_hand_backs_are_kept_as_samples_and_pass_their_checkers(record_property, tmp_path):
     """Real plan.json, work.json and review.json hand-backs are kept under tests/samples/, and each passes its checker.
 
-    Each folder tests/samples/N/ holds one issue's hand-backs, copied from the bot's record comments: plan.json, and
+    Each folder tests/samples/N/ holds one issue's hand-backs, copied from the bot's record comments (with the fields
+    #300 retired turned into raises, a concern into a question for the owner, and empty or dropped ones left out): plan.json, and
     any of work.json, review-plan.json and review-pr.json, with sources.json giving, for every one of them, the link
     to the record comment on GitHub it was copied from. Across all folders there is at least one plan, one work and
-    one review. Each plan passes the plan checker's reading of plan.json for issue N in dokima-dev/dokima, with its
-    questions; each work.json passes `agent check work` against its plan; each review passes the workflow's review
+    one review. Each plan passes the plan checker's reading of plan.json for issue N in dokima-dev/dokima; each work.json passes `agent check work` against its plan; each review passes the workflow's review
     check in the pack and STAGE of its stage, a plan review's or a code review's. The format is the settled one: each
     review sample, graded as a review of its plan with its asks list taken away, is rejected for the missing list."""
     record_property("proves", "158.4")
@@ -215,10 +215,8 @@ def test_real_hand_backs_are_kept_as_samples_and_pass_their_checkers(record_prop
                 f"158.4: tests/samples/{n}/sources.json gives no link to the record comment {f} was copied from"
 
         plan = load_json(os.path.join(where, "plan.json"))
-        code = ("import json, sys\nfrom dokima.planner import read_output, Garbled\nfrom dokima.agent import problems_questions\n"
-                "try:\n    kind, r = read_output(sys.argv[1], sys.argv[2])\nexcept Garbled as e:\n    print(e); sys.exit(1)\n"
-                "raw = r['raw'] if kind == 'plan' else json.loads(r)\nbad = problems_questions(raw.get('questions', []))\n"
-                "print('\\n'.join(bad)); sys.exit(1 if bad else 0)\n")
+        code = ("import sys\nfrom dokima.planner import read_output, Garbled\n"
+                "try:\n    read_output(sys.argv[1], sys.argv[2])\nexcept Garbled as e:\n    print(e); sys.exit(1)\n")
         env = {**os.environ, "PYTHONPATH": ROOT, "GITHUB_REPOSITORY": "dokima-dev/dokima", "GITHUB_SERVER_URL": "https://github.com"}
         env.pop("PYTHONSAFEPATH", None)
         p = subprocess.run([sys.executable, "-c", code, where, n], cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)

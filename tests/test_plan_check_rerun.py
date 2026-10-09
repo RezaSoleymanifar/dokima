@@ -178,9 +178,7 @@ def other_run(rid, sha):
 # planner's push made the plan check fail with "No approved plan found", and the plan reviewer now looks again.
 REPLANNED = ts.STORY_APPROVED + [ts.record_comment(ts.planner_record(ts.STORY), "2026-10-07T11:00:00Z")]
 BLOCK = {**ts.APPROVE, "verdict": "block", "summary": "57.1's test proves nothing.",
-         "blockers": [{"id": "B1", "criterion": "57.1", "problem": "The test asserts nothing.",
-                       "evidence": "tests/test_x.py::test_a", "fix": "Assert the outcome.", "test": "tests/test_x.py::test_a",
-                       "fixer": "planner"}]}
+         "raises": [{"kind": "blocker", "to": "planner", "label": "57.1", "text": "The test asserts nothing.", "evidence": "tests/test_x.py::test_a"}]}
 
 
 class PlanReview(ts.Machine):
