@@ -48,8 +48,8 @@ jobs:
       - name: Use main's test setup
         working-directory: pr
         run: |
-          setup=(\( -name conftest.py -o -name pytest.ini -o -name .pytest.ini -o -name pyproject.toml -o -name setup.cfg -o -name tox.ini \))
-          find . -path ./.git -prune -o -type f "${setup[@]}" -print0 | xargs -0 -r rm -f
+          setup=(\( -name conftest.py -o -name pytest.ini -o -name .pytest.ini -o -name pytest.toml -o -name .pytest.toml -o -name pyproject.toml -o -name setup.cfg -o -name tox.ini \))
+          find . -path ./.git -prune -o \( -type f -o -type l \) "${setup[@]}" -print0 | xargs -0 -r rm -f
           (cd .. && find . -path ./pr -prune -o -path ./.git -prune -o -type f "${setup[@]}" -print0 | xargs -0 -r cp --parents -t pr)
       - name: Run this done-when's tests
         working-directory: pr
