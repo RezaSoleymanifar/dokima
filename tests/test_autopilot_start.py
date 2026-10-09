@@ -79,19 +79,17 @@ def test_autopilot_start_on_an_issue_with_no_plan_starts_its_planner(record_prop
 
 
 def test_autopilot_start_never_starts_the_issue_itself_where_it_must_not(record_property, tmp_path):
-    """`/autopilot start` leaves the issue itself alone when it is already planned or planning, split, or blocked by an open issue.
+    """`/autopilot start` leaves the issue alone when it is planned, planning or split.
 
-    Four issues #57 that must not get their planner started nor the Autopilot line: one already planned (a planner
-    record on it), one whose planner is running now (a live card), one split into sub-issues (#101 waits on nothing,
-    so #101 starts instead), and one blocked by #110, still open. The blocked one must then start, once, when #110
-    closes, with the line autopilot gives every issue whose blockers merged. Beside them, the same #57 with no plan and
-    its only blocker already closed must start at once."""
+    Three issues #57 that must not get their planner started nor the Autopilot line: one already planned (a planner
+    record on it), one whose planner is running now (a live card), and one split into sub-issues (#101 waits on
+    nothing, so #101 starts instead). Beside them, the same #57 with no plan and its only blocker already closed must
+    start at once. (A blocked #57 now starts planning at once too: #313.)"""
     record_property("proves", "245.2")
     assert_a_new_issue_starts(tmp_path / "unblocked", "245.2", deps={ISSUE: [110]}, closed=[110])
     cases = (("planned", {}, {}, [tac.planned(ISSUE, 4001)], {}),
              ("running", {}, {}, [tac.running(ISSUE, 77, 4002)], {}),
-             ("split", {ISSUE: [101]}, {}, [], {101: 1}),
-             ("blocked", {}, {ISSUE: [110]}, [], {}))
+             ("split", {ISSUE: [101]}, {}, [], {101: 1}))
     for case, tree, deps, seed, want in cases:
         m = tac.Repo(tmp_path / case, tree, {}, deps=deps, seed=seed, running_runs=[77])
         m.listen("/autopilot start")
@@ -99,13 +97,6 @@ def test_autopilot_start_never_starts_the_issue_itself_where_it_must_not(record_
         started = m.planners_started("245.2")
         assert started == want, f"245.2 ({case}): /autopilot start started planners {started}, expected {want}\n{m.tail()}"
         assert lines(m, ISSUE, LINE) == 0, f"245.2 ({case}): #{N} got {LINE!r} though it must not start: {on_issue(m, ISSUE)}"
-        if case == "blocked":
-            m.close(110)
-            assert not m.failed, f"245.2 (blocked): a workflow failed when #110 closed: {m.failures}\n{m.tail()}"
-            started = m.planners_started("245.2")
-            assert started == {ISSUE: 1}, f"245.2 (blocked): #{N} did not start once when its blocker #110 closed: {started}"
-            assert lines(m, ISSUE, LINE_BLOCKERS) == 1, \
-                f"245.2 (blocked): #{N} did not get one {LINE_BLOCKERS!r} when #110 closed: {on_issue(m, ISSUE)}"
 
 
 def test_autopilot_start_still_picks_up_what_waits_in_the_tree(record_property, tmp_path):
@@ -113,7 +104,7 @@ def test_autopilot_start_still_picks_up_what_waits_in_the_tree(record_property, 
 
     Three trees: #57 with an approved plan waiting for `/work` (its worker starts with one `Autopilot: plan approved,
     starting work` line, and no planner starts); #57 split into #101 and #102, #102 under #101's blocker (#101's
-    planner starts, #57's and #102's do not); and #57 whose pull request #60 its code review approved with every check
+    and blocked #102's planners start, #57's does not); and #57 whose pull request #60 its code review approved with every check
     green (#60 merges, and no planner starts). Beside them, #57 with no plan and nothing waiting must start its planner,
     so code that never starts one cannot pass."""
     record_property("proves", "245.3")
@@ -135,7 +126,7 @@ def test_autopilot_start_still_picks_up_what_waits_in_the_tree(record_property, 
     m = tac.Repo(tmp_path / "children", {ISSUE: [101, 102]}, {}, deps={102: [101]})
     m.listen("/autopilot start")
     assert not m.failed, f"245.3 (children): the listener failed:\n{m.tail()}"
-    assert m.planners_started("245.3") == {101: 1}, f"245.3 (children): planners started: {m.planners_started('245.3')}"
+    assert m.planners_started("245.3") == {101: 1, 102: 1}, f"245.3 (children): planners started: {m.planners_started('245.3')}"
     assert lines(m, ISSUE, LINE) == 0, f"245.3 (children): #{N}, a parent, got {LINE!r}"
 
     m = tam.Command(tmp_path / "approved", {int(PR): tam.pr_state(ISSUE, tam.GREEN)}, {ISSUE: "approve"}, tree={ISSUE: []})

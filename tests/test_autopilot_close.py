@@ -449,13 +449,16 @@ def test_a_close_starts_every_sibling_whose_blockers_have_all_merged(record_prop
     #57 is on autopilot with sub-issues #101 to #105. #102 is blocked by #101; #105 by #101 and #110 (already
     closed, outside the tree); #103 by #101 and #104, which is still open; #104 already has a plan. When #101 closes,
     #102 and #105 must each have their planner started once by Dokima's signal and get exactly one comment reading the
-    Autopilot line; #103 (still blocked), #104 (already planned), #101 and the parent #57 must not."""
+    Autopilot line; #104 (already planned), #101 and the parent #57 must not. #103, still blocked by #104, starts
+    planning too (#313: on autopilot a blocked story plans at once), once, but not with the blockers-merged line."""
     record_property("proves", "213.1")
     m = Repo(tmp_path / "close", {57: [101, 102, 103, 104, 105]}, ALL,
              deps={102: [101], 103: [101, 104], 105: [101, 110]}, closed=[110], seed=[planned(104, 4001)])
     m.close(101)
     assert not m.failed, f"213.1: a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "close", {102, 105}, {57, 101, 103, 104})
+    assert_started_exactly(m, "213.1", "close", {102, 105}, {57, 101, 104})
+    assert m.planners_started("213.1").get(103) == 1 and m.autopilot_lines(103) == 0, \
+        f"213.1 (close): #103, still blocked, should start planning once without the blockers-merged line: {m.new_comments(103)}"
 
 
 def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property, tmp_path):
@@ -463,8 +466,8 @@ def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property
 
     Runs the listener on the code owner's `/work` on #57, whose approved split has two stories, the second blocked by
     the first. GitHub numbers them #900 and #901. With #57 on autopilot, both stories must be on autopilot (so the
-    tree keeps going below #57), #900 must have its planner started once and get one Autopilot line, and #901
-    neither. Beside it, the same `/work` with #57 not on autopilot puts neither story on autopilot, starts neither
+    tree keeps going below #57), #900 must have its planner started once and get one Autopilot line, and #901, still
+    blocked, starts planning once too (#313) without the blockers-merged line. Beside it, the same `/work` with #57 not on autopilot puts neither story on autopilot, starts neither
     and posts no Autopilot line."""
     record_property("proves", "213.1")
     m = Repo(tmp_path / "on", {}, {57: [LABEL]}, history=ts.SPLIT_APPROVED)
@@ -472,7 +475,9 @@ def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property
     assert not m.failed, f"213.1 (split on autopilot): the listener failed on /work:\n{m.tail()}"
     assert json.load(open(f"{m.tmp}/gh/tree.json")).get("57") == [900, 901], \
         f"213.1 (split on autopilot): /work did not file the two stories as #900 and #901:\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "split on autopilot", {900}, {57, 901})
+    assert_started_exactly(m, "213.1", "split on autopilot", {900}, {57})
+    assert m.planners_started("213.1").get(901) == 1 and m.autopilot_lines(901) == 0, \
+        f"213.1 (split on autopilot): blocked #901 should start planning once without the blockers-merged line: {m.new_comments(901)}"
     filed = m.filed_labels()
     for n in (900, 901):
         assert LABEL in filed.get(n, []), (f"213.1 (split on autopilot): story #{n}, filed under #57 on autopilot, is not "
@@ -489,18 +494,21 @@ def test_a_split_filed_on_autopilot_starts_its_unblocked_stories(record_property
 
 
 def test_autopilot_start_on_a_parent_picks_up_the_children_waiting(record_property, tmp_path):
-    """`/autopilot start` on a parent starts every child with no plan and nothing open to wait for; a blocked child waits.
+    """`/autopilot start` on a parent starts planning every child with no plan, blocked or not.
 
     #57 has sub-issues #101 (no blockers), #102 (blocked by #101, still open) and #103 (blocked by #110, already
     closed), none planned. After the code owner's `/autopilot start` on #57, #101 and #103 must each have their planner
-    started once and get one Autopilot line; #102 and #57 itself must not. Beside it, `/autopilot stop` on the same
+    started once and get one Autopilot line; #102, still blocked, starts once too (#313) without the blockers-merged
+    line, and #57 itself must not. Beside it, `/autopilot stop` on the same
     tree starts nothing and posts no Autopilot line."""
     record_property("proves", "213.1")
     tree, deps = {57: [101, 102, 103]}, {102: [101], 103: [110]}
     m = Repo(tmp_path / "start", tree, {}, deps=deps, closed=[110])
     m.listen("/autopilot start")
     assert not m.failed, f"213.1 (/autopilot start): the listener failed:\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "/autopilot start", {101, 103}, {57, 102})
+    assert_started_exactly(m, "213.1", "/autopilot start", {101, 103}, {57})
+    assert m.planners_started("213.1").get(102) == 1 and m.autopilot_lines(102) == 0, \
+        f"213.1 (/autopilot start): blocked #102 should start planning once without the blockers-merged line: {m.new_comments(102)}"
 
     m = Repo(tmp_path / "stop", tree, {57: [LABEL], 101: [LABEL], 102: [LABEL], 103: [LABEL]}, deps=deps, closed=[110])
     m.listen("/autopilot stop")
@@ -663,9 +671,9 @@ def test_a_close_whose_run_github_drops_from_the_queue_still_counts(record_prope
 
     GitHub's queue keeps one waiting run: when a third close arrives, the one waiting is cancelled. So the run that goes
     must do the work of every close before it, in any tree. Three trees are on autopilot: #57 (#101, #102 blocked by
-    #101), #58 (#201, #202 blocked by #201) and #59 (#301), plus #60 alone. #101 closes and its run goes: #102 starts.
-    Then #201 and #60 close but their runs are dropped, and #301 closes and its run goes. After it, #202 must have
-    started once with one Autopilot line, #102 must not have started again, #59 must be closed as completed with one
+    #101), #58 (#201, #202 blocked by #201) and #59 (#301), plus #60 alone. #101 closes and its run goes: #102 starts,
+    and so does every story on autopilot not yet started, blocked or not (#313). Then #201 and #60 close but their
+    runs are dropped, and #301 closes and its run goes. After it, no planner has started twice, #59 must be closed as completed with one
     comment saying its tree is done, #59, #301 and #60 must be off autopilot, and #57, #58, #102 and #202 must still be
     open and on autopilot."""
     record_property("proves", "213.5")
@@ -674,12 +682,14 @@ def test_a_close_whose_run_github_drops_from_the_queue_still_counts(record_prope
     m = Repo(tmp_path / "dropped", tree, labels, deps={102: [101], 202: [201]})
     m.close(101)
     assert not m.failed, f"213.5 (dropped): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
-    assert_started_exactly(m, "213.5", "#101's run", {102}, {202})
+    assert_started_exactly(m, "213.5", "#101's run", {102}, set())
     m.close_quietly(201)
     m.close_quietly(60)
     m.close(301)
     assert not m.failed, f"213.5 (dropped): a workflow failed when #301 closed: {m.failures}\n{m.tail()}"
-    assert_started_exactly(m, "213.5", "#201's run was dropped, #301's went", {102, 202}, {57, 58, 59, 101, 201, 301, 60})
+    started = m.planners_started("213.5")
+    assert all(v == 1 for v in started.values()) and 202 in started and not {57, 58, 59} & set(started), \
+        f"213.5 (dropped): after #301's run, a planner started twice, #202 never started, or a parent started: {started}"
     assert m.state(59) == ("closed", "completed"), \
         f"213.5 (dropped): #59 is {m.state(59)} after its only sub-issue #301 closed, expected closed as completed\n{m.tail()}"
     said = m.new_comments(59)
@@ -702,12 +712,16 @@ def test_autopilot_start_picks_up_waiting_issues_at_every_level(record_property,
     #57 has #101 and #102; #101 was split into #201 and #202; #201 was split into #301 and #302. #101 and #201
     already have plans. #202 is blocked by #201 (open) and #302 by #301 (open); #102 and #301 wait on nothing. After
     the code owner's `/autopilot start` on #57, #102 (one level down) and #301 (three levels down) must each have
-    their planner started once with one Autopilot line, and #57, #101, #201, #202 and #302 must not."""
+    their planner started once with one Autopilot line, #202 and #302, still blocked, start once too (#313), and #57,
+    #101 and #201 must not."""
     record_property("proves", "213.1")
     m = Repo(tmp_path / "deep", DEEP, {}, deps={202: [201], 302: [301]}, seed=[planned(101, 4001), planned(201, 4002)])
     m.listen("/autopilot start")
     assert not m.failed, f"213.1 (/autopilot start, every level): the listener failed:\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "/autopilot start, every level", {102, 301}, {57, 101, 201, 202, 302})
+    assert_started_exactly(m, "213.1", "/autopilot start, every level", {102, 301}, {57, 101, 201})
+    started = m.planners_started("213.1")
+    assert started.get(202) == 1 and started.get(302) == 1, \
+        f"213.1 (/autopilot start, every level): blocked #202 and #302 should each start planning once: {started}"
 
 
 def test_a_close_deep_in_the_tree_starts_its_waiting_siblings(record_property, tmp_path):
@@ -715,20 +729,24 @@ def test_a_close_deep_in_the_tree_starts_its_waiting_siblings(record_property, t
 
     The whole tree of #57 (#101 and #102, #101 split into #201 and #202, #201 split into #301 and #302) is on
     autopilot; #101, #102 and #201 have plans. #302 is blocked by #301, #202 by #201. When #301 closes, #302 must
-    start once with one Autopilot line and #202 (still blocked by #201) must not. Then #302 closes: #201's last
-    sub-issue is done, so #201 closes, and #202, whose only blocker was #201, must start once."""
+    start once with one Autopilot line, and #202, still blocked by #201 and never planned, starts planning once too
+    (#313). Then #302 closes: #201's last sub-issue is done, so #201 closes, and no planner starts a second time."""
     record_property("proves", "213.1")
     labels = {n: [LABEL] for n in (57, 101, 102, 201, 202, 301, 302)}
     m = Repo(tmp_path / "deep", DEEP, labels, deps={202: [201], 302: [301]},
              seed=[planned(101, 4001), planned(102, 4002), planned(201, 4003)])
     m.settle(301)
     assert not m.failed, f"213.1 (deep close): a workflow failed when #301 closed: {m.failures}\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "#301 closed, three levels down", {302}, {57, 101, 102, 201, 202, 301})
+    assert_started_exactly(m, "213.1", "#301 closed, three levels down", {302}, {57, 101, 102, 201, 301})
+    assert m.planners_started("213.1").get(202) == 1, \
+        f"213.1 (deep close): blocked #202 should start planning once: {m.planners_started('213.1')}"
     m.settle(302)
     assert not m.failed, f"213.1 (deep close): a workflow failed when #302 closed: {m.failures}\n{m.tail()}"
     assert m.state(201) == ("closed", "completed"), \
         f"213.1 (deep close): #201 is {m.state(201)} after its last sub-issue #302 closed, expected closed as completed\n{m.tail()}"
-    assert_started_exactly(m, "213.1", "#201 done, two levels down", {202, 302}, {57, 101, 102, 201, 301})
+    assert_started_exactly(m, "213.1", "#201 done, two levels down", {302}, {57, 101, 102, 201, 301})
+    assert m.planners_started("213.1").get(202) == 1, \
+        f"213.1 (deep close): #202 started planning again: {m.planners_started('213.1')}"
 
 
 def test_a_tree_two_levels_deep_closes_level_by_level_and_goes_off_autopilot(record_property, tmp_path):
