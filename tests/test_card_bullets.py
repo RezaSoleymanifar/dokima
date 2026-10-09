@@ -247,6 +247,7 @@ def test_only_a_code_owners_merge_shows_owner_approval_passed(record_property):
     changes, and checks Owner approval shows passed both times; then a PR merged by a stranger, one merged by
     Dokima's bot on autopilot, and an open PR, all with no review, and checks none of them shows it passed. Proves 235.3."""
     record_property("proves", "235.3")
+    record_property("proves", "344.2")
     assert approval(draw(pr=merged("boss"), reviews=[])) == "passed", \
         "235.3: a code owner's merge with no Approve review leaves Owner approval unchecked"
     assert approval(draw(pr=merged("boss"), reviews=[review("CHANGES_REQUESTED")])) == "passed", \
@@ -301,6 +302,7 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
     is written on both pages, the two are identical, both link to issue #40 and PR #5, and both show the code review
     passed. Proves 235.4."""
     record_property("proves", "235.4")
+    record_property("proves", "344.1")
     on_issue, on_pr = write_main(monkeypatch, tmp_path, dict(FOUND, pr=pr))
     assert on_issue, "235.4: the card was not written on the issue"
     assert on_pr, f"235.4: the card was not written on the {pr['state']} PR, so it keeps an older card than the issue"
