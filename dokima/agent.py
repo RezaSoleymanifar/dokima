@@ -516,8 +516,10 @@ def render(rec, pr=None, plan=None, earlier=None):
     if role == "updater":
         # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
         by = f" (#{h['merged_pr']})" if h.get("merged_pr") else ""
+        so = {True: "so the planner re-plans against the new main", False: "so the issue needs a re-plan",
+              None: "so the issue needs a re-plan, but autopilot could not be read"}.get(h.get("autopilot", True))
         lines = [MARK, f"Pull request #{h.get('pr')} clashes with `{h.get('base') or 'main'}` since {str(h.get('merge', ''))[:7]}{by} "
-                       "merged, so the planner re-plans against the new main. The files that clashed:", ""]
+                       f"merged, {so}. The files that clashed:", ""]
         lines += [f"- `{f}`" for f in h.get("files") or []] or [f"- {h.get('why') or 'none listed'}"]
         lines += record_fold(rec) + ["", f"<sub>Found by code, no model" + (f" · [run]({rec['run']})" if rec.get("run") else "") + "</sub>"]
         return "\n".join(lines) + "\n"
@@ -1690,6 +1692,14 @@ def not_accepted(items, h, owners, body, number, parent=lambda: None):
     return [q for q in qs if q not in ok]
 
 
+def clash_pending(recs):
+    """True when the newest clash record has no worker record after it.
+
+    The clash was sent back and is not rebuilt yet."""
+    at = max((i for i, r in enumerate(recs) if r.get("role") == "updater"), default=None)
+    return at is not None and not any(r.get("role") == "worker" for r in recs[at + 1:])
+
+
 def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number="", parent=lambda: None):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
@@ -1719,8 +1729,13 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     if role == "worker":
         return ("start", "reviewer", "pr")
     if role == "updater":
-        # A clash with main goes to the planner by itself: the plan may not fit main anymore.
-        return ("start", "planner", "")
+        # A clash with main goes to the planner by itself only on autopilot, as its record says: the plan may not fit
+        # main anymore. A record from before #369 says nothing and started the planner.
+        on = h.get("autopilot", True)
+        if on is None:
+            return ("stop", f"{UNREAD} The pull request clashes with main and needs a re-plan: say `/plan` to re-plan it.")
+        return ("start", "planner", "") if on else \
+            ("stop", "The pull request clashes with main and needs a re-plan. Say `/plan` to re-plan it against the new main.")
     if role != "reviewer":
         return ("stop", "")
     verdict = h.get("verdict")
@@ -1740,6 +1755,8 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         if on:
             return ("start", "split" if plan.get("kind") == "feature" else "worker", "", "autopilot")
         why = "The plan is approved. Say `/work` to build it, or `/plan` with changes."
+        if clash_pending(records(items)):
+            why = "The plan is approved and the pull request clashes with main. Say `/work` to rebuild it on the new main, or `/plan` with changes."
         return ("stop", f"{UNREAD} {why}" if on is None else why)
     if verdict == "approve":
         return ("stop", "The work is approved. Merge the pull request, or review it with a command to send it back.")
@@ -2092,6 +2109,13 @@ def main(argv):
         switch, number = argv[2], argv[3]
         repo = os.environ["GITHUB_REPOSITORY"]
         switched = switch_autopilot(repo, number, switch)
+        said_on = os.environ.get("NUMBER", "")
+        if switch == "stop" and os.environ.get("ON_PR") == "true" and said_on.isdigit() and int(said_on) not in switched:
+            # The pull request it was said on goes off autopilot too, even when its issue had no label.
+            labels = {l["name"] for l in json.loads(gh("api", f"repos/{repo}/issues/{said_on}")).get("labels", [])}
+            if AUTOPILOT in labels:
+                gh("api", "-X", "DELETE", f"repos/{repo}/issues/{said_on}/labels/{AUTOPILOT}")
+                switched.append(int(said_on))
         pick = None
         if switch == "start" and len(argv) > 4:
             # What is already waiting for the owner's `/work` is picked up: written to OUT for the workflow to start.
