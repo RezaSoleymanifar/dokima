@@ -2,16 +2,19 @@
 
     python3 -m dokima.audit OWNER/REPO   # reads DOKIMA_BOARD ("org/number") and .github/CODEOWNERS where it runs
 
-compare() gives one plain line per setting that differs from dokima/manifest.py or could not be read; run() puts them
-on the Setup issue (opened, pinned and marked Needs you, or updated), closes it with one line once nothing is off, and
-writes nothing when nothing is off and none is open. Both take a GitHub object for every read and write; GitHub below
-is the real one, through gh.
+compare() gives one plain line per setting that differs from dokima/manifest.py or could not be read. run() first sets
+each declared label, board option and view that differs to the manifest's (never a whole missing field, a branch rule
+or an app permission, which it only reports), then puts what is still off on the Setup issue (opened, pinned and marked
+Needs you, or updated) followed by what it fixed. When nothing is left off it lists the fixes, if any, and closes the
+Setup issue with one line; it writes nothing when nothing was off and none is open. Both take a GitHub object for every
+read and write; GitHub below is the real one, through gh.
 """
 import json
 import os
 import re
 import subprocess
 import sys
+from urllib.parse import quote
 
 from dokima import board, manifest
 
@@ -34,58 +37,68 @@ def unverified(what, e):
     return f"{what} could not be verified: GitHub said `{reason(e)}`."
 
 
-def compare_labels(live):
+def label_lines(name, want, have):
+    if have is None:
+        return [f"Label `{name}` is missing; Dokima needs it with color `{want['color']}` and description "
+                f"`{want['description']}`."]
     lines = []
-    for name, want in manifest.LABELS.items():
-        have = live.get(name)
-        if have is None:
-            lines.append(f"Label `{name}` is missing; Dokima needs it with color `{want['color']}` and description "
-                         f"`{want['description']}`.")
-            continue
-        if (have.get("color") or "").lower() != want["color"].lower():
-            lines.append(f"Label `{name}` has color `{have.get('color')}`; Dokima needs `{want['color']}`.")
-        if (have.get("description") or "") != want["description"]:
-            lines.append(f"Label `{name}` has description `{have.get('description') or ''}`; Dokima needs "
-                         f"`{want['description']}`.")
+    if (have.get("color") or "").lower() != want["color"].lower():
+        lines.append(f"Label `{name}` has color `{have.get('color')}`; Dokima needs `{want['color']}`.")
+    if (have.get("description") or "") != want["description"]:
+        lines.append(f"Label `{name}` has description `{have.get('description') or ''}`; Dokima needs "
+                     f"`{want['description']}`.")
     return lines
+
+
+def compare_labels(live):
+    return [l for name, want in manifest.LABELS.items() for l in label_lines(name, want, live.get(name))]
+
+
+def missing_field(field, options):
+    return [f"Board field `{field}` is missing; Dokima needs it with the options "
+            + ", ".join(f"`{o}` ({v['color']})" for o, v in options.items()) + "."]
+
+
+def option_lines(field, option, want, have):
+    if have is None:
+        return [f"Option `{option}` of the board field `{field}` is missing; Dokima needs it with color "
+                f"`{want['color']}` and description `{want['description']}`."]
+    lines = []
+    if (have.get("color") or "").upper() != want["color"].upper():
+        lines.append(f"Option `{option}` of the board field `{field}` has color `{have.get('color')}`; "
+                     f"Dokima needs `{want['color']}`.")
+    if (have.get("description") or "") != want["description"]:
+        lines.append(f"Option `{option}` of the board field `{field}` has description "
+                     f"`{have.get('description') or ''}`; Dokima needs `{want['description']}`.")
+    return lines
+
+
+def field_lines(field, options, have_options):
+    return [l for option, want in options.items() for l in option_lines(field, option, want, have_options.get(option))]
 
 
 def compare_fields(live):
     lines = []
     for field, options in manifest.FIELDS.items():
         have_options = live.get(field)
-        if have_options is None:
-            lines.append(f"Board field `{field}` is missing; Dokima needs it with the options "
-                         + ", ".join(f"`{o}` ({v['color']})" for o, v in options.items()) + ".")
-            continue
-        for option, want in options.items():
-            have = have_options.get(option)
-            if have is None:
-                lines.append(f"Option `{option}` of the board field `{field}` is missing; Dokima needs it with color "
-                             f"`{want['color']}` and description `{want['description']}`.")
-                continue
-            if (have.get("color") or "").upper() != want["color"].upper():
-                lines.append(f"Option `{option}` of the board field `{field}` has color `{have.get('color')}`; "
-                             f"Dokima needs `{want['color']}`.")
-            if (have.get("description") or "") != want["description"]:
-                lines.append(f"Option `{option}` of the board field `{field}` has description "
-                             f"`{have.get('description') or ''}`; Dokima needs `{want['description']}`.")
+        lines += missing_field(field, options) if have_options is None else field_lines(field, options, have_options)
+    return lines
+
+
+def view_lines(view, want, have):
+    if have is None:
+        return [f"View `{view}` is missing on the board; Dokima needs a `{want['layout']}` view filtered to "
+                f"`{want['filter']}`."]
+    lines = []
+    if (have.get("layout") or "").lower() != want["layout"].lower():
+        lines.append(f"View `{view}` has layout `{have.get('layout')}`; Dokima needs `{want['layout']}`.")
+    if (have.get("filter") or "") != want["filter"]:
+        lines.append(f"View `{view}` has filter `{have.get('filter') or ''}`; Dokima needs `{want['filter']}`.")
     return lines
 
 
 def compare_views(live):
-    lines = []
-    for view, want in manifest.VIEWS.items():
-        have = live.get(view)
-        if have is None:
-            lines.append(f"View `{view}` is missing on the board; Dokima needs a `{want['layout']}` view filtered to "
-                         f"`{want['filter']}`.")
-            continue
-        if (have.get("layout") or "").lower() != want["layout"].lower():
-            lines.append(f"View `{view}` has layout `{have.get('layout')}`; Dokima needs `{want['layout']}`.")
-        if (have.get("filter") or "") != want["filter"]:
-            lines.append(f"View `{view}` has filter `{have.get('filter') or ''}`; Dokima needs `{want['filter']}`.")
-    return lines
+    return [l for view, want in manifest.VIEWS.items() for l in view_lines(view, want, live.get(view))]
 
 
 def compare_rule(branch, live, want):
@@ -116,17 +129,22 @@ def compare_permissions(live):
     return lines
 
 
+def reads(github, repo):
+    """(what, read, check) for every setting compared, in the order of its lines."""
+    out = [("Labels", lambda: github.labels(repo), compare_labels),
+           ("Board fields", github.fields, compare_fields),
+           ("Board views", github.views, compare_views)]
+    out += [(f"Branch rule of `{branch}`", lambda branch=branch: github.branch_rule(repo, branch),
+             lambda rule, branch=branch, want=want: compare_rule(branch, rule, want))
+            for branch, want in manifest.BRANCH_RULES.items()]
+    out += [("App permissions", lambda: github.permissions(repo), compare_permissions)]
+    return out
+
+
 def compare(github, repo):
     """One line per setting that differs from the manifest or could not be read."""
-    reads = [("Labels", lambda: github.labels(repo), compare_labels),
-             ("Board fields", github.fields, compare_fields),
-             ("Board views", github.views, compare_views)]
-    reads += [(f"Branch rule of `{branch}`", lambda branch=branch: github.branch_rule(repo, branch),
-               lambda rule, branch=branch, want=want: compare_rule(branch, rule, want))
-              for branch, want in manifest.BRANCH_RULES.items()]
-    reads += [("App permissions", lambda: github.permissions(repo), compare_permissions)]
     lines = []
-    for what, read, check in reads:
+    for what, read, check in reads(github, repo):
         try:
             live = read()
         except FAILED as e:
@@ -134,6 +152,72 @@ def compare(github, repo):
             continue
         lines += check(live)
     return lines
+
+
+def fix_labels(github, repo, live, attempt):
+    for name, want in manifest.LABELS.items():
+        have = live.get(name)
+        write = github.create_label if have is None else github.update_label
+        attempt(label_lines(name, want, have), lambda: write(repo, name, want["color"], want["description"]))
+
+
+def fix_fields(github, repo, live, attempt):
+    """Set each declared field's options to the manifest's, adding missing ones.
+
+    Every option the field has goes back with its id, so it and its cards stay."""
+    off = []
+    for field, options in manifest.FIELDS.items():
+        have = live.get(field)
+        if have is None:
+            off += missing_field(field, options)
+            continue
+        new = [{"id": v.get("id"), "name": o, "color": v.get("color"), "description": v.get("description") or ""}
+               for o, v in have.items()]
+        for o in new:
+            want = options.get(o["name"])
+            if want:
+                o.update(color=want["color"], description=want["description"])
+        new += [{"id": None, "name": o, "color": want["color"], "description": want["description"]}
+                for o, want in options.items() if o not in have]
+        attempt(field_lines(field, options, have), lambda: github.set_options(field, new))
+    return off
+
+
+def fix_views(github, repo, live, attempt):
+    for view, want in manifest.VIEWS.items():
+        have = live.get(view)
+        write = github.create_view if have is None else github.update_view
+        attempt(view_lines(view, want, have), lambda: write(view, want["layout"], want["filter"]))
+
+
+def fix(github, repo):
+    """(still off, fixed): compare()'s lines, after setting declared labels, options and views.
+
+    A fix GitHub refuses stays off with GitHub's reason; branch rules and permissions are only read."""
+    off, fixed = [], []
+
+    def attempt(lines, write):
+        if not lines:
+            return
+        try:
+            write()
+        except FAILED as e:
+            off.extend(f"{l} The audit could not set it: GitHub said `{reason(e)}`." for l in lines)
+        else:
+            fixed.extend(lines)
+
+    fixes = {"Labels": fix_labels, "Board fields": fix_fields, "Board views": fix_views}
+    for what, read, check in reads(github, repo):
+        try:
+            live = read()
+        except FAILED as e:
+            off.append(unverified(what, e))
+            continue
+        if what in fixes:
+            off += fixes[what](github, repo, live, attempt) or []
+        else:
+            off += check(live)
+    return off, fixed
 
 
 def code_owners(root):
@@ -150,24 +234,35 @@ def code_owners(root):
     return owners
 
 
-def setup_body(lines, owners):
-    who = " ".join(owners) + ", " if owners else ""
-    return (f"{MARK}\n{who}the drift audit found settings on this repo that differ from what Dokima needs, or that it "
-            f"could not verify:\n\n" + "".join(f"- {l}\n" for l in lines)
-            + "\nEach audit updates this issue, and closes it once nothing is off.\n")
+def setup_body(lines, owners, fixed=()):
+    body = MARK + "\n"
+    if lines:
+        who = " ".join(owners) + ", " if owners else ""
+        body += (f"{who}the drift audit found settings on this repo that differ from what Dokima needs, or that it "
+                 f"could not verify:\n\n" + "".join(f"- {l}\n" for l in lines) + "\n")
+    if fixed:
+        body += ("The drift audit fixed these settings itself, setting each to what Dokima needs:\n\n"
+                 + "".join(f"- {l}\n" for l in fixed) + "\n")
+    return body + "Each audit updates this issue, and closes it once nothing is off.\n"
 
 
 def run(github, repo, root="."):
-    """Report the audit on the Setup issue; returns the Setup issue it touched, or None."""
-    lines = compare(github, repo)
+    """Fix what it may, report on the Setup issue; returns the issue touched, or None."""
+    lines, fixed = fix(github, repo)
     issue = github.setup_issue(repo)
     if not lines:
-        if issue is None:
+        if issue is None and not fixed:
             return None
-        github.comment(repo, issue["number"], NOTHING_OFF)
-        github.close_issue(repo, issue["number"])
-        return issue["number"]
-    body = setup_body(lines, code_owners(root))
+        if issue is None:
+            n = github.create_issue(repo, TITLE, setup_body(lines, [], fixed))
+        else:
+            n = issue["number"]
+            if fixed:
+                github.edit_issue(repo, n, setup_body(lines, [], fixed))
+        github.comment(repo, n, NOTHING_OFF)
+        github.close_issue(repo, n)
+        return n
+    body = setup_body(lines, code_owners(root), fixed)
     if issue is None:
         n = github.create_issue(repo, TITLE, body)
         github.pin_issue(repo, n)
@@ -182,6 +277,13 @@ def run(github, repo, root="."):
 def gh(*args):
     """gh's output; raises subprocess.CalledProcessError, with GitHub's reason in stderr, when GitHub refuses."""
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+
+
+def graphql(query, **variables):
+    """One GraphQL call with its variables as JSON; raises subprocess.CalledProcessError when GitHub refuses it."""
+    body = json.dumps({"query": query, "variables": variables})
+    return subprocess.run(["gh", "api", "graphql", "--input", "-"], input=body, check=True, capture_output=True,
+                          text=True).stdout
 
 
 def pages(out):
@@ -220,7 +322,7 @@ class GitHub:
                 for l in pages(gh("api", "--paginate", f"repos/{repo}/labels?per_page=100"))}
 
     def fields(self):
-        return {f["name"]: {o["name"]: {"color": o.get("color"), "description": o.get("description") or ""}
+        return {f["name"]: {o["name"]: {"color": o.get("color"), "description": o.get("description") or "", "id": o["id"]}
                             for o in f["options"]}
                 for f in self.board()["fields"]["nodes"] if f and "options" in f}
 
@@ -263,6 +365,33 @@ class GitHub:
 
     def pin_issue(self, repo, n):
         gh("issue", "pin", str(n), "--repo", repo)
+
+    def create_label(self, repo, name, color, description):
+        gh("api", "-X", "POST", f"repos/{repo}/labels", "-f", f"name={name}", "-f", f"color={color}",
+           "-f", f"description={description}")
+
+    def update_label(self, repo, name, color, description):
+        gh("api", "-X", "PATCH", f"repos/{repo}/labels/{quote(name, safe='')}", "-f", f"color={color}",
+           "-f", f"description={description}")
+
+    def set_options(self, field, options):
+        """Replace the field's options; one passed with its id keeps its cards."""
+        fid = {f["name"]: f["id"] for f in self.board()["fields"]["nodes"] if f and "options" in f}[field]
+        given = [{**({"id": o["id"]} if o.get("id") else {}), "name": o["name"], "color": o["color"],
+                  "description": o["description"]} for o in options]
+        graphql('mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}', f=fid, o=given)
+
+    def create_view(self, name, layout, filter):
+        gh("api", "-X", "POST", f"orgs/{self.owner}/projectsV2/{self.number}/views", "-f", f"name={name}",
+           "-f", f"layout={layout}", "-f", f"filter={filter}")
+
+    def update_view(self, name, layout, filter):
+        """Set the view's filter, and its layout only when that differs."""
+        view = {v["name"]: v for v in self.board()["views"]["nodes"]}[name]
+        if re.sub(r"_LAYOUT$", "", view.get("layout") or "").lower() != layout.lower():
+            graphql('mutation($v:ID!,$l:ProjectV2ViewLayout!,$f:String!){updateProjectV2View(input:{viewId:$v,layout:$l,filter:$f}){projectV2View{id}}}', v=view["id"], l=f"{layout.upper()}_LAYOUT", f=filter)
+        else:
+            graphql('mutation($v:ID!,$f:String!){updateProjectV2View(input:{viewId:$v,filter:$f}){projectV2View{id}}}', v=view["id"], f=filter)
 
     def needs_you(self, repo, n):
         b = board.Board(self.spec, repo)
