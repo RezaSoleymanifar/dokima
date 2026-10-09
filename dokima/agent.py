@@ -5,6 +5,7 @@ JSON hand-backs of earlier runs, downloaded from those runs. `check` is the dete
 hand-back before it finishes, and that code runs again after it: a malformed hand-back never reaches the next agent.
 The plan's own check lives in dokima/planner.py; this module adds review.json and work.json.
 """
+import contextlib
 import glob
 import json
 import os
@@ -98,6 +99,16 @@ def approved(recs):
     return bool(reviews) and reviews[-1]["handback"].get("verdict") == "approve"
 
 
+def approved_plan(recs):
+    """The plan the newest approving plan review approved; None when there is none."""
+    for i in range(len(recs) - 1, -1, -1):
+        r = recs[i]
+        if r.get("role") == "reviewer" and r.get("stage") == "plan" and r.get("check", {}).get("passed") \
+                and (r.get("handback") or {}).get("verdict") == "approve":
+            return latest(recs[:i], "planner")
+    return None
+
+
 def is_record(c, role=None, stage=None):
     """True when a comment is a record the bot posted, of the given role and stage when given."""
     if (c.get("author") or {}).get("login") != BOT or MARK not in (c.get("body") or ""):
@@ -130,6 +141,14 @@ def blockers_for(recs, role):
 
 
 LINKS = ("blocked_by", "blocks", "relates_to")
+
+
+def plan_links(plan):
+    """A plan record's links as three lists of issue numbers, empty when missing."""
+    links = ((plan or {}).get("handback") or {}).get("links")
+    links = links if isinstance(links, dict) else {}
+    return {k: [n for n in links[k] if isinstance(n, int) and not isinstance(n, bool)]
+            if isinstance(links.get(k), list) else [] for k in LINKS}
 
 
 def open_issues(repo):
@@ -1225,6 +1244,110 @@ def blocked_by(repo, number):
     return json.loads(gh("api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate") or "[]")
 
 
+def link_edges(number, links):
+    """A plan's blocking links as GitHub's blocked-by links: (the issue blocked, the issue blocking it)."""
+    n = int(number)
+    return {(n, b) for b in links["blocked_by"]} | {(x, n) for x in links["blocks"]}
+
+
+def loop_through(add, drop, has):
+    """The issues that would block each other after `add` and `drop`; [] when none.
+
+    `has(i)` gives what GitHub has issue i blocked by. A new link a blocked by b closes a loop when b is already
+    blocked, directly or through other issues, by a.
+    """
+    def blockers(i):
+        return (set(has(i)) - {b for a, b in drop if a == i}) | {b for a, b in add if a == i}
+    for a, b in add:
+        stack, seen = [[b]], set()
+        while stack:
+            path = stack.pop()
+            if path[-1] == a:
+                return path
+            if path[-1] in seen:
+                continue
+            seen.add(path[-1])
+            stack += [path + [c] for c in sorted(blockers(path[-1]))]
+    return []
+
+
+def named(numbers):
+    """Issue numbers as words: #1, #2 and #3."""
+    ns = [f"#{n}" for n in numbers]
+    return ns[0] if len(ns) == 1 else ", ".join(ns[:-1]) + " and " + ns[-1]
+
+
+def gh_reason(e):
+    """GitHub's own words for a call that failed, on one line."""
+    return " ".join((e.stderr or str(e)).split())
+
+
+def record_links(repo, number, items):
+    """Record the just approved plan's links on GitHub, then redraw the cards they touch.
+
+    Code reads the plan from the issue's checked records only. Its blocked_by links become GitHub's own blocked-by
+    links on this issue and its blocks links the other issue blocked by this one; a link GitHub already has is not
+    added again, and a blocking link the previous approved plan had and this one dropped is removed first. A link
+    no approved plan had, such as one a person made by hand, is left alone. Links that would make issues block each
+    other record nothing. Then the card of this issue and of every issue a link was added to, dropped from or
+    changed on is redrawn. Returns why the river must stop for the owner, or None when all went through.
+    """
+    recs = records(items)
+    n = int(number)
+    new, old = plan_links(latest(recs, "planner")), plan_links(approved_plan(recs))
+    want, had = link_edges(n, new), link_edges(n, old)
+    after = " Nothing starts by itself: fix it, then say `/work`, or `/plan` with changes."
+    known = {}
+
+    def has(i):
+        if i not in known:
+            known[i] = {b["number"]: b["id"] for b in blocked_by(repo, i)}
+        return known[i]
+    try:
+        drop = [(a, b) for a, b in sorted(had - want) if b in has(a)]
+        add = [(a, b) for a, b in sorted(want) if b not in has(a)]
+        loop = loop_through(add, drop, has)
+    except subprocess.CalledProcessError as e:
+        return f"GitHub could not say which blocked-by links it has, so code recorded none of the plan's links: {gh_reason(e)}.{after}"
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        return f"GitHub's blocked-by links could not be read, so code recorded none of the plan's links: {e}.{after}"
+    if loop:
+        return (f"The plan's links would make {named(sorted(set(loop)))} block each other, so code recorded none of "
+                f"them.{after}")
+    failed = []
+    for a, b in drop:
+        try:
+            gh("api", "-X", "DELETE", f"repos/{repo}/issues/{a}/dependencies/blocked_by/{known[a][b]}")
+        except subprocess.CalledProcessError as e:
+            failed.append(f"GitHub failed to remove the link #{a} blocked by #{b}: {gh_reason(e)}.")
+    if failed:
+        # A link turned around is removed before it is added the other way, so nothing is added after a failure.
+        return " ".join(failed) + " Code added none of the plan's new links." + after
+    for a, b in add:
+        try:
+            node = json.loads(gh("api", f"repos/{repo}/issues/{b}"))["id"]
+            gh("api", "-X", "POST", f"repos/{repo}/issues/{a}/dependencies/blocked_by", "-F", f"issue_id={node}")
+        except subprocess.CalledProcessError as e:
+            failed.append(f"GitHub refused to record the link #{a} blocked by #{b}: {gh_reason(e)}.")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            failed.append(f"GitHub's answer for #{b} could not be read, so #{a} blocked by #{b} was not recorded: {e}.")
+    if failed:
+        return " ".join(failed) + after
+    side = lambda links: {m: k for k in LINKS for m in links[k]}
+    now, before = side(new), side(old)
+    changed = sorted(m for m in set(now) | set(before) if now.get(m) != before.get(m))
+    for m in [n] + changed if changed else []:
+        try:
+            # The card's own progress lines go to the run's log, so this step's output stays the river's decision.
+            with contextlib.redirect_stdout(sys.stderr):
+                card.draw(repo, m, card.issue_pr(repo, m), plans={n: new}, noted={n: m in now} if m != n else None)
+        except subprocess.CalledProcessError as e:
+            failed.append(f"The links are recorded, but the card of #{m} could not be redrawn: {gh_reason(e)}.")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            failed.append(f"The links are recorded, but the card of #{m} could not be redrawn: {e}.")
+    return " ".join(failed) + after if failed else None
+
+
 def started_before(repo, number):
     """True when GitHub's records show something already started on the issue: a record, a live card or an Autopilot
     line the bot posted there. A planned, running or finished issue is never started again."""
@@ -1762,6 +1885,13 @@ def main(argv):
                 step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
                     ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
                              "with a command to send it back.")
+        if rec.get("role") == "reviewer" and (rec.get("stage") or "") == "plan" and rec.get("check", {}).get("passed") \
+                and (rec.get("handback") or {}).get("verdict") == "approve":
+            # Code records the approved plan's links on GitHub and redraws the cards they touch; anything that keeps
+            # a link from being recorded stops the river, so autopilot never starts work that should wait.
+            why = record_links(repo, number, items)
+            if why:
+                step = ("stop", why)
         if rec.get("role") == "worker":
             # The pull request is opened after the record is written, so the worker's sentence links it only now.
             try:
