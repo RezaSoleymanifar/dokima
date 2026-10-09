@@ -3,8 +3,8 @@
     python3 -m dokima.uptodate     # reads GITHUB_REPOSITORY, GITHUB_REF_NAME and GITHUB_SHA
 
 Rules live in run() and clash(); the GitHub calls go through rest(method, path, **fields), shaped like dokima.board.api.
-A clash on a Dokima PR (try/issue-N in this repo) leaves a record on issue N and starts its planner; a clash on any
-other PR mentions the code owners on it and starts nothing.
+A clash on a Dokima PR (try/issue-N in this repo) leaves a record on issue N and starts its planner on autopilot, once
+until the worker runs again; a clash on any other PR mentions the code owners on it and starts nothing.
 """
 import json
 import os
@@ -96,13 +96,6 @@ def history(repo, number, rest):
         page += 1
 
 
-def planner_waiting(items):
-    """True when the newest clash record has had no planner run answer it yet: its planner is queued or running."""
-    recs = agent.records(items)
-    at = max((i for i, r in enumerate(recs) if r.get("role") == "updater"), default=None)
-    return at is not None and not any("planner" in (r.get("role"), r.get("attempt")) for r in recs[at + 1:])
-
-
 def dokima_issue(repo, pr):
     """Issue N when the PR is Dokima's own, from branch try/issue-N of this same repo; otherwise None."""
     head = pr.get("head") or {}
@@ -110,35 +103,50 @@ def dokima_issue(repo, pr):
     return int(m.group(1)) if m and ((head.get("repo") or {}).get("full_name") == repo) else None
 
 
+def autopilot_of(repo, issue, rest):
+    """True or False from the issue's own `autopilot` label; None when GitHub cannot say."""
+    try:
+        labels = (rest("GET", f"repos/{repo}/issues/{issue}") or {}).get("labels")
+    except (subprocess.CalledProcessError, AttributeError):
+        return None
+    if not isinstance(labels, list):
+        return None
+    return any((l.get("name") if isinstance(l, dict) else l) == agent.AUTOPILOT for l in labels)
+
+
 def clash(repo, base, sha, pr, rest=api, files=None, owners=None):
-    """Handle one PR that clashes with base after merge `sha`. A Dokima PR leaves one record on its issue naming the
-    merge, its PR and every clashed file, then starts the planner, unless a clash record is still waiting for it. Any
-    other PR gets one comment saying the same and mentioning the code owners; no agent starts."""
+    """Handle one PR that clashes with base after merge `sha`.
+
+    A Dokima PR whose issue has a clash sent back with no worker record since gets nothing more. Otherwise it leaves
+    one record on its issue naming the merge, its PR, every clashed file and whether the issue is on autopilot, then
+    starts the planner only on autopilot; off autopilot, or when GitHub cannot say, the record mentions the code owners
+    and starts nothing. Any other PR gets one comment saying the same and mentioning the code owners; no agent starts."""
     n = pr["number"]
+    issue = dokima_issue(repo, pr)
+    if issue is not None and agent.clash_pending(agent.records(history(repo, issue, rest))):
+        return
     try:
         clashed, why = sorted((files or (lambda p, s: trial_merge(base, s, p)))(pr, sha)), None
     except subprocess.CalledProcessError as e:
         clashed, why = [], f"Code could not list the clashed files: {(e.stderr or str(e)).strip()}"
     by = merged_pr(repo, sha, rest)
-    issue = dokima_issue(repo, pr)
+    who = sorted(owners if owners is not None else plan.repo_approvers(repo.split("/")[0]))
     if issue is None:
-        who = sorted(owners if owners is not None else plan.repo_approvers(repo.split("/")[0]))
         lines = [f"This pull request clashes with `{base}` since {sha[:7]}" + (f" (#{by})" if by else "") + " merged, in:", ""]
         lines += [f"- `{f}`" for f in clashed] or [f"- {why}"]
         lines += ["", f"**Next:** {' '.join('@' + o for o in who)} Dokima didn't build this pull request, so it starts "
                       "nothing: resolve the clash on its branch."]
         rest("POST", f"repos/{repo}/issues/{n}/comments", body="\n".join(lines) + "\n")
         return
-    waiting = planner_waiting(history(repo, issue, rest))
+    on = autopilot_of(repo, issue, rest)
     server, run_id = os.environ.get("GITHUB_SERVER_URL", "https://github.com"), os.environ.get("GITHUB_RUN_ID")
     rec = {"role": "updater", "stage": None, **({"run": f"{server}/{repo}/actions/runs/{run_id}"} if run_id else {}),
-           "handback": {"base": base, "merge": sha, "merged_pr": by, "pr": n, "files": clashed, **({"why": why} if why else {})},
+           "handback": {"base": base, "merge": sha, "merged_pr": by, "pr": n, "files": clashed, "autopilot": on,
+                        **({"why": why} if why else {})},
            "check": {"passed": True, "problems": []}}
-    step = ("start", "planner", "")
-    nxt = "**Next:** The planner started by an earlier clash re-plans against the newest main." if waiting \
-        else agent.next_line(step, ())
-    rest("POST", f"repos/{repo}/issues/{issue}/comments", body=agent.render(rec) + "\n" + nxt + "\n")
-    if not waiting:
+    step = agent.next_step([], rec, set(who))
+    rest("POST", f"repos/{repo}/issues/{issue}/comments", body=agent.render(rec) + "\n" + agent.next_line(step, who) + "\n")
+    if step[0] == "start":
         rest("POST", f"repos/{repo}/dispatches", event_type="dokima-next", **{
             "client_payload[role]": "planner", "client_payload[stage]": "plan", "client_payload[issue]": str(issue)})
 
