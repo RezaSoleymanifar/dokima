@@ -618,61 +618,86 @@ def test_a_blocker_the_plan_cannot_place_still_shows_why(record_property, run):
 
 # 236.9: no new raise-type field
 
-FIELDS_READ_ON_MAIN = {
-    "BASE", "BODY", "CARD_ID", "DOKIMA_BOARD", "DOKIMA_BOT", "GITHUB_ACTOR", "GITHUB_REPOSITORY", "GITHUB_RUN_ID",
-    "GITHUB_SERVER_URL", "HEAD", "LOG_URL", "NUMBER", "ON_PR", "OWNERS", "PACK", "PLANNER_BASE", "ROLE", "STAGE",
-    "acceptance_criteria", "accepted", "agent_started", "answer", "ask", "asks", "assumption", "assumptions", "attempt",
-    "author", "base", "blocked_by", "blocker", "blockers", "body", "cache_creation_input_tokens",
-    "cache_read_input_tokens", "change", "changes", "check", "check_runs", "command", "comments", "concerns",
-    "conclusion", "content", "context", "cost_usd", "createdAt", "created_at", "criteria", "criterion", "depends_on",
-    "dropped_by_fence", "duration_ms", "evidence", "feature", "file", "file_path", "filename", "files", "fix", "fixer",
-    "handback", "headRefName", "id", "input", "input_tokens", "issue", "issues_found", "kind", "labels", "line",
-    "links", "log", "login", "matched", "merge", "merged_pr", "message", "model", "models", "name", "non_functional",
-    "notes", "num_turns", "number", "original_line", "out_of_scope", "output_tokens", "outside_plan", "outside_scope",
-    "passed", "path", "pattern", "pr", "previous_step", "principle", "problem", "problems", "question", "questions",
-    "replies", "report", "resolved", "reviews", "role", "run", "run_id", "scope", "source", "stage", "state", "status",
-    "statuses", "stories", "story", "submittedAt", "summary", "suspect_tests", "test", "test_changes", "tests", "text",
-    "title", "tokens_in", "tokens_out", "total_cost_usd", "turns", "type", "url", "usage", "user", "user_story",
-    "verdict", "where", "why"}
+ROLES = os.path.join(os.path.dirname(__file__), "..", "dokima", "roles")
 RECORD_FIELDS_THIS_STORY_ADDS = {"files_changed", "verified_by"}
 
 
-def fields_read(path):
-    """Every field name dokima/agent.py reads by name: x["name"] or x.get("name")."""
-    import ast
+def prompt_fields():
+    """Every hand-back field name the agents' prompts in dokima/roles define.
+
+    The prompts are where a hand-back field is defined, and no agent may change them, so a field code reads off a
+    hand-back that no prompt names is a field the hand-back gained."""
     out = set()
-    for n in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
-        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" and n.args
-                and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)):
-            out.add(n.args[0].value)
-        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str):
-            out.add(n.slice.value)
+    for name in os.listdir(ROLES):
+        out |= set(re.findall(r'"([a-z_]+)"', open(os.path.join(ROLES, name), encoding="utf-8").read()))
     return out
 
 
-def test_no_hand_back_gains_a_new_raise_type_field(record_property, run):
+class Watched(dict):
+    """A hand-back object that notes every field code reads off it by name."""
+    read = set()
+
+    def __getitem__(self, k):
+        Watched.read.add(k)
+        return dict.__getitem__(self, k)
+
+    def get(self, k, default=None):
+        Watched.read.add(k)
+        return dict.get(self, k, default)
+
+    def __contains__(self, k):
+        Watched.read.add(k)
+        return dict.__contains__(self, k)
+
+
+def watched(x):
+    """The same JSON value with every object in it watched."""
+    if isinstance(x, dict):
+        return Watched({k: watched(v) for k, v in x.items()})
+    if isinstance(x, list):
+        return [watched(v) for v in x]
+    return x
+
+
+def test_no_hand_back_gains_a_new_raise_type_field(record_property, run, monkeypatch):
     """Run comments are drawn from the fields agents hand back today, never a new one.
 
-    Reads every field name dokima/agent.py reads and checks the only new ones since main are the two this story keeps
-    in the record (the worker's files changed and each test's Verified by line), so no raise-type field is added
-    ahead of #289's raises and answers. Then hands back a planner, a worker and a review that also carry raises and
-    answers, and checks those never show while today's question, blocker and issue found still do. Proves 236.9."""
+    Draws a planner's, a worker's and both reviews' comments from hand-backs that also carry raises and answers, while
+    watching every field code reads off a hand-back (the agent's own file and the plan a review reads). Every field read
+    must be one the agents' prompts in dokima/roles define, so no raise-type field is added ahead of #289's raises and
+    answers; the two fields this story adds (the worker's files changed and each test's Verified by line) must sit in
+    the run's record, not in a hand-back. Then checks raises and answers never show while today's question, blocker and
+    issue found still do. Proves 236.9."""
     record_property("proves", "236.9")
-    path = os.path.join(os.path.dirname(__file__), "..", "dokima", "agent.py")
-    new = fields_read(path) - FIELDS_READ_ON_MAIN
-    assert not new - RECORD_FIELDS_THIS_STORY_ADDS, \
-        f"236.9: dokima/agent.py reads fields main never had, so a hand-back gained a field: {sorted(new - RECORD_FIELDS_THIS_STORY_ADDS)}"
-    assert RECORD_FIELDS_THIS_STORY_ADDS <= new, \
-        f"236.9: the record does not yet keep the worker's files changed and each test's Verified by line " \
-        f"(files_changed, verified_by); dokima/agent.py reads only {sorted(new)} beyond main's fields"
+    real = json.load
+    handbacks = set(agent.HANDBACK.values())
+
+    def load(f, *args, **kwargs):
+        data = real(f, *args, **kwargs)
+        return watched(data) if os.path.basename(getattr(f, "name", "")) in handbacks else data
+    monkeypatch.setattr(agent.json, "load", load)
+    Watched.read = set()
     extra = {"raises": [{"kind": "question", "text": "A raise nobody may read zr."}],
              "answers": [{"raise": "R1", "answer": "done", "why": "An answer nobody may read zr."}]}
     review = dict(BLOCK, issues_found=FOUND, **extra)
+    work = dict(WORK, **extra)
+    git(run.repo, "commit", "-q", "--allow-empty", "-m", "work")
+    (run.repo / "app" / "jobs.py").write_text("# jobs, built\n")
+    records = {}
     for role, stage, hb, kept in (("planner", "", dict(PLAN, questions=[QA], **extra), QA["question"]),
-                                  ("worker", "", dict(WORK, **extra), WORK["summary"].split(".")[0]),
+                                  ("worker", "", work, WORK["summary"].split(".")[0]),
                                   ("reviewer", "plan", review, BLOCK["blockers"][0]["problem"]),
                                   ("reviewer", "pr", review, FOUND[0]["title"])):
-        text = plain(visible(run(role, stage, hb)[0]))
+        body, records[role] = run(role, stage, hb)
+        text = plain(visible(body))
         assert kept in text, f"236.9: the {role} {stage} comment lost {kept!r}, drawn from a field it has today:\n{text}"
         for gone in ("A raise nobody may read zr.", "An answer nobody may read zr."):
             assert gone not in text, f"236.9: the {role} {stage} comment shows a field no hand-back has today: {gone!r}"
+    new = {k for k in Watched.read if not re.fullmatch(r"\d+\.\d+", k)} - prompt_fields()
+    assert not new, f"236.9: code reads hand-back fields no agent's prompt defines, so a hand-back gained a field: {sorted(new)}"
+    assert not RECORD_FIELDS_THIS_STORY_ADDS & Watched.read, \
+        f"236.9: code reads {sorted(RECORD_FIELDS_THIS_STORY_ADDS & Watched.read)} off a hand-back; they belong in the run's record"
+    assert "files_changed" in records["worker"], \
+        "236.9: the worker's record does not keep its files changed (files_changed)"
+    assert "verified_by" in records["planner"], \
+        "236.9: the planner's record does not keep each test's Verified by line (verified_by)"
