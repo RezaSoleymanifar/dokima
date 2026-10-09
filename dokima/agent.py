@@ -1232,6 +1232,44 @@ def record_links(repo, number, items):
     return " ".join(failed) + after if failed else None
 
 
+PLAN_CHECK = "done-whens.yml"
+
+
+def rerun_plan_check(repo, number):
+    """Run the plan check again, in full, on the open pull request's head after approval.
+
+    The plan check reads the issue's records only when the pull request gets a new commit, so an approval with
+    nothing new to push would keep its stale "No approved plan found". Only the newest plan check run on the current
+    head runs again; older commits and other workflows are left alone. With no open pull request, or no plan check on
+    its head yet (GitHub runs it on the next push), nothing runs. When the check cannot run again, the pull request
+    gets one comment saying why. Returns what happened, one line."""
+    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
+            "-q", ".[0].number").strip()
+    if not pr.isdigit():
+        return "No open pull request: no plan check to run again."
+    sha = gh("pr", "view", pr, "-R", repo, "--json", "headRefOid", "-q", ".headRefOid").strip()
+    found = json.loads(gh("api", f"repos/{repo}/actions/workflows/{PLAN_CHECK}/runs?head_sha={sha}"))
+    runs = [r for r in found.get("workflow_runs") or [] if r.get("head_sha") == sha]
+    if not runs:
+        return f"PR #{pr} has no plan check on {sha[:7]} yet: GitHub runs it on the next push."
+    run = max(runs, key=lambda r: r["id"])
+    why = None
+    if run.get("status") != "completed":
+        why = f"it is still running ({run.get('status')}) from the last push, so it may still read the plan before its approval"
+    else:
+        try:
+            gh("api", "-X", "POST", f"repos/{repo}/actions/runs/{run['id']}/rerun")
+        except subprocess.CalledProcessError as e:
+            why = f"GitHub refused: {gh_reason(e)}"
+    if why is None:
+        return f"Ran the plan check on {sha[:7]} of PR #{pr} again."
+    url = run.get("html_url") or f"https://github.com/{repo}/actions/runs/{run['id']}"
+    gh("pr", "comment", pr, "-R", repo, "--body",
+       f"The plan of #{number} is approved, but the plan check on {sha[:7]} could not run again: {why}. "
+       f"Re-run all its jobs once it can, so it reads the approved plan: {url}")
+    return f"The plan check on {sha[:7]} of PR #{pr} could not run again: {why}."
+
+
 def started_before(repo, number):
     """True when GitHub's records show something already started on the issue: a record, a live card or an Autopilot
     line the bot posted there. A planned, running or finished issue is never started again."""
@@ -1694,7 +1732,8 @@ def main(argv):
     agent queue ROLE STAGE N [queued|handoff]  (puts up a run's queued card where its record will go, prints its id) |
     agent autopilot start|stop N [OUT]  (switches N's issue tree on or off autopilot, prints the comment naming what
     switched; with OUT, `start` writes what it picks up to OUT/next.txt and its Autopilot line to OUT/autopilot.md) |
-    agent closed N  (what autopilot does now that issue N closed, for every tree on autopilot)"""
+    agent closed N  (what autopilot does now that issue N closed, for every tree on autopilot) |
+    agent recheck N OUT  (once OUT's plan review approved, runs the plan check of N's open pull request again)"""
     if argv[1] == "pack":
         has_plan = pack(os.environ["GITHUB_REPOSITORY"], argv[2], argv[3], argv[4], argv[5])
         return 0 if has_plan or argv[3] == "planner" else 3
@@ -1865,6 +1904,14 @@ def main(argv):
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
         open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
         print(" ".join(step[:3]) if step[0] == "start" else "stop")
+        return 0
+    if argv[1] == "recheck":
+        rec = json.load(open(os.path.join(argv[3], "record.json")))
+        if rec.get("role") == "reviewer" and (rec.get("stage") or "") == "plan" and rec.get("check", {}).get("passed") \
+                and (rec.get("handback") or {}).get("verdict") == "approve":
+            print(rerun_plan_check(os.environ["GITHUB_REPOSITORY"], argv[2]))
+        else:
+            print("The plan was not approved: the plan check stays as it is.")
         return 0
     if argv[1] == "board":
         spec = os.environ.get("DOKIMA_BOARD", "").strip()
