@@ -1,8 +1,10 @@
 name: done-whens
 # One GitHub check per criterion of the PR's approved plan, plus one gate check.
 # Runs main's copy of this workflow and of Dokima's code; only the tests, and the code they judge, come from the PR.
+# In the merge queue they come from the queued commit: the PR on top of the latest main.
 on:
   pull_request_target:
+  merge_group:
 permissions:
   contents: read
   issues: read
@@ -35,7 +37,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           path: pr
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -54,7 +56,7 @@ jobs:
         if: always() && matrix.tests != ''
         env:
           ID: ${{ matrix.id }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: python3 -m dokima.checks annotate pr/r.xml
 
   gate:
