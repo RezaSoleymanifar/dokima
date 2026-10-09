@@ -22,6 +22,7 @@ The fake GitHub (in-process) answers:
   - GET repos/o/r/commits/SHA/pulls: the PRs that merge brought in;
   - GET repos/o/r/issues/N/comments (any query; empty past page 1): the issue's comments, REST-shaped;
   - GET repos/o/r/pulls/N: the PR;
+  - GET repos/o/r/issues/N: the issue with its labels, the `autopilot` label by default (#369), or GitHub's refusal;
   - POST repos/o/r/issues/N/comments (body): a new comment, kept;
   - POST repos/o/r/dispatches (event_type, client_payload as a dict or as client_payload[key] fields).
 """
@@ -46,6 +47,10 @@ MERGE = "c1a5" * 10
 OWNERS = ["alice", "bob"]
 FILES = ["dokima/app.py", "docs/notes.md"]
 BOT_REST = "dokima-runtime[bot]"
+WORKER = {"role": "worker", "stage": None, "run_id": "3", "run": "https://github.com/o/r/actions/runs/3",
+          "models": ["claude-opus-5-5"], "handback": {"summary": "Rebuilt the pull request on main.", "criteria": {"7.1": "done"},
+                       "evidence": "pytest -q: 3 passed"},
+          "check": {"passed": True, "problems": []}}
 MARKERS = re.compile(r"(?m)^(<<<<<<<|=======|>>>>>>>)( |$)")
 
 
@@ -73,8 +78,9 @@ def rest_comment(login, body, t):
 class FakeGitHub:
     """GitHub's REST API for one repo, recording every call."""
 
-    def __init__(self, merged=(300,), comments=None, prs=()):
+    def __init__(self, merged=(300,), comments=None, prs=(), labels=("autopilot",), unreadable=False):
         self.merged, self.comments, self.prs = list(merged), {k: list(v) for k, v in (comments or {}).items()}, list(prs)
+        self.labels, self.unreadable = list(labels), unreadable
         self.calls = []
 
     def __call__(self, method, path, **fields):
@@ -91,6 +97,12 @@ class FakeGitHub:
             c = rest_comment(BOT_REST, fields.get("body", ""), f"2026-10-08T12:{len(self.calls):02d}:00Z")
             self.comments.setdefault(int(m[1]), []).append(c)
             return c
+        m = re.fullmatch(rf"repos/{REPO}/issues/(\d+)", bare)
+        if method == "GET" and m:
+            if self.unreadable:
+                raise subprocess.CalledProcessError(1, ["gh", "api", path], output='{"message": "Server Error"}',
+                                                    stderr="gh: Server Error (HTTP 502)")
+            return {"number": int(m[1]), "state": "open", "labels": [{"name": l} for l in self.labels]}
         m = re.fullmatch(rf"repos/{REPO}/pulls/(\d+)", bare)
         if method == "GET" and m:
             return next(p for p in self.prs if p["number"] == int(m[1]))
@@ -366,11 +378,11 @@ def test_the_fence_keeps_mains_changes_and_drops_only_the_workers_out_of_scope_o
 # 190.6: further merges while the clash's planner waits or runs start no second planner
 
 def test_a_second_clash_while_the_planner_waits_records_but_starts_no_second_planner(record_property):
-    """A clash while the planner waits is recorded but starts no second planner.
+    """A clash while the planner waits starts no second planner.
 
     Proves 190.6.
     Issue #7's newest bot record is a clash record (its planner has not posted yet, though its live card may be up). A
-    second clash must still post its record on #7 and send no signal."""
+    second clash must send no signal; since #369 it posts nothing more on #7 either, the clash being sent back already."""
     record_property("proves", "190.6")
     first = FakeGitHub()
     clash(first, pr(70, "try/issue-7"))
@@ -378,23 +390,25 @@ def test_a_second_clash_while_the_planner_waits_records_but_starts_no_second_pla
     live = rest_comment(BOT_REST, f"{agent.LIVE}\nPlanner · working", "2026-10-08T12:59:00Z")
     gh = FakeGitHub(merged=(301,), comments={7: [record, live]})
     clash(gh, pr(70, "try/issue-7"), sha="d00d" * 10)
-    assert [n for n, _ in gh.posted()].count(7) == 1, f"190.6: the second clash did not post its own record on #7: {gh.posted()}"
+    assert [n for n, _ in gh.posted()].count(7) == 0, f"190.6: the second clash posted again on #7: {gh.posted()}"
     assert gh.dispatches() == [], f"190.6: a second planner was started while the first was waiting: {gh.dispatches()}"
 
 
 def test_a_clash_after_the_planner_answered_starts_it_again(record_property):
-    """After the planner answered, the next clash starts it again; pasted records don't count.
+    """After the worker rebuilt, the next clash starts the planner again; pasted records don't count.
 
     Proves 190.6.
-    Two histories of issue #7: a clash record followed by the bot's planner record, and a planner record followed by a
-    clash record pasted by someone other than the bot. In both, a new clash must send exactly one signal for the planner."""
+    Two histories of issue #7: a clash record followed by the bot's planner and worker records (the clash was answered
+    and rebuilt, #369), and a planner record followed by a clash record pasted by someone other than the bot. In both,
+    a new clash must send exactly one signal for the planner."""
     record_property("proves", "190.6")
     first = FakeGitHub()
     clash(first, pr(70, "try/issue-7"))
     record = first.comments[7][-1]
     planned = rest_comment(BOT_REST, agent.render(ts.planner_record(ts.STORY)), "2026-10-08T13:00:00Z")
+    built = rest_comment(BOT_REST, agent.render(WORKER), "2026-10-08T13:30:00Z")
     pasted = rest_comment("mallory", record["body"], "2026-10-08T14:00:00Z")
-    for case, history in (("after the planner's record", [record, planned]), ("with a pasted clash record", [planned, pasted])):
+    for case, history in (("after the planner and worker records", [record, planned, built]), ("with a pasted clash record", [planned, pasted])):
         gh = FakeGitHub(merged=(302,), comments={7: history})
         clash(gh, pr(70, "try/issue-7"), sha="beef" * 10)
         roles = [p.get("role") for _, p in gh.dispatches()]
@@ -438,6 +452,8 @@ if method == "GET" and re.fullmatch(f"repos/{repo}/commits/[0-9a-f]+/pulls", bar
     out([{"number": 300, "state": "closed", "merged_at": "2026-10-08T10:00:00Z"}])
 if method == "GET" and re.fullmatch(f"repos/{repo}/issues/\\d+/comments", bare):
     out([])
+if method == "GET" and re.fullmatch(f"repos/{repo}/issues/\\d+", bare):
+    out({"number": int(bare.rsplit("/", 1)[1]), "state": "open", "labels": [{"name": "autopilot"}]})
 if method == "GET" and bare == f"repos/{repo}/pulls/{p['number']}":
     out(p)
 if method == "POST" and bare.endswith("/comments"):
