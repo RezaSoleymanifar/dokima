@@ -482,6 +482,14 @@ def pr_body(card, body):
     return card + ("\n\n" + found.group(0) if found else "")
 
 
+def shows(current, top):
+    """True when the issue body already shows `top` above its marker, as saved."""
+    try:
+        return body.redraw(current, top) == current
+    except body.Refused:
+        return False
+
+
 def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
@@ -669,10 +677,64 @@ def follow(repo, number, before, now, cache):
     return refresh(repo, sorted(others - {int(number)}), cache)
 
 
-def sweep(repo):
-    """The scheduled run: redraw every card whose blocking links or loop changed on GitHub.
+def last_sweep(repo):
+    """When the last 15-minute sweep that succeeded started: (time, None), or (None, why).
 
-    It looks at every open issue and every issue linked to one; no other card is touched."""
+    Only card.yml's scheduled runs count, never its runs on issue events, comments and merges. Counting from the
+    start, not the end, keeps a change made while that sweep ran."""
+    try:
+        runs = json.loads(gh("api", f"repos/{repo}/actions/workflows/card.yml/runs?event=schedule&status=success"
+                                    "&per_page=1"))["workflow_runs"]
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as e:
+        return None, f"GitHub cannot list the earlier sweeps: {reason(e)}"
+    started = [r.get("run_started_at") or r["created_at"] for r in runs]
+    return (max(started), None) if started else (None, "no sweep has succeeded yet")
+
+
+def stale_cards(repo, cache):
+    """Redraw each issue and PR card that does not show its issue's state now.
+
+    Open or closed, it looks only at the issues and PRs updated since the last sweep that succeeded, and every card
+    when GitHub cannot say what changed; an update to either an issue or its PR redraws both. One that cannot be redrawn is named in the
+    run and the others still go on; returns how many failed."""
+    from dokima import agent
+    since, why = last_sweep(repo)
+    if why:
+        print(f"::warning title=Every card rechecked::{why}, so every card is rechecked.")
+    query = f"since={since}&state=all&per_page=100" if since else "state=all&per_page=100"
+    try:
+        items = [i for p in agent.pages(gh("api", f"repos/{repo}/issues?{query}", "--paginate")) for i in p]
+    except (subprocess.CalledProcessError, json.JSONDecodeError, TypeError) as e:
+        print(f"::error title=Cards not checked::GitHub cannot list the issues updated since {since or 'ever'}: "
+              f"{reason(e)}")
+        return 1
+    failed, work = 0, {}
+    for i in items:
+        if "pull_request" not in i:
+            work.setdefault(i["number"], None)
+            continue
+        try:
+            n = plan.pr_issue_number(repo, i["number"])
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"::error title=Card not updated::the card of PR #{i['number']} could not be updated: {reason(e)}")
+            failed += 1
+            continue
+        if n:
+            work[n] = i["number"]
+    for n, pr_number in sorted(work.items()):
+        try:
+            draw(repo, n, pr_number or issue_pr(repo, n), cache=cache, changed_only=True)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+            print(f"::error title=Card not updated::the card of #{n} could not be updated: {reason(e)}")
+            failed += 1
+    return failed
+
+
+def sweep(repo):
+    """The scheduled run: redraw every card whose links changed, then every stale card.
+
+    The link check looks at every open issue and every issue linked to one; the stale cards are looked for only among
+    the issues and PRs updated since the last sweep (see stale_cards)."""
     from dokima import agent
     cache = {}
     bodies = {i["number"]: i["body"] for i in agent.open_issues(repo)}
@@ -681,7 +743,7 @@ def sweep(repo):
         got = blocking(repo, n, cache)
         numbers |= {m for links in (got if isinstance(got, dict) else {}, shown_links(text))
                     for k in NO_LINKS for m in links.get(k) or []}
-    return refresh(repo, sorted(numbers), cache, bodies)
+    return refresh(repo, sorted(numbers), cache, bodies) + stale_cards(repo, cache)
 
 
 def stop_for_loop(repo, number, loop, owners):
@@ -720,10 +782,11 @@ def main():
         sys.exit(1)
 
 
-def draw(repo, number, pr_number, plans=None, noted=None, cache=None):
+def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_only=False):
     """Write the card at the top of the issue and its PR.
 
-    Returns the blocking links and loop its card showed before and shows now.
+    Returns the blocking links and loop its card showed before and shows now. With `changed_only`, a card that
+    already shows what it would be drawn as is not rewritten.
     `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
     (False) issues from the index of those whose approved plans link here. The Blocked by and Blocks lines are
     GitHub's own blocked-by links, read now; `cache` keeps what this run already read.
@@ -743,14 +806,15 @@ def draw(repo, number, pr_number, plans=None, noted=None, cache=None):
                        "blocked_by": now.get("blocked_by") or [], "blocks": now.get("blocks") or []}
     pr = found["pr"]
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
-    if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
+    current, top = issue["current_body"] or "", render(repo, issue, found)
+    if not (changed_only and shows(current, top)) and body.save(repo, number, current, top):
         print(f"Card written into issue #{number}")
     if now.get("loop") and now["loop"] != before.get("loop"):
         stop_for_loop(repo, number, now["loop"], found.get("owners"))
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
-    if pr:
+    if pr and not (changed_only and pr_body(top, pr.get("body")) == (pr.get("body") or "")):
         with open("pr.md", "w") as f:
-            f.write(pr_body(render(repo, issue, found), pr.get("body")))
+            f.write(pr_body(top, pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
     return before, now
