@@ -1270,6 +1270,65 @@ def start_waiting(repo, numbers, need_blocker=False, line=AUTOPILOT_LINE):
     return started
 
 
+WAIT_LINE = "Autopilot: plan approved, waiting for {} to close"
+GO_LINE = "Autopilot: blockers closed, starting work"
+
+
+def open_blockers_of(repo, number):
+    """The numbers of the open issues blocking this one on GitHub, oldest first."""
+    return sorted(b["number"] for b in blocked_by(repo, number) if b.get("state") != "closed")
+
+
+def worker_waits(items, owners, body, number):
+    """True when the issue's approved newest plan still waits for its worker to start.
+
+    The river would have started its worker on autopilot, and no worker started since the approval: no `/work` from
+    the owner, no worker record and no Autopilot line starting it."""
+    if not approved(records(items)):
+        return False
+    at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
+    for c in items[at + 1:]:
+        who, said = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
+        if (who in owners and command_of(c.get("body")) == "worker") or is_record(c, "worker") \
+                or (who in (BOT, f"{BOT}[bot]") and said in (AUTOPILOT_LINES["worker"], GO_LINE)):
+            return False
+    step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
+    return step[:2] == ("start", "worker") and step[3:] == ("autopilot",)
+
+
+def start_worker(repo, number):
+    """Start the issue's worker with the river's own signal, after one Autopilot line.
+
+    The line stands where the owner would have said /work, and goes first: it is the record that the worker was started, so no later close starts it again."""
+    gh("issue", "comment", str(number), "-R", repo, "--body", GO_LINE)
+    gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=dokima-next", "-f", "client_payload[role]=worker",
+       "-f", "client_payload[stage]=", "-f", f"client_payload[issue]={number}")
+
+
+def start_blocked_workers(repo, numbers, owners):
+    """Start the worker of every waiting issue among `numbers` whose blockers have all closed.
+
+    An issue waits with an approved plan whose worker has not started, and must have been blocked. Returns (the issues whose worker waits, what was done as lines): a waiting issue never starts
+    its planner. When GitHub cannot list an issue's blockers its worker does not start and the issue says why."""
+    waits, did = [], []
+    for n in numbers:
+        d, items = conversation(repo, n)
+        if not worker_waits(items, owners, d.get("body") or "", n):
+            continue
+        waits.append(n)
+        try:
+            blockers = blocked_by(repo, n)
+        except subprocess.CalledProcessError as e:
+            gh("issue", "comment", str(n), "-R", repo, "--body",
+               f"Autopilot did not start the worker: GitHub could not list the issues blocking #{n}: {gh_reason(e)}.")
+            did.append(f"could not list the blockers of #{n}")
+            continue
+        if blockers and all(b.get("state") == "closed" for b in blockers):
+            start_worker(repo, n)
+            did.append(f"started the worker for #{n}")
+    return waits, did
+
+
 def tree_done_comment(number):
     """The comment a parent closes with when its last sub-issue closed on autopilot."""
     return f"Every issue under #{number} is closed, so its whole tree is done and it closes.\n"
@@ -1282,7 +1341,8 @@ def autopilot_closed(repo):
     Every open parent on autopilot whose sub-issues are all closed closes as completed, saying its tree is done, and
     counts as a close one level up in turn. Every closed issue on autopilot with no parent on autopilot is the top of a
     done tree: the tree goes off autopilot. Then every open issue left on autopilot that was blocked and whose blockers
-    have all closed starts its planner, unless something already started on it."""
+    have all closed starts its worker when its approved plan waits for one, else its planner, unless something already
+    started on it."""
     did = []
     while True:
         issues = {i["number"]: i for i in json.loads(gh(
@@ -1304,6 +1364,13 @@ def autopilot_closed(repo):
             if switched:
                 did.append("autopilot off for " + ", ".join(f"#{m}" for m in switched))
     waiting = [n for n in sorted(issues) if n not in off and issues[n]["state"] == "open" and not subs[n]]
+    from dokima.plan import repo_approvers
+    owners = [o for o in os.environ.get("OWNERS", "").split(",") if o] or \
+        sorted(repo_approvers(os.environ.get("GITHUB_REPOSITORY_OWNER", repo.split("/")[0])))
+    # An approved plan whose worker waited on its blockers starts its worker; such an issue never plans again.
+    workers, lines = start_blocked_workers(repo, waiting, owners)
+    did += lines
+    waiting = [n for n in waiting if n not in workers]
     did += [f"started the planner for #{n}" for n in start_waiting(repo, waiting, need_blocker=True)]
     return did
 
@@ -1612,7 +1679,7 @@ def next_line(step, owners):
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
-    if step[0] in ("cancelled", "merged"):
+    if step[0] in ("cancelled", "merged", "waiting"):
         return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
@@ -1770,6 +1837,16 @@ def main(argv):
             why = record_links(repo, number, items)
             if why:
                 step = ("stop", why)
+            elif step[:2] == ("start", "worker") and step[3:] == ("autopilot",):
+                # On autopilot the worker of a blocked issue waits until every issue blocking it closes.
+                try:
+                    left = open_blockers_of(repo, number)
+                except subprocess.CalledProcessError as e:
+                    left, step = None, ("stop", f"GitHub could not list the issues blocking #{number}, so the worker "
+                                                f"did not start: {gh_reason(e)}. Say `/work` once GitHub answers.")
+                if left:
+                    gh("issue", "comment", str(number), "-R", repo, "--body", WAIT_LINE.format(named(left)))
+                    step = ("waiting", f"The worker starts by itself when {named(left)} close.")
         if rec.get("role") == "worker":
             # The pull request is opened after the record is written, so the worker's sentence links it only now.
             try:

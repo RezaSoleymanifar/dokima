@@ -607,9 +607,12 @@ def test_links_with_no_loop_are_recorded_and_autopilot_goes_on(tmp_path, record_
     """Links that make no loop are recorded and autopilot starts the worker.
 
     GitHub has #302 blocked by #301. The plan says #252 is blocked by #301 and blocks #302 (#301, then #252, then
-    #302: no loop), on autopilot: both links are recorded and the worker starts. Proves 252.3."""
+    #302: no loop), on autopilot: both links are recorded and the worker starts. #301 is already closed, so the
+    worker has nothing open to wait on (#253). Proves 252.3."""
     record_property("proves", "252.3")
     hub = Hub(tmp_path, deps={302: [301]}, autopilot=True)
+    hub.state["issues"]["301"]["state"] = "closed"
+    hub.save()
     hub.post(plan(links([301], [302])))
     step, comment, out = hub.next(review())
     assert hub.blocked_by(N) == [301] and hub.blocked_by(302) == sorted([301, N]), \
@@ -696,9 +699,12 @@ def test_recorded_links_let_autopilot_go_on(tmp_path, record_property):
     """When every link is recorded, autopilot starts the worker as usual.
 
     The approved plan says blocked by #301 and blocks #302, on autopilot, and GitHub records both: the river starts
-    the worker and posts its Autopilot line. Proves 252.5."""
+    the worker and posts its Autopilot line. #301 is already closed, so the worker has nothing open to wait on
+    (#253). Proves 252.5."""
     record_property("proves", "252.5")
     hub = Hub(tmp_path, autopilot=True)
+    hub.state["issues"]["301"]["state"] = "closed"
+    hub.save()
     hub.post(plan(links([301], [302])))
     step, comment, out = hub.next(review())
     assert hub.blocked_by(N) == [301] and hub.blocked_by(302) == [N], \
