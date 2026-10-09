@@ -1,8 +1,9 @@
 """A pull request cannot change how its tests are judged through test setup files (#264).
 
 Even with the all tests check running main's copy of its workflow (#263), pytest still reads setup and settings from
-the files in the tree it runs in: every conftest.py, and pytest's settings in pytest.ini, .pytest.ini, pyproject.toml,
-setup.cfg and tox.ini. A pull request that ships its own copy of one of them could make a failing test pass. These
+the files in the tree it runs in: every conftest.py, and pytest's settings in pytest.toml, .pytest.toml, pytest.ini,
+.pytest.ini, pyproject.toml, setup.cfg and tox.ini, whether shipped as files or as links to files of the pull request's
+own. A pull request that ships its own copy of one of them could make a failing test pass. These
 tests play GitHub's part the way tests/test_all_tests_judge.py does (same tiny project, same step-by-step run of the
 workflow): main's tree and the pull request's tree are written to temp folders, then every "all tests" job GitHub would
 start, and the acceptance criteria check's per-criterion job of done-whens.yml, are run on the pull request. The
@@ -11,11 +12,14 @@ report success; the check must still fail. A pull request with working code whos
 main's own setup must still apply, so throwing every setup file away does not pass either.
 
 The run is simulated the way tests/test_all_tests_judge.py does it: `actions/checkout` copies the tree its `ref` names
-(with `path:` honoured) and every `run:` script runs with bash; the checkouts hold no git history. Note that
+(with `path:` honoured) and every `run:` script runs with bash; the checkouts hold no git history. Like the real
+checkout, the copy keeps symbolic links as links. Note that
 tests/test_merge_queue.py also requires every `ref:` in full-suite.yml to name the queued commit in the merge queue.
 """
 import os
 import shutil
+
+import pytest
 
 import test_all_tests_judge as j
 import test_start as ts
@@ -54,6 +58,13 @@ def pytest_runtest_makereport(item, call):
 '''
 # pytest settings that make it exit 0 without running a single test.
 SKIP_ALL = "addopts = --collect-only\n"
+SKIP_ALL_TOML = '[pytest]\naddopts = ["--collect-only"]\n'
+
+
+class Link(str):
+    """A symbolic link to write instead of a file, pointing at its text.
+
+    The text is relative to the link's own folder."""
 
 ATTACKS = {
     "adds a conftest.py at the root that turns the run's exit code to 0": {"conftest.py": RIG_EXIT},
@@ -67,19 +78,48 @@ ATTACKS = {
     "adds a setup.cfg whose pytest settings run no test": {"setup.cfg": "[tool:pytest]\n" + SKIP_ALL},
     "adds a tox.ini whose pytest settings run no test": {"tox.ini": "[pytest]\n" + SKIP_ALL},
     "adds a pytest.ini inside tests that runs no test": {"tests/pytest.ini": "[pytest]\n" + SKIP_ALL},
+    "adds a pytest.toml that runs no test": {"pytest.toml": SKIP_ALL_TOML},
+    "adds a .pytest.toml that runs no test": {".pytest.toml": SKIP_ALL_TOML},
+    "adds a conftest.py at the root that is a link to its own file turning the run's exit code to 0":
+        {"rig/hook.py": RIG_EXIT, "conftest.py": Link("rig/hook.py")},
+    "replaces main's tests/conftest.py with a link to its own file reporting every test as passed":
+        {"rig/report.py": MAIN_CONFTEST + RIG_REPORT, "tests/conftest.py": Link("../rig/report.py")},
+    "adds a pytest.ini that is a link to its own file of settings that run no test":
+        {"rig/settings.cfg": "[pytest]\n" + SKIP_ALL, "pytest.ini": Link("rig/settings.cfg")},
+    "adds a pytest.toml that is a link to its own file of settings that run no test":
+        {"rig/settings.toml": SKIP_ALL_TOML, "pytest.toml": Link("rig/settings.toml")},
 }
+
+
+@pytest.fixture(autouse=True)
+def checkout_keeps_links(monkeypatch):
+    """Copy trees keeping symbolic links as links, the way actions/checkout leaves them in the workspace."""
+    copy = shutil.copytree
+
+    def keep_links(src, dst, *args, **kwargs):
+        if not args:
+            kwargs.setdefault("symlinks", True)
+        return copy(src, dst, *args, **kwargs)
+    monkeypatch.setattr(shutil, "copytree", keep_links)
 
 
 
 def harmless(marks):
-    """Setup edits that change no verdict but leave a mark in `marks` when read.
+    """Sets of setup edits that change no verdict but leave a mark when read.
 
-    A new conftest.py at the root and main's tests/conftest.py with a hook added each write a file when pytest loads
-    them; a new pyproject.toml asks pytest to write a JUnit report. None of them changes a test's verdict."""
+    In the first set, a new conftest.py at the root and main's tests/conftest.py with a hook added each write a file
+    when pytest loads them, and a new pyproject.toml asks pytest to write a JUnit report. pytest reads only one
+    settings file, and pytest.toml comes before pyproject.toml, so a second set holds a new pytest.toml asking for a
+    JUnit report, with a conftest.py in a folder under tests that is a link to a file of the pull request's own
+    writing a file when loaded. None of them changes a test's verdict."""
     hook = "\n\ndef pytest_configure(config):\n    open({!r}, 'w').write('loaded')\n"
-    return {"conftest.py": '"""Nothing to set up."""' + hook.format(os.path.join(marks, "root-conftest")),
-            "tests/conftest.py": MAIN_CONFTEST + hook.format(os.path.join(marks, "edited-conftest")),
-            "pyproject.toml": f'[tool.pytest.ini_options]\naddopts = "--junitxml={os.path.join(marks, "pyproject")}"\n'}
+    return [{"conftest.py": '"""Nothing to set up."""' + hook.format(os.path.join(marks, "root-conftest")),
+             "tests/conftest.py": MAIN_CONFTEST + hook.format(os.path.join(marks, "edited-conftest")),
+             "pyproject.toml":
+                 f'[tool.pytest.ini_options]\naddopts = "--junitxml={os.path.join(marks, "pyproject")}"\n'},
+            {"pytest.toml": f'[pytest]\naddopts = ["--junitxml={os.path.join(marks, "pytest-toml")}"]\n',
+             "rig/mark.py": '"""Nothing to set up."""' + hook.format(os.path.join(marks, "linked-conftest")),
+             "tests/sub/conftest.py": Link("../../rig/mark.py"), "tests/sub/__init__.py": ""}]
 
 # Main's settings turn every warning into a failure; the pull request's code warns and its copy deletes those settings.
 STRICT = {"pytest.ini": "[pytest]\nfilterwarnings =\n    error::DeprecationWarning\n"}
@@ -88,15 +128,20 @@ DELETES_STRICT = {"pytest.ini": None}
 
 
 def write(tree, files):
-    """Write files into a tree (path -> text); None deletes that file."""
+    """Write files into a tree (path -> text); None deletes, a Link links.
+
+    A Link replaces whatever is at its path with a symbolic link."""
     for rel, text in files.items():
         path = os.path.join(tree, rel)
+        if os.path.lexists(path) and (text is None or isinstance(text, Link)):
+            os.remove(path)
         if text is None:
-            if os.path.exists(path):
-                os.remove(path)
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w").write(text)
+        if isinstance(text, Link):
+            os.symlink(str(text), path)
+        else:
+            open(path, "w").write(text)
 
 
 def trees(tmp_path, app, main_files, pr_files):
@@ -175,7 +220,8 @@ def test_main_test_setup_judges_and_the_pull_requests_copies_are_not_read(record
 
     Proves 264.1.
     A pull request with working code adds a conftest.py, edits main's tests/conftest.py and adds a pyproject.toml with
-    pytest settings, each of which leaves a file behind when pytest reads it. Both the all tests check and the
+    pytest settings; another adds a pytest.toml and a conftest.py that is a link to a file of its own. Each of them
+    leaves a file behind when pytest reads it. Both the all tests check and the
     acceptance criteria check must pass, run main's fixture test (it needs main's tests/conftest.py, so ignoring every
     conftest.py fails) and the app's test, and leave none of those files. Then main's settings make a deprecation
     warning fail: code that warns fails both checks and code that does not passes, so main's settings are applied."""
@@ -183,19 +229,22 @@ def test_main_test_setup_judges_and_the_pull_requests_copies_are_not_read(record
     for name, run in (("all tests", lambda d, f: all_tests(d, j.APP_GOOD, pr_files=f)),
                       ("the acceptance criteria check",
                        lambda d, f: [("main's done-whens.yml",) + criterion_check(d, j.APP_GOOD, None, f, monkeypatch)])):
-        marks = str(tmp_path / f"marks-{len(name)}")
-        os.makedirs(marks)
-        runs = run(tmp_path / f"ok-{len(name)}", harmless(marks))
-        assert any(who.startswith("main's") for who, _, _ in runs), \
-            f"264.1: GitHub would not run main's copy of {name}:\n{j.show(runs)}"
-        assert j.green(runs), \
-            f"264.1: a pull request with working code that only edits test setup did not pass {name}:\n{j.show(runs)}"
-        for who, _, log in runs:
-            assert "2 passed" in log, \
-                f"264.1: {who} did not run and pass both main's fixture test and the app's test:\n{log[-1500:]}"
-        read = sorted(os.listdir(marks))
-        assert not read, \
-            f"264.1: {name} read the pull request's own test setup ({', '.join(read)}), not main's:\n{j.show(runs)}"
+        for k in range(len(harmless(""))):
+            marks = str(tmp_path / f"marks-{len(name)}-{k}")
+            os.makedirs(marks)
+            runs = run(tmp_path / f"ok-{len(name)}-{k}", harmless(marks)[k])
+            assert any(who.startswith("main's") for who, _, _ in runs), \
+                f"264.1: GitHub would not run main's copy of {name}:\n{j.show(runs)}"
+            assert j.green(runs), \
+                f"264.1: a pull request with working code that only edits test setup did not pass {name}:\n" \
+                f"{j.show(runs)}"
+            for who, _, log in runs:
+                assert "2 passed" in log, \
+                    f"264.1: {who} did not run and pass both main's fixture test and the app's test:\n{log[-1500:]}"
+            read = sorted(os.listdir(marks))
+            assert not read, \
+                f"264.1: {name} read the pull request's own test setup ({', '.join(read)}), not main's:\n" \
+                f"{j.show(runs)}"
     runs = all_tests(tmp_path / "warns", APP_WARNS, main_files=STRICT)
     assert runs and not j.green(runs), \
         f"264.1: main's pytest settings were not applied: code that warns passed all tests:\n{j.show(runs)}"
@@ -216,8 +265,10 @@ def test_editing_setup_files_cannot_make_failing_tests_pass_all_tests(record_pro
     Proves 264.2.
     The pull request breaks the code its test checks, then ships one setup file at a time that would make pytest
     report success: a conftest.py at the root and one in a folder under tests that set the exit code to 0, main's own
-    tests/conftest.py edited to report every test as passed, and pytest.ini, .pytest.ini, pyproject.toml, setup.cfg,
-    tox.ini and tests/pytest.ini each telling pytest to collect tests without running them. Each time main's all tests
+    tests/conftest.py edited to report every test as passed, and pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
+    pyproject.toml, setup.cfg, tox.ini and tests/pytest.ini each telling pytest to collect tests without running them.
+    It then ships a root conftest.py, main's tests/conftest.py, a pytest.ini and a pytest.toml as links to rigged files
+    of its own. Each time main's all tests
     run must still happen and fail, so the check fails."""
     record_property("proves", "264.2")
     for i, (how, files) in enumerate(ATTACKS.items()):
