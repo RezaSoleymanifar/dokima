@@ -71,6 +71,16 @@ A command is the first word of an owner's comment on the issue or its PR, or of 
 
 Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation. On autopilot the plan reviewer judges each question's assumption against the owner's words (see the flow).
 
+## Where specs go
+
+Every spec, answer or scope change the owner gives lands on GitHub, never only in chat, so every session, human or agent, finds it there.
+
+- On an existing issue it goes in as a comment: a `/plan` comment when the planner should pick it up, a plain comment on a parked issue.
+- An issue's original text is frozen: nobody edits it, and changes are comments. This is the owner's ask below the marker; code still redraws the card above it (see the issue body).
+- A new idea becomes a new issue, with the spec in its body.
+
+Example: the owner says in chat that a card's Next line should name the owner. On the open issue that becomes a comment `/plan The Next line names the owner`; on a parked issue, a plain comment saying the same; an unrelated idea from the same chat becomes a new issue with the spec in its body.
+
 ## The board
 
 - Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
