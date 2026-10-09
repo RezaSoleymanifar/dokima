@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 
-from dokima import manifest
+from dokima import agent, manifest, plan
 
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
@@ -37,7 +37,8 @@ def decide(event, p):
         elif action == "closed":
             out.append(("issue", n, "Done", False))
     elif event == "issue_comment" and p["action"] == "created":
-        if p["comment"]["user"]["type"] == "Bot" and p["comment"]["body"].startswith(YOUR_TURN):
+        # A closed issue never waits on the owner, whatever a late comment says.
+        if p["comment"]["user"]["type"] == "Bot" and p["comment"]["body"].startswith(YOUR_TURN) and p["issue"].get("state") != "closed":
             out.append(("issue", p["issue"]["number"], "Plan", True))
     elif event in ("pull_request", "pull_request_target"):
         pr, action = p["pull_request"], p["action"]
@@ -52,7 +53,37 @@ def decide(event, p):
             out += [("pr", pr["number"], "Work", False)] + [("issue", n, "Work", False) for n in linked(pr.get("body"))]
     elif event == "workflow_run" and p["action"] == "completed":
         for pr in p["workflow_run"].get("pull_requests") or []:
-            out.append(("pr", pr["number"], "Review", True))
+            out.append(("pr", pr["number"], "Review", False))
+    return out
+
+
+def keeps(event, p):
+    """True when the event leaves a Needs you as it is.
+
+    A new commit, finished checks or a review answer nothing; a review's command clears it through answered()."""
+    return (event in ("pull_request", "pull_request_target") and p["action"] == "synchronize") \
+        or event in ("workflow_run", "pull_request_review")
+
+
+def answered(event, p, owners):
+    """[(kind, number)] whose Needs you a code owner's command answers.
+
+    The issue or pull request it was said on and the one it pairs with (an issue's open pull request is found later,
+    on the board). An Approve, a bot, anyone else or no command answers nothing."""
+    if event == "issue_comment" and p["action"] == "created":
+        who, body, issue = p["comment"]["user"], p["comment"]["body"], p["issue"]
+        if issue.get("pull_request"):
+            out = [("pr", issue["number"])] + [("issue", n) for n in linked(issue.get("body"))]
+        else:
+            out = [("issue", issue["number"])]
+    elif event == "pull_request_review" and p["action"] == "submitted" and p["review"]["state"].lower() != "approved":
+        who, body, pr = p["review"].get("user") or {}, p["review"].get("body"), p["pull_request"]
+        n = agent.issue_of_pr((pr.get("head") or {}).get("ref"), pr.get("body"))
+        out = [("pr", pr["number"])] + ([("issue", int(n))] if n else [])
+    else:
+        return []
+    if who.get("type") == "Bot" or who.get("login") not in owners or not agent.command_of(body):
+        return []
     return out
 
 
@@ -170,6 +201,30 @@ class Board:
         else:
             self.rest("DELETE", f"{path}/{AUTOPILOT}")
 
+    def state(self, kind, number):
+        """"open" or "closed" (a merged pull request is closed); raises subprocess.CalledProcessError when GitHub cannot say."""
+        # The issues API answers for pull requests too.
+        return "closed" if self.rest("GET", f"repos/{self.repo_owner}/{self.repo_name}/issues/{int(number)}").get("state") == "closed" else "open"
+
+    def cards(self):
+        """Every issue and pull request card on the board; drafts are skipped.
+
+        Each is {kind, number, action, closed, autopilot}; a merged pull request counts as closed."""
+        out, cursor = [], None
+        while True:
+            more = {"c": cursor} if cursor else {}
+            items = self.q('query($o:String!,$n:Int!,$c:String){organization(login:$o){projectV2(number:$n){items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{fieldValueByName(name:"Action"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{__typename ... on Issue{number state labels(first:100){nodes{name}}} ... on PullRequest{number state labels(first:100){nodes{name}}}}}}}}}', o=self.owner, n=self.number, **more)["organization"]["projectV2"]["items"]
+            for it in items["nodes"]:
+                c = it.get("content") or {}
+                if c.get("__typename") not in ("Issue", "PullRequest"):
+                    continue
+                out.append({"kind": "issue" if c["__typename"] == "Issue" else "pr", "number": c["number"],
+                            "action": (it.get("fieldValueByName") or {}).get("name"), "closed": c["state"] != "OPEN",
+                            "autopilot": AUTOPILOT in {label["name"] for label in c["labels"]["nodes"]}})
+            if not items["pageInfo"]["hasNextPage"]:
+                return out
+            cursor = items["pageInfo"]["endCursor"]
+
     def views(self):
         return [v["name"] for v in self.view_nodes()]
 
@@ -241,6 +296,44 @@ def fix_view(board):
         raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {(e.stderr or str(e)).strip()}") from e
 
 
+def sweep(board, repo, owners):
+    """Set every card's pill on the board by the rules.
+
+    Needs you where its issue waits on the owner (the river's last word stopped for the owner and no code owner has
+    answered with a command since; a pull request follows its issue), else Autopilot on autopilot, else none. A card
+    whose history cannot be read keeps its pill, and the run fails naming it."""
+    cards = board.cards()
+    labels = {c["number"]: c["autopilot"] for c in cards if c["kind"] == "issue"}
+    waits, unread = {}, []
+
+    def waiting(n):
+        if n not in waits:
+            d, items = agent.conversation(repo, n)
+            on = (lambda: labels[n]) if n in labels else (lambda: board.autopilot("issue", n))
+            waits[n] = agent.waits_on_owner(items, owners, on, d.get("body") or "", str(n))
+        return waits[n]
+
+    for c in cards:
+        kind, n = c["kind"], c["number"]
+        try:
+            if c["closed"]:
+                needs = False
+            elif kind == "issue":
+                needs = waiting(n)
+            else:
+                p = json.loads(agent.gh("pr", "view", str(n), "-R", repo, "--json", "headRefName,body"))
+                issue = agent.issue_of_pr(p.get("headRefName"), p.get("body"))
+                needs = bool(issue) and waiting(int(issue))
+        except (subprocess.CalledProcessError, ValueError) as e:
+            unread.append(f"{'PR ' if kind == 'pr' else ''}#{n} ({(getattr(e, 'stderr', None) or str(e)).strip()})")
+            continue
+        pill = "Needs you" if needs else "Autopilot" if c["autopilot"] else None
+        if pill != c["action"]:
+            board.set(board.item(kind, n), "Action", pill)
+    if unread:
+        raise RuntimeError(f"Could not read the history of {', '.join(unread)}, so the board left its pill as it was.")
+
+
 def label_priority(labels):
     """The pill the highest priority label gives, or None."""
     return next((option for label, option in PRIORITY.items() if label in labels), None)
@@ -293,17 +386,29 @@ def recompute(board, touched):
 def sync(event, payload, spec, repo, q=gql, rest=api):
     changes, pill = decide(event, payload), priority(event, payload)
     on_off, pr = switched(event, payload), opened(event, payload)
+    owners = plan.repo_approvers(repo.split("/")[0]) if spec and event in ("issue_comment", "pull_request_review") else set()
+    answers = answered(event, payload, owners)
+    merged = event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged")
     touched = blockers(event, payload)
-    if not spec or not (changes or pill or on_off or touched is not None):
+    if not spec or not (changes or pill or on_off or answers or touched is not None):
         return []
     board = Board(spec, repo, q, rest)
     if pr and any(board.autopilot("issue", n) for n in pr[1]) and not board.autopilot("pr", pr[0]):
         # A pull request built for an issue on autopilot carries the label too, so the Autopilot view lists it.
         board.label("pr", pr[0], True)
+    keep = keeps(event, payload)
     for kind, number, status, needs_you in changes:
         iid = board.item(kind, number)
         board.set(iid, "Status", status)
-        board.set(iid, "Action", action(board, kind, number, needs_you))
+        shown = action(board, kind, number, needs_you)
+        if keep and shown != "Needs you" and board.value(iid, "Action") == "Needs you":
+            # A Needs you the river set stays until the owner answers or the item closes.
+            continue
+        board.set(iid, "Action", shown)
+    for kind, number in answers + [("pr", board.open_pr(n)) for k, n in answers if k == "issue"]:
+        if number:
+            # The owner answered: the pill clears on both cards at once, and the card stays in its column.
+            board.set(board.item(kind, number), "Action", action(board, kind, number, False))
     if pill and "Priority" in board.fields:
         # A label never takes Blocker away: only the links do, on the next close, reopen or scheduled run.
         number, option = pill
@@ -312,9 +417,10 @@ def sync(event, payload, spec, repo, q=gql, rest=api):
             board.set(iid, "Priority", option)
     if on_off:
         switch(board, on_off)
-    if event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged"):
-        # An old Autopilot view is fixed on the next merge, after the merged cards have moved.
+    if merged:
+        # An old Autopilot view is fixed on the next merge, after the merged cards have moved; then every pill is swept.
         fix_view(board)
+        sweep(board, repo, plan.repo_approvers(repo.split("/")[0]))
     if touched is not None and "Priority" in board.fields:
         recompute(board, touched)
     return changes

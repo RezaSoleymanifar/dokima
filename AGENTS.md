@@ -71,10 +71,21 @@ A command is the first word of an owner's comment on the issue or its PR, or of 
 
 Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation. On autopilot the plan reviewer judges each question's assumption against the owner's words (see the flow).
 
+## Where specs go
+
+Every spec, answer or scope change the owner gives lands on GitHub, never only in chat, so every session, human or agent, finds it there.
+
+- On an existing issue it goes in as a comment: a `/plan` comment when the planner should pick it up, a plain comment on a parked issue.
+- An issue's original text is frozen: nobody edits it, and changes are comments. This is the owner's ask below the marker; code still redraws the card above it (see the issue body).
+- A new idea becomes a new issue, with the spec in its body.
+
+Example: the owner says in chat that a card's Next line should name the owner. On the open issue that becomes a comment `/plan The Next line names the owner`; on a parked issue, a plain comment saying the same; an unrelated idea from the same chat becomes a new issue with the spec in its body.
+
 ## The board
 
 - Columns are stages: Backlog, Plan, Work, Review, Done. Every new item lands in Backlog.
-- "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes.
+- "Needs you" is a pill on the card, sorted to the top of each column, set exactly when the river stops for the owner and cleared otherwise. No swimlanes. New commits and finished checks never set or clear it; a code owner's `/plan`, `/work` or `/review`, on the issue or its pull request or as a review's summary (never an Approve), clears it at once on both cards, leaving them in their columns. A closed issue or a merged or closed pull request never shows it; when GitHub cannot say whether an item is closed, it shows. A parent shows it only for its own stop, never for its stories'.
+- Every merge's board run sweeps each issue and pull request on the board: Needs you where the river's last word on its issue stopped for the owner and no code owner has answered with a command since (a pull request follows its issue), Autopilot on every other item on autopilot, open or closed, and no pill on the rest. A card whose history cannot be read keeps its pill, and the run fails naming it.
 - "Autopilot" is a pill in the same place, on every card of an issue on autopilot and of its open pull request, set and cleared with the `autopilot` label; Needs you takes its place while the river stops for the owner, so a card never shows both. A pull request built for an issue on autopilot carries the label too.
 - One Autopilot view, a table filtered to `label:autopilot is:open`, lists every open issue and pull request on autopilot; merged and closed ones keep the label but leave the view. Code adds it the first time a tree goes on autopilot, from the board run of the tree's top issue only, and a refused view fails that run naming it. The board run of a merge changes an Autopilot view still filtered to the old `label:autopilot` to `label:autopilot is:open`, leaves any other filter alone, and fails naming the view if GitHub refuses. The Autopilot option of the Action field is a one-time step on the board, like Needs you; code never edits the field's options.
 - The river moves each card to the stage now running. Priority is a field (Blocker, High, Parked). Blocker is set by code, never by hand, on every open issue that blocks another open issue by GitHub's blocked-by links, read when an issue closes or reopens and every 15 minutes; otherwise the pill follows the issue's high or parked label, and with both, High wins. When GitHub cannot list an issue's links, its pill stays and the board run fails naming it.
