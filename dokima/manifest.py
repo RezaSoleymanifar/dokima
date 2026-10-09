@@ -19,7 +19,6 @@ LABELS = {
     "plan": {"color": "1d76db", "description": "Starts the planner"},
     "work": {"color": "0e8a16", "description": "Starts the worker on the approved plan"},
     "autopilot": {"color": "8250df", "description": "Running on its own"},
-    "blocker": {"color": "b60205", "description": "Priority: blocks other work"},
     "high": {"color": "d93f0b", "description": "Priority: high"},
     "parked": {"color": "c5c5c5", "description": "Priority: parked for later"},
 }
@@ -94,6 +93,7 @@ REPO_PATHS = [
     (r"pulls(/|$)", "pull_requests"),
     (r"actions/", "actions"),
     (r"commits(/|$)|compare/|contents/|git/|dispatches$|branches(/[^/]+)?$|merges$", "contents"),
+    (r"installation$", NONE),  # the app's own installation: GitHub answers it to the app's key, not a permission
 ]
 # REST paths outside a repo: (pattern, permission)
 OTHER_PATHS = [
