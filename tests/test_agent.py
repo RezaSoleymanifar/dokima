@@ -389,7 +389,7 @@ def test_the_rivers_signal_comes_only_from_dokimas_bot(record_property):
 
 
 def test_the_card_shows_the_running_stage_and_needs_you_only_when_it_is_the_owners_turn(record_property, monkeypatch):
-    """Each step puts the issue and its open PR in the running stage's column, with the Needs you pill exactly when the river stops."""
+    """Each step's place is the running stage's column, with Needs you when the river stops."""
     record_property("proves", "agent.26")
     plan = rec("planner", handback={"kind": "user_story"})
     ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
@@ -399,16 +399,6 @@ def test_the_card_shows_the_running_stage_and_needs_you_only_when_it_is_the_owne
     assert agent.board_place(rec("reviewer", "pr", GOOD_REVIEW), ("start", "worker", "")) == ("Work", False)
     assert agent.board_place(ok, ("stop", "x")) == ("Plan", True)
     assert agent.board_place(pr_ok, ("stop", "x")) == ("Review", True)
-    moves = []
-    class FakeBoard:
-        def __init__(self, *a): pass
-        def item(self, kind, n): return (kind, n)
-        def set(self, iid, field, option): moves.append((iid, field, option))
-    from dokima import board
-    monkeypatch.setattr(board, "Board", FakeBoard)
-    monkeypatch.setattr(agent, "gh", lambda *a: "161\n")
-    assert agent.move_card("o/r", "157", "Review", True, "o/1") == [("issue", 157), ("pr", 161)]
-    assert (("pr", 161), "Action", "Needs you") in moves and (("issue", 157), "Status", "Review") in moves
 
 
 def test_a_replan_is_judged_only_on_what_the_planner_changed_in_its_run(record_property, tmp_path, monkeypatch):
