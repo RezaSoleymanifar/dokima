@@ -6,10 +6,11 @@
 
 The planner holds no GitHub key. It ends by writing one plan.json to OUT, of kind user_story or feature (see
 dokima/roles/planner.md), with its questions for the owner listed inside it, plus its tests in tests/. Every
-criterion's source is issue N or one of its comments; every test it names is in the repo, filed under one of the
-plan's criteria. Every older test it changes, renames or deletes needs a reason in test_changes. Every new test has a
-one-sentence summary, names each criterion it proves by number below it, and fails on today's code. Criteria and the
-docstrings the planner adds are held to word caps (dokima/words.py): a little over is listed, far over is rejected.
+criterion's source is issue N, its parent issue named in the pack, or a comment on either; every test it names is in
+the repo, filed under one of the plan's criteria. Every older test it changes, renames or deletes needs a reason in
+test_changes. Every new test has a one-sentence summary, names each criterion it proves by number below it, and fails
+on today's code. Criteria and the docstrings the planner adds are held to word caps (dokima/words.py): a little over
+is listed, far over is rejected.
 Nothing is posted unless `check` passes.
 """
 
@@ -26,7 +27,7 @@ import tempfile
 from dokima import body as issue_body
 from dokima import words
 from dokima.checks import PROVES, TEST_DEF
-from dokima.agent import problems_questions  # noqa: E402
+from dokima.agent import pack_parent, problems_questions  # noqa: E402
 
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 CRITERION_CAP = 25  # words in a criterion's first sentence
@@ -50,7 +51,8 @@ def issue_link(number):
 def read_output(out, number=None):
     """('plan', dict) or ('feature', str); Garbled if OUT holds anything else.
 
-    Given the issue number, every criterion's source must be that issue's link or one of its comment links.
+    Given the issue number, every criterion's source must be that issue's link, its parent's (named by parent.json in
+    the pack $PACK), or one of their comment links.
     """
     if os.path.exists(os.path.join(out, "question.md")):
         raise Garbled(f"found question.md: {ALWAYS}")
@@ -64,7 +66,10 @@ def read_output(out, number=None):
         raise Garbled(f"plan.json must be an object, not a {type(p).__name__}: {ALWAYS}")
     if "kind" not in p:
         raise Garbled(f"plan.json has no kind: {ALWAYS}")
-    return from_kind(p, issue_link(number) if number is not None else None)
+    if number is None:
+        return from_kind(p)
+    parent = pack_parent(os.environ.get("PACK"))
+    return from_kind(p, (issue_link(number), issue_link(parent)) if parent else issue_link(number))
 
 
 def strings(v):
@@ -72,9 +77,18 @@ def strings(v):
 
 
 def check_source(where, source, issue):
-    """Garbled unless the source is this issue's link or one of its comment links; no issue given, nothing to check."""
-    if issue and not re.fullmatch(re.escape(issue) + r"(#issuecomment-\d+)?", source.strip()):
-        raise Garbled(f"{where} has the source {source}, which is not this issue ({issue}) or one of its comments")
+    """Garbled unless the source is this issue's link or one of its comment links; no issue given, nothing to check.
+
+    The issue may be a pair (this issue's link, its parent's link): then a link to the parent or its comments counts too."""
+    if not issue:
+        return
+    links = (issue,) if isinstance(issue, str) else tuple(issue)
+    if any(re.fullmatch(re.escape(link) + r"(#issuecomment-\d+)?", source.strip()) for link in links):
+        return
+    if len(links) == 1:
+        raise Garbled(f"{where} has the source {source}, which is not this issue ({links[0]}) or one of its comments")
+    raise Garbled(f"{where} has the source {source}, which is not this issue ({links[0]}), its parent ({links[1]}) "
+                  "or a comment on either")
 
 
 def check_stories(stories, issue=None):
@@ -137,8 +151,8 @@ def from_kind(p, issue=None):
     """Read a plan.json written in the agreed shape (user_story or feature) into what the rest of the code uses.
 
     A story becomes a plan: its acceptance criteria come first, then its non-functional requirements, numbered N.1,
-    N.2 ... in that order. A feature is shown to the owner as handed back, as a comment. Given this issue's link,
-    every criterion's source must be it or one of its comment links.
+    N.2 ... in that order. A feature is shown to the owner as handed back, as a comment. Given this issue's link (or
+    the pair of it and its parent's link), every criterion's source must be one of them or one of their comment links.
     """
     kind = p["kind"]
     if kind in ("feature", "user_story") and (not isinstance(p.get("summary"), str) or not p["summary"].strip()):

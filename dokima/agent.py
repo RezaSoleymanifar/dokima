@@ -637,13 +637,50 @@ def models_used(log_dir):
     return sorted(seen)
 
 
+def parent_of(repo, number):
+    """The issue's parent number on GitHub; None when it has none or GitHub cannot say."""
+    try:
+        return json.loads(gh("api", f"repos/{repo}/issues/{number}/parent")).get("number")
+    except Exception as e:  # noqa: BLE001 - any failure means GitHub did not say: no parent counts
+        why = gh_reason(e) if isinstance(e, subprocess.CalledProcessError) else str(e)
+        print(f"No parent issue of #{number} counts as a source: {why or 'GitHub named none'}", file=sys.stderr)
+        return None
+
+
+def parent_words(repo, number):
+    """The parent issue's number, text and comments; None when none or GitHub cannot say."""
+    up = parent_of(repo, number)
+    if not up:
+        return None
+    try:
+        d = json.loads(gh("issue", "view", str(up), "-R", repo, "--json", "number,body,comments"))
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+    return {"number": up, "body": d.get("body") or "", "comments": d.get("comments") or []}
+
+
+def pack_parent(*dirs):
+    """The parent number in parent.json of the first folder holding one, else None."""
+    for d in dirs:
+        path = os.path.join(d or "", "parent.json")
+        if d and os.path.exists(path):
+            try:
+                n = json.load(open(path)).get("number")
+            except (OSError, ValueError, AttributeError):
+                return None
+            return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None
+    return None
+
+
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
-    the newest passed plan and, for the planner, every open issue of the repo. The pull request review also gets the worker's session log from its run."""
+    the newest passed plan, the issue's parent on GitHub (parent.json, naming none when it has none or GitHub cannot
+    say) and, for the planner, every open issue of the repo. The pull request review also gets the worker's session log from its run."""
     d, items = conversation(repo, number)
     recs = records(items)
     listed = open_issues(repo) if role == "planner" else None
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
+    json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
     answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
@@ -755,12 +792,15 @@ def issue_url(number):
     return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/issues/{number}"
 
 
-def owner_source(source, number):
-    """True when a source names the owner's words Dokima can check: the issue's own text, one of its comments, or AGENTS.md."""
-    return source == "AGENTS.md" or bool(re.fullmatch(re.escape(issue_url(number)) + r"(#issuecomment-\d+)?", source))
+def owner_source(source, number, parent=None):
+    """True when a source names owner's words Dokima can check.
+
+    That is the issue's own text, its parent's (when given), one of their comments, or AGENTS.md."""
+    return source == "AGENTS.md" or any(re.fullmatch(re.escape(issue_url(n)) + r"(#issuecomment-\d+)?", source)
+                                        for n in ([number, parent] if parent else [number]))
 
 
-def problems_assumptions(r, plan, number):
+def problems_assumptions(r, plan, number, parent=None):
     """Everything wrong with a plan review's judgements of the plan's questions: every question judged once, each
     saying whether its assumption is accepted and whether it changes how the system works or what it costs; one
     accepted never changes them and names the owner's words and where they said them; one not accepted says why."""
@@ -789,8 +829,10 @@ def problems_assumptions(r, plan, number):
                            "true): only the owner accepts such an assumption")
             if not filled(a.get("matched")):
                 bad.append(f"{label} is accepted with no matched words: quote the owner's words it matches")
-            if not filled(a.get("source")) or not owner_source(a["source"].strip(), number):
-                bad.append(f"{label} needs a source: {issue_url(number)}, one of its comments' links, or AGENTS.md")
+            if not filled(a.get("source")) or not owner_source(a["source"].strip(), number, parent):
+                where = f"{issue_url(number)}, its parent {issue_url(parent)}, one of their comments' links" if parent \
+                    else f"{issue_url(number)}, one of its comments' links"
+                bad.append(f"{label} needs a source: {where}, or AGENTS.md")
         elif a.get("accepted") is False and not filled(a.get("why")):
             bad.append(f"{label} is not accepted and needs why")
     for q in qs:
@@ -955,7 +997,8 @@ def check(kind, path, plan_path=None, number=None):
             bad += problems_plan(kind, data, plan, number)
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
-                bad += problems_assumptions(data, plan, number)
+                parent = pack_parent(os.environ.get("PACK"), os.path.dirname(os.path.abspath(plan_path)))
+                bad += problems_assumptions(data, plan, number, parent)
     for line in listed + bad:
         print(line)
     return 1 if bad else 0
@@ -1544,39 +1587,47 @@ def agents_text():
         return ""
 
 
-def said_there(words, source, items, body, owners, number):
+def said_there(words, source, items, body, owners, number, parent=None):
     """True when the words appear word for word where the source says: the issue's own text, a code owner's comment on
-    this issue, or AGENTS.md. Anything else, a comment by anyone else (the bot included) or one not found, is False."""
+    this issue, or AGENTS.md; given the parent (parent_words), also the parent's own text or a code owner's comment on
+    it. Anything else, a comment by anyone else (the bot included) or one not found, is False."""
     flat = lambda t: " ".join((t or "").split())
     words, source = flat(words), (source or "").strip()
-    if not words or not owner_source(source, number):
+    up = (parent or {}).get("number")
+    if not words or not owner_source(source, number, up):
         return False
     if source == "AGENTS.md":
         return words in flat(agents_text())
+    from dokima.body import ask
     if source == issue_url(number):
-        from dokima.body import ask
         return words in flat(ask(body))
+    if up and source == issue_url(up):
+        return words in flat(ask(parent.get("body") or ""))
+    comments = items + ((parent.get("comments") or []) if up else [])
     return any(c.get("url") == source and (c.get("author") or {}).get("login") in owners and words in flat(c.get("body"))
-               for c in items)
+               for c in comments)
 
 
-def not_accepted(items, h, owners, body, number):
-    """The questions of the reviewed plan whose assumption the review did not accept on the owner's real words."""
+def not_accepted(items, h, owners, body, number, parent=lambda: None):
+    """The questions of the reviewed plan whose assumption the review did not accept on the owner's real words.
+    `parent()` gives the parent's words (parent_words), read only when an assumption cites somewhere else."""
     plan = latest(records(items), "planner")
     qs = [q.get("question") for q in ((plan or {}).get("handback") or {}).get("questions") or [] if isinstance(q, dict)]
+    up = lambda a: None if owner_source((a.get("source") or "").strip(), number) else parent()
     ok = {a.get("question") for a in h.get("assumptions") or [] if isinstance(a, dict) and a.get("accepted") is True
-          and a.get("changes") is False and said_there(a.get("matched"), a.get("source"), items, body, owners, number)}
+          and a.get("changes") is False and said_there(a.get("matched"), a.get("source"), items, body, owners, number, up(a))}
     return [q for q in qs if q not in ok]
 
 
-def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number=""):
+def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number="", parent=lambda: None):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
     A planner hands to the reviewer unless it has questions for the owner and the issue is not on autopilot. A worker
     hands to the reviewer. A blocking review sends the work back, until three blocks in a row at that stage since the
     owner last spoke; then it is the owner's call. On autopilot (`autopilot()` says, None when GitHub cannot), an
     approved plan goes to the worker and an approved split is filed, each ("start", role, stage, "autopilot"), once
-    the plan reviewer accepted every question's assumption on the owner's real words; a question not accepted stops.
+    the plan reviewer accepted every question's assumption on the owner's real words, in the issue or, as `parent()`
+    gives them, its parent; a question not accepted stops.
     Otherwise an approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
     cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
@@ -1607,7 +1658,7 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         on = autopilot()
         if on is None:
             return ("stop", f"{UNREAD} The plan has questions for you. Answer with `/plan` and your words.")
-        left = not_accepted(items, h, owners, body, number) if on else []
+        left = not_accepted(items, h, owners, body, number, parent) if on else []
         if left:
             return ("stop", "The reviewer did not accept the plan's assumption for: " + " ".join(f"\"{q}\"" for q in left)
                     + " Answer with `/plan` and your words" + (", or say `/work` to build it on its assumptions." if verdict == "approve" else "."))
@@ -1885,7 +1936,14 @@ def main(argv):
             if not read:
                 read.append(on_autopilot(repo, number))
             return read[0]
-        step = next_step(items, rec, owners, autopilot=autopilot, body=d.get("body") or "", number=number)
+        ups = []
+
+        def parent():
+            # The parent's words, read once and only when an assumption cites somewhere other than this issue.
+            if not ups:
+                ups.append(parent_words(repo, number))
+            return ups[0]
+        step = next_step(items, rec, owners, autopilot=autopilot, body=d.get("body") or "", number=number, parent=parent)
         if approves_work(rec):
             # On autopilot the code review's approval stands in for the owner's: the pull request merges by itself.
             on = autopilot()
