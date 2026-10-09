@@ -69,8 +69,9 @@ Its first sentence says what the run did. Then comes the short version you need:
 - **Note**: what a review noticed that blocks nothing.
 - **Outside the plan**: a change no criterion asked for.
 - **Issue found**: a problem outside this issue, proposed for you to file.
-- **Still open**: a blocker from an earlier review not yet answered.
-- **Autopilot**: a step taken on autopilot instead of by your command.
+- **Still open**: what the run says the previous step left open.
+
+A step taken on autopilot posts no record. It posts one plain line in place of your command, such as "Autopilot: plan approved, starting work".
 
 The long parts sit in folds, with the full record in the last one.
 

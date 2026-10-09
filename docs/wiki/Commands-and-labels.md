@@ -25,7 +25,7 @@ With no command, nothing starts.
 
 ## Labels
 
-Dokima creates these labels. You add them on the issue's sidebar.
+You create these labels in your repo; the drift audit reports any that are missing. You add them on the issue's sidebar.
 
 | Label | What it does |
 |---|---|

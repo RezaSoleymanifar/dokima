@@ -15,7 +15,7 @@ You set these under Settings, Secrets and variables, Actions. The workflows that
 
 ## CODEOWNERS
 
-The CODEOWNERS file names your code owners. Only their commands and their plan and work labels count. Their approving review is needed to merge.
+The CODEOWNERS file names your code owners. Only their commands and their plan and work labels count. Outside autopilot, you approve and merge the pull request yourself; the branch rule asks only for the two checks below.
 
 ## Branch rule
 
