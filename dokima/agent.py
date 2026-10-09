@@ -1761,33 +1761,6 @@ def board_place(rec, step):
     return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
 
 
-def move_card(repo, number, column, needs_you, spec, q=None):
-    """Put the issue and its open pull request in that column, with the Needs you pill when the river stops for the
-    owner, else the Autopilot pill while the issue is on autopilot."""
-    from dokima import board
-    b = board.Board(spec, repo, q or board.gql)
-    targets = [("issue", int(number))]
-    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
-    if pr:
-        targets.append(("pr", int(pr)))
-    for kind, n in targets:
-        iid = b.item(kind, n)
-        b.set(iid, "Status", column)
-        # A closed item never waits on the owner, as when a run stops after the owner merged.
-        b.set(iid, "Action", "Needs you" if needs_you and not is_closed(repo, n) else "Autopilot" if b.autopilot("issue", int(number)) else None)
-    return targets
-
-
-def is_closed(repo, number):
-    """True only when GitHub says the issue or pull request is closed.
-
-    Merged counts as closed; when GitHub cannot say, False, so nothing waiting is hidden."""
-    try:
-        return json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("state") == "closed"
-    except (subprocess.CalledProcessError, json.JSONDecodeError, AttributeError):
-        return False
-
-
 def next_line(step, owners):
     """The last line of a card: what happens next, mentioning the owner when it is their turn."""
     if step[0] == "start" and step[1] == "split":
@@ -1999,22 +1972,33 @@ def main(argv):
             print("The plan was not approved: the plan check stays as it is.")
         return 0
     if argv[1] == "board":
-        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        from dokima import board, plan
+        spec, repo = os.environ.get("DOKIMA_BOARD", "").strip(), os.environ.get("GITHUB_REPOSITORY", "")
         if not spec:
             print("No board set; nothing to move.")
             return 0
         try:
-            column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
-        except (OSError, ValueError):
-            # Deciding what follows failed, so the river stopped: the run's own stage, with Needs you.
+            rec = json.load(open(os.path.join(argv[3], "record.json")))
+        except (OSError, json.JSONDecodeError):
+            rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("role") == "cancelled" or os.path.exists(os.path.join(argv[3], "board.txt")) and (rec.get("check") or {"passed": True}).get("passed"):
+            # A run that decided what follows, or was cancelled, is placed from GitHub's state, never from the run.
             try:
-                rec = json.load(open(os.path.join(argv[3], "record.json")))
-            except (OSError, json.JSONDecodeError):
-                rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
-            column, needs = board_place(rec if isinstance(rec, dict) else {}, ("stop",))
-            needs = "needs" if needs else "none"
-        for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
-            print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+                placed = board.rebuild(board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2]))
+            except RuntimeError as e:
+                print(f"::error::{e}")
+                return 1
+            for kind, n, column, pill in placed:
+                print(f"board: {kind} #{n} -> {column}{f' · {pill}' if pill else ''}")
+            return 0
+        # The run failed, so the river stopped: its own stage's column with Needs you, at once.
+        column = board_place(rec, ("stop",))[0]
+        print(f"board: #{argv[2]} and its open pull request -> {column} · Needs you")
+        try:
+            board.stopped(board.Board(spec, repo), repo, argv[2], column)
+        except (subprocess.CalledProcessError, KeyError, ValueError) as e:
+            print(f"::warning::GitHub could not be read, so the board may not show it: {gh_reason(e) if hasattr(e, 'stderr') else e}")
         return 0
     if argv[1] == "autopilot":
         switch, number = argv[2], argv[3]
