@@ -1,6 +1,6 @@
 """Turn the criteria of an issue's approved plan into GitHub checks, and annotate the tests they ran.
 
-    python3 -m dokima.checks matrix          # print the check list for this PR
+    python3 -m dokima.checks matrix          # print the check list for this PR, or the PR queued in the merge queue
     python3 -m dokima.checks annotate r.xml  # print one annotation per test in a JUnit report
 
 The plan is the newest one the planner handed back, once the reviewer approved it, read from the bot's own record
@@ -19,6 +19,7 @@ from dokima import agent, plan
 
 PROVES = re.compile(r"""record_property\(\s*["']proves["']\s*,\s*["']([\d.]+)["']\s*\)""")
 TEST_DEF = re.compile(r"^def (test_\w+)\(")
+QUEUE_REF = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/.+/pr-(\d+)-[0-9a-f]+$")
 
 
 def find_tests(paths):
@@ -79,10 +80,22 @@ def annotations(junit_xml, repo, sha, done_when):
     return lines
 
 
+def event_pr(repo, event):
+    """This event's pull request; in the merge queue, the one its branch names."""
+    if "merge_group" not in event:
+        return event["pull_request"]
+    ref = event["merge_group"]["head_ref"]
+    m = QUEUE_REF.match(ref)
+    if not m:
+        sys.exit(f"Not a merge queue branch: {ref}")
+    pr = json.loads(agent.gh("api", f"repos/{repo}/pulls/{m.group(1)}"))
+    return {"number": pr["number"], "head": {"ref": pr["head"]["ref"]}, "body": pr.get("body")}
+
+
 def main(argv):
     repo = os.environ["GITHUB_REPOSITORY"]
     if argv[1] == "matrix":
-        pr = json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]
+        pr = event_pr(repo, json.load(open(os.environ["GITHUB_EVENT_PATH"])))
         number = agent.issue_of_pr(pr["head"]["ref"], pr.get("body")) or plan.pr_issue_number(repo, pr["number"])
         recs = agent.records(agent.conversation(repo, number)[1]) if number else []
         print("matrix=" + json.dumps(build_matrix(number, recs)))
