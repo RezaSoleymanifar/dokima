@@ -1,0 +1,33 @@
+name: audit
+# The drift audit (dokima/audit.py): compares the repo's settings with what Dokima needs (dokima/manifest.py) and
+# reports anything off on one pinned Setup issue, marked Needs you on the board; a clean repo gets no writes. It runs
+# once a day by itself, and whenever the owner presses Run workflow; nothing else starts it. Every audit waits in one
+# queue for the repo, shared with no other workflow and never cancelled by a newer run, so two audits never post
+# twice. It acts as the Dokima app and reads the board from DOKIMA_BOARD; without the board it fails and says why.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+concurrency:
+  group: audit
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  audit:
+    environment: keys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Compare the repo's settings with the manifest and report what is off
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
+        run: python3 -m dokima.audit "$GITHUB_REPOSITORY"
