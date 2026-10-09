@@ -310,8 +310,9 @@ def test_the_plan_check_runs_again_only_with_the_apps_key_after_the_agent_finish
     """The plan check runs again only with Dokima's app key, after the agent finished.
 
     Proves 295.4. The app's manifest must also ask GitHub for that right. Every re-run call must carry the app's key (the workflow's own token is read-only and GitHub refuses it) and come
-    after the agent ran, so no agent holds a key that can run workflows. The app's manifest, dokima/app.json, must ask
-    for write access to Actions, which GitHub requires to run a workflow again; with read access it refuses."""
+    after the agent ran, so no agent holds a key that can run workflows. The app's manifest, dokima/app.json, and
+    Dokima's manifest in code, dokima/manifest.py, must both ask for write access to Actions, which GitHub requires to
+    run a workflow again; with read access it refuses."""
     record_property("proves", "295.4")
     m = PlanReview(tmp_path, [lambda sha: plan_run(7001, sha)])
     meta = [json.loads(l) for l in open(f"{m.tmp}/gh/calls-meta.jsonl")]
@@ -325,3 +326,7 @@ def test_the_plan_check_runs_again_only_with_the_apps_key_after_the_agent_finish
     assert manifest["default_permissions"].get("actions") == "write", \
         f"295.4: dokima/app.json asks for actions: {manifest['default_permissions'].get('actions')!r}; running the plan " \
         "check again needs write"
+    from dokima.manifest import PERMISSIONS
+    assert PERMISSIONS.get("actions") == "write", \
+        f"295.4: dokima/manifest.py asks for actions: {PERMISSIONS.get('actions')!r}; running the plan check again " \
+        "needs write, as dokima/app.json asks"
