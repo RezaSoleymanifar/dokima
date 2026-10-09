@@ -59,7 +59,7 @@ PERMISSIONS = {
     "pull_requests": "write",
     "issues": "write",
     "checks": "read",
-    "actions": "read",
+    "actions": "write",
     "statuses": "read",
     "metadata": "read",
     "workflows": "write",
