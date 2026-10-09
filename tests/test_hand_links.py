@@ -518,9 +518,12 @@ def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record
     Reads .github/workflows/card.yml. Its issues trigger covers opening, editing, closing, reopening, labelling and
     assigning (or lists no types), and it has an issue_comment trigger for new, edited and deleted comments. Its job's
     `if:` lets every one of those through when a person causes it, lets the schedule, workflow_run and the bot opening
-    an issue through as today, and stops the bot's own edits and comments and any comment on a pull request. Its
-    schedule fires every hour of every day with no gap over 15 minutes, its step still runs `python3 dokima/card.py`
-    with the event's issue as ISSUE_NUMBER, and it is given DOKIMA_BOARD so a loop on autopilot can set Needs you.
+    an issue through as today, and stops the bot's own edits. (Since #332 a comment on a pull request redraws the
+    cards of the issue it was built for, and the bot's comments redraw them only when they hold a record;
+    tests/test_card_now.py proves both.) Its
+    schedule fires every hour of every day with no gap over 15 minutes, and its step is given DOKIMA_BOARD so a loop
+    on autopilot can set Needs you. (Which issue a run redraws, for an issue or its pull request, is proven by
+    tests/test_card_now.py since #332.)
     Proves 254.4."""
     record_property("proves", "254.4")
     text = open(CARD_YML).read()
@@ -537,10 +540,6 @@ def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record
         assert allowed(ctx("issues", kind)), f"254.4: card.yml's job skips a person's issues event {kind!r}"
     for kind in ("created", "edited", "deleted"):
         assert allowed(ctx("issue_comment", kind)), f"254.4: card.yml's job skips a person's comment ({kind}) on an issue"
-        assert not allowed(ctx("issue_comment", kind, pr=True)), \
-            f"254.4: card.yml's job runs on a comment ({kind}) on a pull request, which would draw an issue card on it"
-        assert not allowed(ctx("issue_comment", kind, sender="Bot")), \
-            f"254.4: card.yml's job runs on the bot's own comment ({kind})"
     assert not allowed(ctx("issues", "edited", sender="Bot")), \
         "254.4: card.yml's job runs on the bot's own edit, so every card it writes would start another run"
     assert allowed(ctx("issues", "opened", sender="Bot")), \
@@ -559,8 +558,6 @@ def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record
             best = gap if best is None else min(best, gap)
     assert best is not None and best <= 15, f"254.4: card.yml's schedule {crons} leaves more than 15 minutes between runs"
     assert re.search(r"run:\s*python3 dokima/card\.py\s*$", text, re.M), "254.4: card.yml no longer runs dokima/card.py"
-    assert re.search(r"ISSUE_NUMBER:\s*\$\{\{\s*github\.event\.issue\.number\s*\}\}", text), \
-        "254.4: card.yml's step is not given the event's issue as ISSUE_NUMBER"
     assert re.search(r"DOKIMA_BOARD:\s*\$\{\{\s*vars\.DOKIMA_BOARD\s*\}\}", text), \
         "254.4: card.yml's step is not given DOKIMA_BOARD, so a loop cannot set Needs you"
 
@@ -568,16 +565,17 @@ def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record
 # 254.5 ---------------------------------------------------------------------------------------------------------------
 
 def test_the_scheduled_run_redraws_only_cards_whose_links_changed(tmp_path, record_property):
-    """The scheduled run rewrites only the cards whose links changed.
+    """The scheduled run rewrites the cards whose links changed, and nothing when nothing changed.
 
-    A person adds #252 blocked by #301 by hand: the scheduled run rewrites the cards of #252 and #301 only. The next
-    scheduled run, with nothing changed, writes nothing on GitHub at all. Proves 254.5."""
+    A person adds #252 blocked by #301 by hand: the scheduled run rewrites the cards of #252 and #301 (since #332 it
+    also draws any card that does not show its issue's state, such as an issue with no card yet). The next scheduled
+    run, with nothing changed, writes nothing on GitHub at all. Proves 254.5."""
     record_property("proves", "254.5")
     hub = HandHub(tmp_path)
     hub.set_links({N: [301]})
     hub.sweep("254.5")
     first = {w["issue"] for w in hub.writes("body")}
-    assert first == {N, 301}, f"254.5: the scheduled run should rewrite only #252 and #301, it rewrote {sorted(first)}"
+    assert {N, 301} <= first, f"254.5: the scheduled run should rewrite #252 and #301, it rewrote {sorted(first)}"
     count = len(hub.writes())
     hub.sweep("254.5")
     assert hub.writes()[count:] == [], f"254.5: a scheduled run with nothing changed wrote {hub.writes()[count:]}"
