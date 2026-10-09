@@ -193,3 +193,29 @@ def test_words_anyone_could_paste_start_no_worker_and_no_code_review(record_prop
         assert got == {"issue #61": ("Work", AUTO), "pr #62": ("Work", AUTO)}, \
             f"343.4: {STRANGER} pasted a code review's run card on #61, which starts nothing, yet after {way} the " \
             f"cards are at {got}, not in Work with Autopilot"
+
+
+def test_a_rebuilt_issue_stays_in_work_until_its_next_code_review_starts(record_property, make, monkeypatch, tmp_path):
+    """Sent back by code review, it is in Work again until the next review starts.
+
+    Proves 343.3.
+    #57's first code review blocked with a fix for the worker, so the river started the worker again by itself: its
+    run card is up, then its second record. An earlier code review record is on the issue, yet until the bot puts up
+    the next code review's queued run card, #57 and its PR #60 are in Work with no pill; once that card is up, both
+    are in Review. Each step is checked after a run's end, a comment and the sweep; the cards start in Review, then
+    Plan, so a board that never moves them fails."""
+    record_property("proves", "343.3")
+    to_worker = {**GOOD_REVIEW, "stage": "pr"}
+    rebuilt = worker_done() + [rec("reviewer", "pr", to_worker), bot_card("worker")]
+    steps = [("the worker is building it again", rebuilt, "Work", "Review"),
+             ("the worker built it again", rebuilt + [rec("worker", handback=GOOD_WORK)], "Work", "Review"),
+             ("the next code review's run card is up",
+              rebuilt + [rec("worker", handback=GOOD_WORK), bot_card("reviewer", "pr")], "Review", "Plan")]
+    for name, history, column, start in steps:
+        w = make(records={57: history}, prs={57: 60},
+                 cards={("issue", 57): {"Status": start}, ("pr", 60): {"Status": start}})
+        for way in everywhere(w, monkeypatch, tmp_path, 57):
+            got = places(w, ("issue", 57), ("pr", 60))
+            want = {"issue #57": (column, None), "pr #60": (column, None)}
+            assert got == want, \
+                f"343.3: #57's code review sent it back and {name}, yet after {way} the cards are at {got}, not {want}"
