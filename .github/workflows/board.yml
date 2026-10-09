@@ -2,7 +2,8 @@ name: board
 # Keeps the project board's Status and "Waiting on" current at every stage moment,
 # its Priority Blocker on open issues that block an open issue (from blocked-by links,
 # read on close, reopen and every 15 minutes, since GitHub sends no event for a link),
-# and otherwise in step with the high and parked labels.
+# and otherwise in step with the high and parked labels. A code owner's command in a
+# review clears Needs you at once, and every merge sweeps every pill.
 # Rules live in dokima/board.py. Does nothing unless the repo variable DOKIMA_BOARD
 # names a board ("org/number").
 on:
@@ -16,6 +17,8 @@ on:
   # this job only checks out main's code, never the PR's.
   pull_request_target:
     types: [opened, reopened, synchronize, closed]
+  pull_request_review:
+    types: [submitted]
   workflow_run:
     workflows: [done-whens]
     types: [completed]

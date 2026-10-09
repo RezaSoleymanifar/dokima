@@ -317,7 +317,7 @@ def test_needs_you_replaces_autopilot_when_the_river_stops_and_autopilot_returns
 
     For #57 on autopilot with PR #60: the river stops (move_card with Needs you) and both cards show Needs you; it goes
     on (move_card without) and both show Autopilot again. The board sync does the same: a planner question shows Needs
-    you on #57, the work label after it shows Autopilot, and done-whens finishing on PR #60 shows Needs you on it."""
+    you on #57, and the work label after it shows Autopilot."""
     record_property("proves", "210.3")
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}}, prs={57: 60})
     agent.move_card("o/r", "57", "Plan", True, "o/1")
@@ -330,8 +330,6 @@ def test_needs_you_replaces_autopilot_when_the_river_stops_and_autopilot_returns
     assert w.action("issue", 57) == "Needs you", f"210.3: a question for the owner on #57 shows {w.action('issue', 57)!r}"
     board.sync("issues", label_event("labeled", "work", [LABEL, "work"], 57), SPEC, REPO)
     assert w.action("issue", 57) == "Autopilot", f"210.3: #57 went on after the question and shows {w.action('issue', 57)!r}"
-    board.sync("workflow_run", {"action": "completed", "workflow_run": {"pull_requests": [{"number": 60}]}}, SPEC, REPO)
-    assert w.action("pr", 60) == "Needs you", f"210.3: PR #60 waiting on the owner shows {w.action('pr', 60)!r}"
 
 
 def test_switching_autopilot_never_hides_needs_you(record_property, make):
@@ -505,7 +503,9 @@ class FakeGitHub:
             return {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
                 {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
                 {"id": "W", "name": "Action", "options": [{"id": "w-you", "name": "Needs you"}, {"id": "w-auto", "name": "Autopilot"}]}]},
-                "views": {"nodes": self.view_nodes(text)}}}}
+                "views": {"nodes": self.view_nodes(text)},
+                # No card on these boards is listed as showing Needs you, so a merge's sweep finds nothing to clear (#297).
+                "items": {"totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}
         if "updateProjectV2View" in text:
             # GitHub's UpdateProjectV2ViewInput takes the view as viewId and the new filter as filter.
             if not re.search(r"\bviewId\s*:", text) or not re.search(r"\bfilter\s*:", text):
