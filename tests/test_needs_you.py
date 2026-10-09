@@ -36,7 +36,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import test_autopilot_board as tab  # noqa: E402
 from dokima import agent, board, card, plan  # noqa: E402
-from test_agent import GOOD_REVIEW, SPLIT, rec  # noqa: E402
+from test_agent import GOOD_REVIEW, GOOD_WORK, SPLIT, rec  # noqa: E402
 
 LABEL = "autopilot"
 SPEC, REPO = "o/1", "o/r"
@@ -66,16 +66,24 @@ def plan_blocked():
     return [rec("planner", handback={"kind": "user_story"}), rec("reviewer", "plan", GOOD_REVIEW)]
 
 
+def code_approved():
+    """Records up to an approving code review, so the pull request waits to be merged."""
+    return plan_approved() + ["/work", rec("worker", handback=GOOD_WORK),
+                              rec("reviewer", "pr", {**GOOD_REVIEW, "stage": "pr", "verdict": "approve", "blockers": []})]
+
+
 def escalated(stage="pr"):
     """Records ending in a reviewer's escalation, which stops for the owner even on autopilot."""
     return [rec("planner", handback={"kind": "user_story"}), rec("reviewer", stage, {**GOOD_REVIEW, "stage": stage, "verdict": "escalate"})]
 
 
 class World(tab.World):
-    """test_autopilot_board's world, plus which items are closed, which GitHub cannot read, sub-issues and records."""
+    """test_autopilot_board's world, plus which items are closed, which GitHub cannot read, sub-issues, records and
+    the code owner's pull request reviews."""
 
-    def __init__(self, closed=(), unreadable=(), subs=None, records=None, **kw):
+    def __init__(self, closed=(), unreadable=(), subs=None, records=None, reviews=None, **kw):
         super().__init__(**kw)
+        self.reviews = {k: list(v) for k, v in (reviews or {}).items()}  # pr -> [(state, summary)], by the code owner
         self.closed = set(closed)  # (kind, n)
         self.unreadable = set(unreadable)  # numbers whose state GitHub will not give
         self.subs = {k: list(v) for k, v in (subs or {}).items()}
@@ -140,7 +148,10 @@ def fake_gh(world):
             issue = next((i for i, p in world.prs.items() if p == n), None)
             return json.dumps({"number": n, "state": "CLOSED" if ("pr", n) in world.closed else "OPEN",
                                "headRefName": f"try/issue-{issue}" if issue else f"feature-{n}",
-                               "body": f"Closes #{issue}" if issue else "", "comments": [], "reviews": [],
+                               "body": f"Closes #{issue}" if issue else "", "comments": [],
+                               "reviews": [{"author": {"login": OWNER}, "body": b, "state": st,
+                                            "submittedAt": f"2026-10-09T01:00:{i:02d}Z"}
+                                           for i, (st, b) in enumerate(world.reviews.get(n, []))],
                                "labels": [{"name": x} for x in sorted(world.labels.get(("pr", n), set()))]})
         if a[:1] == ["api"]:
             path = next((x for x in a[1:] if x.lstrip("/").startswith("repos/")), "").lstrip("/")
@@ -462,6 +473,30 @@ def test_every_later_merge_sweeps_again(record_property, make):
     got = pills(w, ("issue", 66), ("issue", 67))
     assert got == {"issue #66": AUTO, "issue #67": None}, \
         f"297.5: after a second merge, drifted pills were not swept again: {got}"
+
+
+def test_an_approve_starting_with_a_command_never_clears_needs_you_in_the_sweep(record_property, make):
+    """In the merge's sweep, an Approve starting with a command never clears Needs you.
+
+    Proves 297.5. Three issues each wait for the owner to merge their pull request after an approving code review, and
+    all six cards show Needs you. On PR #62 (for #59) the code owner submits an Approve whose summary is "/work looks
+    good"; on PR #61 (for #58) a comment review "/work looks good"; on PR #60 (for #57) a change request "/review".
+    PR #70 merges. #59 and PR #62 must keep Needs you, since an Approve only ever means merge and the owner has not
+    merged; #58, PR #61, #57 and PR #60 must show nothing, since those reviews are commands that answered."""
+    record_property("proves", "297.5")
+    w = make(prs={57: 60, 58: 61, 59: 62}, closed={("pr", 70), ("issue", 71)},
+             records={n: code_approved() for n in (57, 58, 59)},
+             reviews={62: [("APPROVED", "/work looks good")], 61: [("COMMENTED", "/work looks good")],
+                      60: [("CHANGES_REQUESTED", "/review")]},
+             cards={k: {"Status": "Review", "Action": NEEDS} for k in (("issue", 57), ("issue", 58), ("issue", 59),
+                                                                       ("pr", 60), ("pr", 61), ("pr", 62))})
+    board.sync("pull_request_target", pr_event("closed", 70, 71, merged=True), SPEC, REPO)
+    got = pills(w, ("issue", 59), ("pr", 62))
+    assert got == {"issue #59": NEEDS, "pr #62": NEEDS}, \
+        f"297.5: the owner's Approve starting with /work was taken as an answer: after the sweep #59 and PR #62 show {got}, not Needs you"
+    got = pills(w, ("issue", 58), ("pr", 61), ("issue", 57), ("pr", 60))
+    assert got == {"issue #58": None, "pr #61": None, "issue #57": None, "pr #60": None}, \
+        f"297.5: the owner's comment review /work and change request /review did not count as answers in the sweep: {got}"
 
 
 # 297.6: an item on autopilot shows exactly one pill, Autopilot or Needs you
