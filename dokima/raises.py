@@ -1,0 +1,117 @@
+"""Raises: questions, blockers and issues an agent hands up, sent only where one table allows.
+
+The kinds and the table live here alone, read-only: adding a kind or a row is a code change the owner approves, never
+something a hand-back carries. An agent writes a raise as {"kind", "to", "label", "text", "evidence"}; label and
+evidence are optional, a label never changes how a raise is checked or routed, and an issue has no "to". Code stamps
+who raised it and an ID; an agent that writes either is rejected. Whoever a raise is sent to answers it by its ID.
+"""
+from types import MappingProxyType
+
+KINDS = ("question", "blocker", "issue")
+# Who may send a question or blocker to whom. An issue is for no one.
+TABLE = MappingProxyType({
+    "planner": ("owner",),
+    "worker": ("planner",),
+    "reviewer": ("planner", "worker", "owner"),
+})
+# A worker's raise to the planner goes through the reviewer, who answers it first.
+THROUGH = MappingProxyType({("worker", "planner"): "reviewer"})
+FIELDS = ("kind", "to", "label", "text", "evidence")
+STAMPED = ("raised_by", "id")
+ANSWERS = ("done", "disagree")
+PREFIX = MappingProxyType({"planner": "P", "worker": "W", "reviewer": "R"})
+
+
+def _kinds():
+    return ", ".join(KINDS[:-1]) + " or " + KINDS[-1]
+
+
+def check_raises(role, raises):
+    """The problems with the raises an agent of `role` wrote; empty when they are fine."""
+    if not isinstance(raises, list):
+        return [f"the raises must be a list, not {type(raises).__name__}"]
+    problems = []
+    allowed = TABLE.get(role, ())
+    for n, r in enumerate(raises, 1):
+        where = f"raise {n}"
+        if not isinstance(r, dict):
+            problems.append(f"{where} is not an object")
+            continue
+        for field in STAMPED:
+            if field in r:
+                problems.append(f"{where} carries {field}, which only code writes")
+        extra = sorted(k for k in r if k not in FIELDS and k not in STAMPED)
+        if extra:
+            problems.append(f"{where} carries fields no raise has: {', '.join(map(str, extra))}")
+        kind = r.get("kind")
+        if kind not in KINDS:
+            problems.append(f"{where}: the kind {kind!r} is not a kind of raise; only {_kinds()} can be raised")
+            continue
+        to = r.get("to")
+        if kind == "issue":
+            if to is not None:
+                problems.append(f"{where}: the {role}'s issue is for no one, but names {to!r}")
+            continue
+        if not isinstance(to, str) or not to.strip():
+            problems.append(f"{where}: the {role}'s {kind} names no one; it must be sent to someone")
+        elif to not in allowed:
+            rows = ", ".join(allowed) or "no one"
+            problems.append(f"{where}: the {role}'s {kind} for the {to} is outside the table; the {role} raises to "
+                            f"{rows}")
+    return problems
+
+
+def sent_to(raise_):
+    """The one who must answer a stamped raise first; None for an issue."""
+    if raise_.get("kind") == "issue":
+        return None
+    to = raise_.get("to")
+    return THROUGH.get((raise_.get("raised_by"), to), to)
+
+
+def stamp(role, raises, taken):
+    """Copies of the raises stamped with the role that ran and a new ID.
+
+    Each ID is unique among `taken` (the IDs already on the issue) and each other.
+    """
+    used = set(taken)
+    prefix = PREFIX.get(role, "X")
+    out, n = [], 0
+    for r in raises:
+        n += 1
+        while f"{prefix}{n}" in used:
+            n += 1
+        rid = f"{prefix}{n}"
+        used.add(rid)
+        out.append({**r, "raised_by": role, "id": rid})
+    return out
+
+
+def check_answers(role, answers, open_raises):
+    """The problems with an agent's answers to the open raises; empty when fine."""
+    if not isinstance(answers, list):
+        return [f"the answers must be a list, not {type(answers).__name__}"]
+    known = {r.get("id") for r in open_raises}
+    owed = [r["id"] for r in open_raises if sent_to(r) == role]
+    problems, answered = [], set()
+    for n, a in enumerate(answers, 1):
+        where = f"answer {n}"
+        if not isinstance(a, dict):
+            problems.append(f"{where} is not an object with raise, answer and why")
+            continue
+        rid = a.get("raise")
+        if not isinstance(rid, str) or not rid.strip():
+            problems.append(f"{where} names no raise by its ID")
+        elif rid not in known:
+            problems.append(f"{where} names {rid!r}, which no open raise has")
+        if a.get("answer") not in ANSWERS:
+            problems.append(f"{where} says {a.get('answer')!r}; it must say done or disagree")
+        why = a.get("why")
+        if not isinstance(why, str) or not why.strip():
+            problems.append(f"{where} does not say why")
+        if isinstance(rid, str) and rid in known:
+            answered.add(rid)
+    for rid in owed:
+        if rid not in answered:
+            problems.append(f"raise {rid}, sent to the {role}, is not answered")
+    return problems
