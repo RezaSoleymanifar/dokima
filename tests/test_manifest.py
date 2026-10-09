@@ -45,6 +45,7 @@ import textwrap
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT)  # the code under test is this checkout's, even when another dokima is on the path
 OPTION_COLORS = {"GRAY", "BLUE", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE"}
 
 
@@ -209,6 +210,44 @@ def test_the_board_adds_the_autopilot_view_with_the_manifests_filter(record_prop
     board.switch(b, 57)
     assert b.added == [("Autopilot", "table", "label:autopilot is:open no:assignee")], \
         f"282.2: with the manifest's filter changed, the board added {b.added}: it does not read the filter from the manifest"
+
+
+class OldViewBoard:
+    """A board with an Autopilot view on the old filter, beside the owner's own view."""
+
+    def __init__(self):
+        self.nodes = [{"id": "V1", "name": "Autopilot", "filter": "label:autopilot"},
+                      {"id": "V2", "name": "Mine", "filter": "label:autopilot no:assignee"}]
+        self.updates = []
+
+    def view_nodes(self):
+        return [dict(v) for v in self.nodes]
+
+    def set_view_filter(self, view_id, filter):
+        self.updates.append((view_id, filter))
+
+
+def test_the_board_moves_an_old_autopilot_view_to_the_manifests_filter(record_property, monkeypatch):
+    """The board moves an Autopilot view still on the old filter to the manifest's filter.
+
+    Proves 282.2. A board whose Autopilot view still filters on label:autopilot gets it moved to the manifest's
+    `label:autopilot is:open`, and the owner's own view is left alone. With the manifest's filter changed for the test,
+    the view is moved to the changed filter, so fixing the view also takes the filter from the manifest."""
+    record_property("proves", "282.2")
+    m = manifest("282.2")
+    from dokima import board
+    if not hasattr(board, "fix_view"):
+        pytest.fail("282.2: the board has no fix_view to move an old Autopilot view to the manifest's filter")
+    b = OldViewBoard()
+    board.fix_view(b)
+    assert b.updates == [("V1", "label:autopilot is:open")], \
+        f"282.2: the old Autopilot view was updated with {b.updates}, not moved to label:autopilot is:open alone"
+    monkeypatch.setitem(m.VIEWS, "Autopilot", {"layout": "table", "filter": "label:autopilot is:open no:assignee"})
+    b = OldViewBoard()
+    board.fix_view(b)
+    assert b.updates == [("V1", "label:autopilot is:open no:assignee")], \
+        f"282.2: with the manifest's filter changed, the board moved the old view with {b.updates}: it does not " \
+        "read the filter from the manifest"
 
 
 # 282.3: a guard reports every setting the code or workflows rely on that the manifest leaves out

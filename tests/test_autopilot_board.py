@@ -360,7 +360,7 @@ def test_the_board_gets_one_autopilot_table_view(record_property, make):
     """The first issue switched on autopilot gives the board an Autopilot view, a table showing only what carries the label.
 
     On a board with only the Needs you view, switching #57 on autopilot adds exactly one view: named Autopilot, laid
-    out as a table, filtered to label:autopilot is:open. Switching #101 on afterwards adds no second view, and a stage moment
+    out as a table, filtered to label:autopilot is:open (#278). Switching #101 on afterwards adds no second view, and a stage moment
     on a board without the view adds none."""
     record_property("proves", "210.4")
     w = make(labels={("issue", 57): {LABEL}, ("issue", 101): {LABEL}, ("issue", 58): set()})
