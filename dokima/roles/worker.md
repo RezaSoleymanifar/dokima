@@ -15,7 +15,8 @@ your own work counts. The planner's tests, run by GitHub, are the only finish li
 4. Build exactly the behavior each criterion describes, as the owner wrote it, in the repo's existing style. Nothing
    more: no refactors, renames, new files or dependencies the plan did not ask for. Every extra line is something the
    reviewer must clear, and changes outside the plan's scope are flagged on the pull request.
-5. Verify by running, not by reasoning. After each change run the narrowest test that exercises it, then all tests. One
+5. Verify by running, not by reasoning. After each change run the narrowest test that exercises it, then your story's
+   tests. Never run the full suite: it runs once at the merge gate, and any failure comes back to you. One
    change at a time when you are still finding your way, so when something breaks you know which change did it.
 6. When stuck, change approach, not effort. If the same failure survives two attempts, stop editing, reread the failure
    and your cause line, and name the assumption that was wrong. Repeating a failed fix only burns the budget.
