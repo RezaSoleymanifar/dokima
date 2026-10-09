@@ -168,17 +168,13 @@ def test_a_failed_code_review_marks_the_issue_and_its_pr_even_when_deciding_fail
     """A failed code review whose deciding step failed still puts the issue and its open PR in Review with Needs you.
 
     Runs the board step alone on what such a run leaves behind: its rejected record and no decision (no board.txt),
-    with pull request #60 open. Both cards must end in Review showing Needs you. Beside it the good case: a run that
-    decided the next stage starts (board.txt says Review, no pill) puts both cards in Review with the pill cleared."""
+    with pull request #60 open. Both cards must end in Review showing Needs you. A run that decided what follows is
+    placed from GitHub's state since #331, never from its own board.txt; tests/test_board_state.py proves that case."""
     record_property("proves", "132.1")
     p, cards = run_board_step(tmp_path / "failed", {"record.json": json.dumps(rejected_review())}, "reviewer", "pr", pr="60")
     want = {f"issue-{T.N}": ("Review", True), "pullRequest-60": ("Review", True)}
     assert cards == want, (f"132.1: a failed code review that could not decide what follows left the cards at {cards}, "
                            f"expected {want}:\n{p.stdout}{p.stderr}")
-    p, cards = run_board_step(tmp_path / "good", {"record.json": json.dumps({**rejected_review(), "check": {"passed": True, "problems": []}}),
-                                                  "board.txt": "Review none\n"}, "reviewer", "pr", pr="60")
-    want = {f"issue-{T.N}": ("Review", False), "pullRequest-60": ("Review", False)}
-    assert cards == want, f"132.1: a run that decided the next stage left the cards at {cards}, expected {want}:\n{p.stdout}{p.stderr}"
 
 
 def test_a_run_that_left_nothing_behind_still_marks_its_card(record_property, tmp_path):

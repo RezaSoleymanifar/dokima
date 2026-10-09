@@ -3,20 +3,23 @@ name: card
 # worker finish, or a person changes or comments on an issue; the cards of the
 # issues it blocks or is blocked by follow when their links changed. GitHub
 # announces no event for a blocked-by link added or removed by hand, so a run
-# every 15 minutes catches up the cards whose links changed. These triggers
+# every 15 minutes catches up the cards whose links changed. A merged pull request redraws its card and its issue's,
+# whoever merged it. These triggers
 # always use the default branch's copy of this file and of dokima/card.py, so
 # the work being judged cannot change how it is reported.
+# An issue and its pull request share one queue, so the newest redraw waits for the
+# running one and is never cancelled, while other issues' redraws and the sweep go
+# on beside it.
 on:
   workflow_run:
     workflows: [done-whens, full suite, worker]
     types: [completed]
   issues:
   issue_comment:
+  pull_request_target:
+    types: [closed]
   schedule:
     - cron: '*/15 * * * *'
-concurrency:
-  group: card
-  cancel-in-progress: false
 permissions:
   contents: read
   actions: read
@@ -24,11 +27,39 @@ permissions:
   issues: read
   pull-requests: read
 jobs:
-  card:
-    environment: keys
+  queue:
     # The bot's own edits and comments (the card itself) don't trigger another card, and a comment on a pull
-    # request draws no issue card on it; an issue deleted or moved away has no card left to draw.
-    if: github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
+    # request draws no issue card on it; an issue deleted or moved away has no card left to draw. A merge, even the
+    # bot's on autopilot, draws its pull request's card and its issue's; a pull request closed unmerged draws none.
+    if: github.event_name == 'workflow_run' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged) || github.event_name == 'schedule' || (github.event_name == 'issues' && github.event.action == 'opened') || (github.event_name != 'pull_request_target' && github.event.sender.type != 'Bot' && !github.event.issue.pull_request && !(github.event_name == 'issues' && (github.event.action == 'deleted' || github.event.action == 'transferred')))
+    runs-on: ubuntu-24.04
+    outputs:
+      group: ${{ steps.queue.outputs.group }}
+    steps:
+      # The issue this event is about, from the issue, the pull request's branch or the worker run's title.
+      - id: queue
+        env:
+          EVENT: ${{ github.event_name }}
+          ISSUE: ${{ github.event.issue.number }}
+          PR: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+          HEAD: ${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          RUN: ${{ github.run_id }}
+        run: |
+          if [ "$EVENT" = schedule ]; then group=card-sweep
+          elif [ -n "$ISSUE" ]; then group="card-$ISSUE"
+          elif [[ "$TITLE" =~ ^worker\ for\ \#([0-9]+)$ ]]; then group="card-${BASH_REMATCH[1]}"
+          elif [[ "$HEAD" =~ ^(try|work)/issue-([0-9]+)$ ]]; then group="card-${BASH_REMATCH[2]}"
+          elif [ -n "$PR" ]; then group="card-pr-$PR"
+          else group="card-run-$RUN"
+          fi
+          echo "group=$group" >> "$GITHUB_OUTPUT"
+  card:
+    needs: queue
+    concurrency:
+      group: ${{ needs.queue.outputs.group }}
+      cancel-in-progress: false
+    environment: keys
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -44,7 +75,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number }}
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 dokima/card.py

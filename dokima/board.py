@@ -1,90 +1,21 @@
-"""Keep the project board's Status, Action ("Needs you" or "Autopilot") and Priority current, from GitHub events.
+"""Keep the project board's Status, Action and Priority current, from GitHub's state.
 
-Priority is Blocker on an open issue that blocks another open issue, read from GitHub's blocked-by links when an issue
-closes or reopens and every 15 minutes on schedule; otherwise it follows the high or parked label.
+Each event about an issue or its pull request, and a sweep every 15 minutes, put its cards where the issue's state
+says now. Priority is Blocker on an open issue blocking an open issue (blocked-by links), else its label's.
 
-    python3 -m dokima.board     # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number")
-
-Without DOKIMA_BOARD the sync does nothing. Rules live in decide(); everything else is plumbing.
+    python3 -m dokima.board         # reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and DOKIMA_BOARD ("org/number"), if set
+    python3 -m dokima.board queue   # writes the event's board queue to GITHUB_OUTPUT as group=...
 """
 import json
 import os
-import re
 import subprocess
 import sys
 
 from dokima import agent, manifest, plan
 
-CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
-YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 PRIORITY = {"high": "High", "parked": "Parked"}  # highest first; Blocker comes from blocked-by links, not a label
 AUTOPILOT = "autopilot"
-
-
-def linked(body):
-    return [int(n) for n in CLOSES.findall(body or "")]
-
-
-def decide(event, p):
-    """[(kind, number, status, needs_you)]: kind is "issue" or "pr"; needs_you True marks it for the owner."""
-    out = []
-    if event == "issues":
-        n, action = p["issue"]["number"], p["action"]
-        if action == "labeled" and p["label"]["name"] == "plan":
-            out.append(("issue", n, "Plan", False))
-        elif action == "labeled" and p["label"]["name"] == "work":
-            out.append(("issue", n, "Work", False))
-        elif action == "closed":
-            out.append(("issue", n, "Done", False))
-    elif event == "issue_comment" and p["action"] == "created":
-        # A closed issue never waits on the owner, whatever a late comment says.
-        if p["comment"]["user"]["type"] == "Bot" and p["comment"]["body"].startswith(YOUR_TURN) and p["issue"].get("state") != "closed":
-            out.append(("issue", p["issue"]["number"], "Plan", True))
-    elif event in ("pull_request", "pull_request_target"):
-        pr, action = p["pull_request"], p["action"]
-        both = [("pr", pr["number"])] + [("issue", n) for n in linked(pr.get("body"))]
-        if action in ("opened", "reopened", "synchronize"):
-            out += [(k, n, "Review", False) for k, n in both]
-        elif action == "closed":
-            out += [(k, n, "Done", False) for k, n in both if k == "pr" or pr.get("merged")]
-    elif event == "pull_request_review" and p["action"] == "submitted":
-        pr = p["pull_request"]
-        if p["review"]["state"].lower() == "changes_requested":
-            out += [("pr", pr["number"], "Work", False)] + [("issue", n, "Work", False) for n in linked(pr.get("body"))]
-    elif event == "workflow_run" and p["action"] == "completed":
-        for pr in p["workflow_run"].get("pull_requests") or []:
-            out.append(("pr", pr["number"], "Review", False))
-    return out
-
-
-def keeps(event, p):
-    """True when the event leaves a Needs you as it is.
-
-    A new commit, finished checks or a review answer nothing; a review's command clears it through answered()."""
-    return (event in ("pull_request", "pull_request_target") and p["action"] == "synchronize") \
-        or event in ("workflow_run", "pull_request_review")
-
-
-def answered(event, p, owners):
-    """[(kind, number)] whose Needs you a code owner's command answers.
-
-    The issue or pull request it was said on and the one it pairs with (an issue's open pull request is found later,
-    on the board). An Approve, a bot, anyone else or no command answers nothing."""
-    if event == "issue_comment" and p["action"] == "created":
-        who, body, issue = p["comment"]["user"], p["comment"]["body"], p["issue"]
-        if issue.get("pull_request"):
-            out = [("pr", issue["number"])] + [("issue", n) for n in linked(issue.get("body"))]
-        else:
-            out = [("issue", issue["number"])]
-    elif event == "pull_request_review" and p["action"] == "submitted" and p["review"]["state"].lower() != "approved":
-        who, body, pr = p["review"].get("user") or {}, p["review"].get("body"), p["pull_request"]
-        n = agent.issue_of_pr((pr.get("head") or {}).get("ref"), pr.get("body"))
-        out = [("pr", pr["number"])] + ([("issue", int(n))] if n else [])
-    else:
-        return []
-    if who.get("type") == "Bot" or who.get("login") not in owners or not agent.command_of(body):
-        return []
-    return out
+DONE = ("Done", None)
 
 
 def priority(event, p):
@@ -209,16 +140,17 @@ class Board:
     def cards(self):
         """Every issue and pull request card on the board; drafts are skipped.
 
-        Each is {kind, number, action, closed, autopilot}; a merged pull request counts as closed."""
+        Each is {kind, number, status, action, closed, autopilot}; a merged pull request counts as closed."""
         out, cursor = [], None
         while True:
             more = {"c": cursor} if cursor else {}
-            items = self.q('query($o:String!,$n:Int!,$c:String){organization(login:$o){projectV2(number:$n){items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{fieldValueByName(name:"Action"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{__typename ... on Issue{number state labels(first:100){nodes{name}}} ... on PullRequest{number state labels(first:100){nodes{name}}}}}}}}}', o=self.owner, n=self.number, **more)["organization"]["projectV2"]["items"]
+            items = self.q('query($o:String!,$n:Int!,$c:String){organization(login:$o){projectV2(number:$n){items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{fieldValueByName(name:"Action"){... on ProjectV2ItemFieldSingleSelectValue{name}} status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{__typename ... on Issue{number state labels(first:100){nodes{name}}} ... on PullRequest{number state labels(first:100){nodes{name}}}}}}}}}', o=self.owner, n=self.number, **more)["organization"]["projectV2"]["items"]
             for it in items["nodes"]:
                 c = it.get("content") or {}
                 if c.get("__typename") not in ("Issue", "PullRequest"):
                     continue
                 out.append({"kind": "issue" if c["__typename"] == "Issue" else "pr", "number": c["number"],
+                            "status": (it.get("status") or {}).get("name"),
                             "action": (it.get("fieldValueByName") or {}).get("name"), "closed": c["state"] != "OPEN",
                             "autopilot": AUTOPILOT in {label["name"] for label in c["labels"]["nodes"]}})
             if not items["pageInfo"]["hasNextPage"]:
@@ -240,35 +172,100 @@ class Board:
         self.rest("POST", f"orgs/{self.owner}/projectsV2/{self.number}/views", name=name, layout=layout, filter=filter)
 
 
-def action(board, kind, number, needs_you):
-    """The Action pill: Needs you when the river stops for the owner, else Autopilot while on autopilot, else none."""
-    return "Needs you" if needs_you else "Autopilot" if board.autopilot(kind, number) else None
+def about(event, p):
+    """[(kind, number, head, body)] of the issue or pull requests an event is about."""
+    if event in ("issues", "issue_comment"):
+        return [("pr" if p["issue"].get("pull_request") else "issue", p["issue"]["number"], None, p["issue"].get("body"))]
+    if event == "workflow_run":
+        return [("pr", pr["number"], (pr.get("head") or {}).get("ref"), None) for pr in p["workflow_run"].get("pull_requests") or []]
+    if "pull_request" in p:
+        pr = p["pull_request"]
+        return [("pr", pr["number"], (pr.get("head") or {}).get("ref"), pr.get("body"))]
+    return []
 
 
-def switched(event, p):
-    """The issue number when its autopilot label was added or removed, else None."""
-    if event == "issues" and p["action"] in ("labeled", "unlabeled") and p["label"]["name"] == AUTOPILOT:
-        return p["issue"]["number"]
-    return None
+def queue(event, p):
+    """The event's board queue, from its payload alone: one per issue and its pull requests."""
+    if event == "schedule":
+        return "board-sweep"
+    for kind, n, head, body in about(event, p):
+        issue = n if kind == "issue" else agent.issue_of_pr(head, body)
+        return f"board-{issue}" if issue else f"board-pr-{n}"
+    return f"board-run-{os.environ.get('GITHUB_RUN_ID', '')}"
 
 
-def opened(event, p):
-    """(PR number, linked issues) when a pull request opened or reopened, else None."""
-    if event in ("pull_request", "pull_request_target") and p["action"] in ("opened", "reopened"):
-        return p["pull_request"]["number"], linked(p["pull_request"].get("body"))
-    return None
+def reason(e):
+    return (getattr(e, "stderr", None) or str(e)).strip()
+
+
+def issue_of(repo, pr, head=None, body=None):
+    """The issue a pull request was built for, or None; asks GitHub when needed."""
+    n = agent.issue_of_pr(head, body)
+    if not n:
+        try:
+            p = json.loads(agent.gh("pr", "view", str(pr), "-R", repo, "--json", "headRefName,body"))
+        except (subprocess.CalledProcessError, ValueError) as e:
+            raise RuntimeError(f"Could not read PR #{pr} ({reason(e)}), so its card was left as it was.") from e
+        n = agent.issue_of_pr(p.get("headRefName"), p.get("body"))
+    return int(n) if n else None
+
+
+def where(repo, owners, n, on):
+    """(column, pill) of open issue n, from its history now.
+
+    Backlog with no record, else the newest stage started since its newest record, else where the river put it then but
+    never in a worker or code review not yet started. Needs you while it waits on the owner, else Autopilot or none."""
+    d, items = agent.conversation(repo, n)
+    at = [i for i, c in enumerate(items) if agent.is_record(c)]
+    body, pill = d.get("body") or "", "Autopilot" if on else None
+    if not at:
+        return "Backlog", pill
+    step = agent.next_step(items[:at[-1]], rec := agent.records([items[at[-1]]])[0], owners, autopilot=lambda: on, body=body, number=str(n))
+    held = ("stop",) if step[:2] == ("start", "worker") and rec.get("stage") == "plan" or step[1:3] == ("reviewer", "pr") else step
+    column = "Work" if rec.get("role") == "split" else ([s for s in (agent.started(c, owners) for c in items[at[-1] + 1:]) if s] or [agent.board_place(rec, held)[0]])[-1]
+    return column, "Needs you" if agent.waits_on_owner(items, owners, lambda: on, body, str(n)) else pill
+
+
+def rebuild(board, repo, owners, n, prs=()):
+    """Put issue n, its open pull request and `prs` where its state says.
+
+    Closed ones go in Done; all is read first, so a card GitHub cannot read keeps its place and this fails naming it."""
+    try:
+        place = DONE if board.state("issue", n) == "closed" else where(repo, owners, n, board.autopilot("issue", n))
+        prs = sorted(set(prs) | {board.open_pr(n)} - {None})
+        todo = [("issue", n, place)] + [("pr", m, DONE if board.state("pr", m) == "closed" else place) for m in prs]
+    except (subprocess.CalledProcessError, ValueError, KeyError) as e:
+        raise RuntimeError(f"Could not read the state of #{n} ({reason(e)}), so its cards were left as they were.") from e
+    for kind, m, place in todo:
+        put(board, kind, m, place)
+    return [(kind, m, column, pill) for kind, m, (column, pill) in todo]
+
+
+def put(board, kind, n, place):
+    iid = board.item(kind, n)
+    for field, option in zip(("Status", "Action"), place):
+        if board.value(iid, field) != option:
+            board.set(iid, field, option)
+
+
+def stopped(board, repo, n, column):
+    """Show a failed run's issue and open pull request as Needs you in `column`."""
+    def mark(kind, m):
+        try:
+            closed = board.state(kind, m) == "closed"
+        except subprocess.CalledProcessError:
+            closed = False
+        put(board, kind, m, DONE if closed else (column, "Needs you"))
+    mark("issue", int(n))
+    pr = agent.gh("pr", "list", "-R", repo, "--head", f"try/issue-{n}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
+    if pr.isdigit():
+        mark("pr", int(pr))
 
 
 def switch(board, number):
-    """Follow the issue's autopilot label on its card, its open PR's card and the PR's label, never touching Needs you;
-    then, at the top of what was switched on, add the Autopilot view if the board has none."""
+    """Follow the issue's autopilot label on its open PR, and add the Autopilot view."""
     on = board.autopilot("issue", number)
     pr = board.open_pr(number)
-    for kind, n in [("issue", number)] + ([("pr", pr)] if pr else []):
-        iid = board.item(kind, n)
-        current = board.value(iid, "Action")
-        if current != "Needs you" and current != ("Autopilot" if on else None):
-            board.set(iid, "Action", "Autopilot" if on else None)
     if pr and board.autopilot("pr", pr) != on:
         board.label("pr", pr, on)
     if not on:
@@ -282,7 +279,7 @@ def switch(board, number):
             view = manifest.VIEWS["Autopilot"]
             board.add_view("Autopilot", view["layout"], view["filter"])
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Could not add the Autopilot view to the board: {(e.stderr or str(e)).strip()}") from e
+        raise RuntimeError(f"Could not add the Autopilot view to the board: {reason(e)}") from e
 
 
 def fix_view(board):
@@ -293,45 +290,41 @@ def fix_view(board):
             if v["name"] == "Autopilot" and v.get("filter") == f"label:{AUTOPILOT}":
                 board.set_view_filter(v["id"], new)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {(e.stderr or str(e)).strip()}") from e
+        raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {reason(e)}") from e
 
 
-def sweep(board, repo, owners):
-    """Set every card's pill on the board by the rules.
+def changed(repo):
+    """[(kind, number)] updated since the last sweep that succeeded, or None to recheck every card."""
+    try:
+        runs = json.loads(agent.gh("api", f"repos/{repo}/actions/workflows/board.yml/runs?event=schedule&status=success&per_page=1"))["workflow_runs"]
+        found = json.loads(agent.gh("api", f"repos/{repo}/issues?state=all&since={runs[0]['run_started_at']}&per_page=100", "--paginate"))
+        return [("pr" if "pull_request" in i else "issue", i["number"]) for i in found]
+    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, IndexError) as e:
+        print(f"GitHub could not say what changed since the last sweep ({reason(e)}), so every card is rechecked.")
+        return None
 
-    Needs you where its issue waits on the owner (the river's last word stopped for the owner and no code owner has
-    answered with a command since; a pull request follows its issue), else Autopilot on autopilot, else none. A card
-    whose history cannot be read keeps its pill, and the run fails naming it."""
-    cards = board.cards()
-    labels = {c["number"]: c["autopilot"] for c in cards if c["kind"] == "issue"}
-    waits, unread = {}, []
 
-    def waiting(n):
-        if n not in waits:
-            d, items = agent.conversation(repo, n)
-            on = (lambda: labels[n]) if n in labels else (lambda: board.autopilot("issue", n))
-            waits[n] = agent.waits_on_owner(items, owners, on, d.get("body") or "", str(n))
-        return waits[n]
+def sweep(board, repo, owners, todo=None):
+    """Put every card, or only `todo`'s, where its state says.
 
+    Each comes with its pull request or issue. Closed cards go to Done with no pill from the board's list; the run
+    fails naming any card it cannot read."""
+    cards, failed, issues = board.cards(), [], {}
     for c in cards:
-        kind, n = c["kind"], c["number"]
+        if c["closed"] and (c.get("status"), c["action"]) != DONE:
+            put(board, c["kind"], c["number"], DONE)
+    for kind, n in [(c["kind"], c["number"]) for c in cards if not c["closed"]] if todo is None else todo:
         try:
-            if c["closed"]:
-                needs = False
-            elif kind == "issue":
-                needs = waiting(n)
-            else:
-                p = json.loads(agent.gh("pr", "view", str(n), "-R", repo, "--json", "headRefName,body"))
-                issue = agent.issue_of_pr(p.get("headRefName"), p.get("body"))
-                needs = bool(issue) and waiting(int(issue))
-        except (subprocess.CalledProcessError, ValueError) as e:
-            unread.append(f"{'PR ' if kind == 'pr' else ''}#{n} ({(getattr(e, 'stderr', None) or str(e)).strip()})")
-            continue
-        pill = "Needs you" if needs else "Autopilot" if c["autopilot"] else None
-        if pill != c["action"]:
-            board.set(board.item(kind, n), "Action", pill)
-    if unread:
-        raise RuntimeError(f"Could not read the history of {', '.join(unread)}, so the board left its pill as it was.")
+            issues.setdefault(n if kind == "issue" else issue_of(repo, n), set()).update({n} if kind == "pr" else set())
+        except RuntimeError as e:
+            failed.append(str(e))
+    for n, prs in sorted((n, prs) for n, prs in issues.items() if n):
+        try:
+            rebuild(board, repo, owners, n, prs)
+        except RuntimeError as e:
+            failed.append(str(e))
+    if failed:
+        raise RuntimeError(" ".join(failed))
 
 
 def label_priority(labels):
@@ -384,31 +377,32 @@ def recompute(board, touched):
 
 
 def sync(event, payload, spec, repo, q=gql, rest=api):
-    changes, pill = decide(event, payload), priority(event, payload)
-    on_off, pr = switched(event, payload), opened(event, payload)
-    owners = plan.repo_approvers(repo.split("/")[0]) if spec and event in ("issue_comment", "pull_request_review") else set()
-    answers = answered(event, payload, owners)
-    merged = event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged")
-    touched = blockers(event, payload)
-    if not spec or not (changes or pill or on_off or answers or touched is not None):
+    """Put the cards an event is about where their state says, and keep Priority."""
+    if not spec:
         return []
-    board = Board(spec, repo, q, rest)
-    if pr and any(board.autopilot("issue", n) for n in pr[1]) and not board.autopilot("pr", pr[0]):
-        # A pull request built for an issue on autopilot carries the label too, so the Autopilot view lists it.
-        board.label("pr", pr[0], True)
-    keep = keeps(event, payload)
-    for kind, number, status, needs_you in changes:
-        iid = board.item(kind, number)
-        board.set(iid, "Status", status)
-        shown = action(board, kind, number, needs_you)
-        if keep and shown != "Needs you" and board.value(iid, "Action") == "Needs you":
-            # A Needs you the river set stays until the owner answers or the item closes.
-            continue
-        board.set(iid, "Action", shown)
-    for kind, number in answers + [("pr", board.open_pr(n)) for k, n in answers if k == "issue"]:
-        if number:
-            # The owner answered: the pill clears on both cards at once, and the card stays in its column.
-            board.set(board.item(kind, number), "Action", action(board, kind, number, False))
+    pill, touched = priority(event, payload), blockers(event, payload)
+    on_off = event == "issues" and payload["action"] in ("labeled", "unlabeled") and payload["label"]["name"] == AUTOPILOT \
+        and payload["issue"]["number"]
+    merged = event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged")
+    board, owners = Board(spec, repo, q, rest), plan.repo_approvers(repo.split("/")[0])
+    placed, failed = [], []
+
+    def attempt(step):
+        try:
+            return step()
+        except RuntimeError as e:
+            failed.append(str(e))
+
+    if event == "schedule":
+        attempt(lambda: sweep(board, repo, owners, changed(repo)))
+    for kind, n, head, body in about(event, payload):
+        issue = n if kind == "issue" else attempt(lambda: issue_of(repo, n, head, body))
+        if issue and kind == "pr" and payload.get("action") in ("opened", "reopened") and "pull_request" in payload \
+                and board.autopilot("issue", issue) and not board.autopilot("pr", n):
+            # A pull request built for an issue on autopilot carries the label too, so the Autopilot view lists it.
+            board.label("pr", n, True)
+        if issue:
+            placed += attempt(lambda: rebuild(board, repo, owners, issue, [n] if kind == "pr" else [])) or []
     if pill and "Priority" in board.fields:
         # A label never takes Blocker away: only the links do, on the next close, reopen or scheduled run.
         number, option = pill
@@ -416,31 +410,36 @@ def sync(event, payload, spec, repo, q=gql, rest=api):
         if board.value(iid, "Priority") != "Blocker":
             board.set(iid, "Priority", option)
     if on_off:
-        switch(board, on_off)
+        attempt(lambda: switch(board, on_off))
     if merged:
-        # An old Autopilot view is fixed on the next merge, after the merged cards have moved; then every pill is swept.
-        fix_view(board)
-        sweep(board, repo, plan.repo_approvers(repo.split("/")[0]))
+        # An old Autopilot view is fixed on the next merge; then every card on the board is swept.
+        attempt(lambda: fix_view(board))
+        attempt(lambda: sweep(board, repo, owners))
     if touched is not None and "Priority" in board.fields:
-        recompute(board, touched)
-    return changes
+        attempt(lambda: recompute(board, touched))
+    if failed:
+        raise RuntimeError(" ".join(failed))
+    return placed
 
 
-def main():
+def main(argv=()):
+    if list(argv[1:2]) == ["queue"]:
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"group={queue(os.environ['GITHUB_EVENT_NAME'], json.load(open(os.environ['GITHUB_EVENT_PATH'])))}\n")
+        return 0
     spec = os.environ.get("DOKIMA_BOARD", "").strip()
     if not spec:
         print("No DOKIMA_BOARD set; nothing to sync.")
         return 0
-    payload = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
     try:
-        changes = sync(os.environ["GITHUB_EVENT_NAME"], payload, spec, os.environ["GITHUB_REPOSITORY"])
+        placed = sync(os.environ["GITHUB_EVENT_NAME"], json.load(open(os.environ["GITHUB_EVENT_PATH"])), spec, os.environ["GITHUB_REPOSITORY"])
     except RuntimeError as e:
         print(f"::error::{e}")
         return 1
-    for change in changes:
+    for change in placed:
         print("board:", *change)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

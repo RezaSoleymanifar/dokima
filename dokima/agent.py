@@ -59,11 +59,21 @@ def conversation(repo, number):
 
 
 def issue_text(d, items):
-    """The issue as it stands: title, body and every comment with its author and where it was written, oldest first."""
-    parts = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"]
+    """The issue as it stands: title, body and every comment, oldest first. A record's JSON is in in/ as its own file,
+    so its comment points there instead of repeating it."""
+    parts, n = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"], 0
     for c in items:
-        parts += ["", f"### {c['author']['login']} on {c['where']} ({c['createdAt']})", "", c["body"]]
+        b = c["body"] or ""
+        if rs := records([c]):
+            n += 1
+            b = re.sub(r"```json\n.*?\n```", f"(full record: in/{name_of(rs[0], n)})", b, count=1, flags=re.S)
+        parts += ["", f"### {c['author']['login']} on {c['where']} ({c['createdAt']})", "", b]
     return "\n".join(parts) + "\n"
+
+
+def name_of(r, i):
+    """A record's file name in the pack's in/ folder."""
+    return f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
 
 
 def records(items):
@@ -687,7 +697,7 @@ def pack(repo, number, role, stage, dest):
     json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
     for i, r in enumerate(recs, 1):
-        name = f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
+        name = name_of(r, i)
         json.dump(r, open(os.path.join(dest, "in", name), "w"), indent=1)
     plan = latest(recs, "planner")
     if role == "worker" and not approved(recs):
@@ -1368,11 +1378,8 @@ def worker_waits(items, owners, body, number):
     if not approved(records(items)):
         return False
     at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
-    for c in items[at + 1:]:
-        who, said = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
-        if (who in owners and command_of(c.get("body")) == "worker") or is_record(c, "worker") \
-                or (who in (BOT, f"{BOT}[bot]") and said in (AUTOPILOT_LINES["worker"], GO_LINE)):
-            return False
+    if any(started(c, owners) == "Work" or is_record(c, "worker") for c in items[at + 1:]):
+        return False
     step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
     return step[:2] == ("start", "worker") and step[3:] == ("autopilot",)
 
@@ -1748,6 +1755,15 @@ def test_fix(items, owners):
 STAGE_COLUMN = {("planner", ""): "Plan", ("reviewer", "plan"): "Plan", ("worker", ""): "Work", ("reviewer", "pr"): "Review"}
 
 
+def started(c, owners):
+    """Column of the stage a code owner's `/work`, or the bot's line or run card, starts."""
+    who, body = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
+    card = who in (BOT, f"{BOT}[bot]") and re.match(re.escape(LIVE) + r"[^*]*\*\*(Planner|Worker|Reviewer) ?\(?(\w*)", body)
+    if who in owners and command_of(body) == "worker" and "(approved)" not in c.get("where", "") or who in (BOT, f"{BOT}[bot]") and body in (AUTOPILOT_LINES["worker"], GO_LINE):
+        return "Work"
+    return STAGE_COLUMN.get((card[1].lower(), card[2])) if card else None
+
+
 def board_place(rec, step):
     """Where the card goes after this run: the column of the stage now running, or of this stage when it stops for
     the owner, and the Needs you pill exactly when the river stops for the owner (not after a cancel)."""
@@ -1759,33 +1775,6 @@ def board_place(rec, step):
     if step[0] == "merged":
         return "Done", False
     return STAGE_COLUMN.get((rec.get("attempt") or rec.get("role"), rec.get("stage") or ""), "Plan"), step[0] == "stop"
-
-
-def move_card(repo, number, column, needs_you, spec, q=None):
-    """Put the issue and its open pull request in that column, with the Needs you pill when the river stops for the
-    owner, else the Autopilot pill while the issue is on autopilot."""
-    from dokima import board
-    b = board.Board(spec, repo, q or board.gql)
-    targets = [("issue", int(number))]
-    pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
-    if pr:
-        targets.append(("pr", int(pr)))
-    for kind, n in targets:
-        iid = b.item(kind, n)
-        b.set(iid, "Status", column)
-        # A closed item never waits on the owner, as when a run stops after the owner merged.
-        b.set(iid, "Action", "Needs you" if needs_you and not is_closed(repo, n) else "Autopilot" if b.autopilot("issue", int(number)) else None)
-    return targets
-
-
-def is_closed(repo, number):
-    """True only when GitHub says the issue or pull request is closed.
-
-    Merged counts as closed; when GitHub cannot say, False, so nothing waiting is hidden."""
-    try:
-        return json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("state") == "closed"
-    except (subprocess.CalledProcessError, json.JSONDecodeError, AttributeError):
-        return False
 
 
 def next_line(step, owners):
@@ -1999,22 +1988,33 @@ def main(argv):
             print("The plan was not approved: the plan check stays as it is.")
         return 0
     if argv[1] == "board":
-        spec = os.environ.get("DOKIMA_BOARD", "").strip()
+        from dokima import board, plan
+        spec, repo = os.environ.get("DOKIMA_BOARD", "").strip(), os.environ.get("GITHUB_REPOSITORY", "")
         if not spec:
             print("No board set; nothing to move.")
             return 0
         try:
-            column, needs = open(os.path.join(argv[3], "board.txt")).read().split()
-        except (OSError, ValueError):
-            # Deciding what follows failed, so the river stopped: the run's own stage, with Needs you.
+            rec = json.load(open(os.path.join(argv[3], "record.json")))
+        except (OSError, json.JSONDecodeError):
+            rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("role") == "cancelled" or os.path.exists(os.path.join(argv[3], "board.txt")) and (rec.get("check") or {"passed": True}).get("passed"):
+            # A run that decided what follows, or was cancelled, is placed from GitHub's state, never from the run.
             try:
-                rec = json.load(open(os.path.join(argv[3], "record.json")))
-            except (OSError, json.JSONDecodeError):
-                rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
-            column, needs = board_place(rec if isinstance(rec, dict) else {}, ("stop",))
-            needs = "needs" if needs else "none"
-        for kind, n in move_card(os.environ["GITHUB_REPOSITORY"], argv[2], column, needs == "needs", spec):
-            print(f"board: {kind} #{n} -> {column}{' · Needs you' if needs == 'needs' else ''}")
+                placed = board.rebuild(board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2]))
+            except RuntimeError as e:
+                print(f"::error::{e}")
+                return 1
+            for kind, n, column, pill in placed:
+                print(f"board: {kind} #{n} -> {column}{f' · {pill}' if pill else ''}")
+            return 0
+        # The run failed, so the river stopped: its own stage's column with Needs you, at once.
+        column = board_place(rec, ("stop",))[0]
+        print(f"board: #{argv[2]} and its open pull request -> {column} · Needs you")
+        try:
+            board.stopped(board.Board(spec, repo), repo, argv[2], column)
+        except (subprocess.CalledProcessError, KeyError, ValueError) as e:
+            print(f"::warning::GitHub could not be read, so the board may not show it: {gh_reason(e) if hasattr(e, 'stderr') else e}")
         return 0
     if argv[1] == "autopilot":
         switch, number = argv[2], argv[3]
