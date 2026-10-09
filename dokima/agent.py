@@ -1442,8 +1442,52 @@ def start_unblocked(repo, numbers, owners):
 
 
 def tree_done_comment(number):
-    """The comment a parent closes with when its last sub-issue closed on autopilot."""
+    """The comment a parent closes with when its last sub-issue closed, on autopilot or not."""
     return f"Every issue under #{number} is closed, so its whole tree is done and it closes.\n"
+
+
+def close_if_done(repo, number):
+    """Close the open issue as completed when every sub-issue under it is closed.
+
+    It says its tree is done; a sub-issue closed as not planned counts as done. True when it closed it; an issue
+    already closed is left alone."""
+    if json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("state") != "open":
+        return False
+    subs = sub_issues(repo, number)
+    if not subs or any(c.get("state") != "closed" for c in subs):
+        return False
+    gh("issue", "close", str(number), "-R", repo, "--reason", "completed", "--comment", tree_done_comment(number))
+    return True
+
+
+def close_done_parents(repo, number):
+    """Close the closed issue's parent when that was its last open sub-issue, in turn.
+
+    On autopilot or not. Returns what it did, as lines."""
+    did, n = [], int(number)
+    while True:
+        up = json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("parent_issue_url")
+        if not up:
+            return did
+        n = int(up.rstrip("/").rsplit("/", 1)[-1])
+        if not close_if_done(repo, n):
+            return did
+        did.append(f"closed #{n}: its whole tree is done")
+
+
+def close_done_trees(repo):
+    """Close every open parent whose sub-issues are all closed, one level up in turn.
+
+    So a close whose run never went leaves no finished parent open. Returns what it did, as lines."""
+    did = []
+    while True:
+        items = [i for p in pages(gh("api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate")) for i in p]
+        # GitHub counts each issue's sub-issues, open or closed, so only a parent is asked about them.
+        parents = [i["number"] for i in items if "pull_request" not in i and (i.get("sub_issues_summary") or {}).get("total")]
+        closed = [n for n in parents if close_if_done(repo, n)]
+        did += [f"closed #{n}: its whole tree is done" for n in closed]
+        if not closed:
+            return did
 
 
 def autopilot_closed(repo):
@@ -2072,7 +2116,9 @@ def main(argv):
             merge_tree(repo, number, [o for o in os.environ.get("OWNERS", "").split(",") if o])
         return 0
     if argv[1] == "closed":
-        for line in autopilot_closed(os.environ["GITHUB_REPOSITORY"]) or [f"#{argv[2]} closed: nothing on autopilot to do."]:
+        repo = os.environ["GITHUB_REPOSITORY"]
+        # A parent closes with its last sub-issue on autopilot or not; autopilot then works from what is left.
+        for line in close_done_parents(repo, argv[2]) + autopilot_closed(repo) or [f"#{argv[2]} closed: nothing on autopilot to do."]:
             print(line)
         return 0
     if argv[1] == "route":
