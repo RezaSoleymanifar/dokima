@@ -30,7 +30,8 @@ How the tests read a card:
   read as the card.
 
 The golden files in tests/raised_goldens/ are what today's code draws for records posted before this change and for
-what code detects; they must stay byte for byte the same.
+what code detects (a rejected hand-back, a clash with main, red main, a failed merge of main, a cancelled run, and the
+issue card of failing tests); they must stay byte for byte the same.
 """
 import copy
 import json
@@ -447,6 +448,7 @@ CLASH = {"role": "updater", "stage": None, "run": "https://github.com/o/r/action
          "handback": {"pr": 5, "base": "main", "merge": "abcdef123456", "merged_pr": 4, "files": ["dokima/agent.py"]},
          "check": {"passed": True, "problems": []}}
 NOT_STARTED = agent.not_started("worker", "", "main is red: all tests failed on abc1234", META)
+MERGE_FAILED = agent.not_started("worker", "pr", "Merging main into try/issue-299 failed with no clashed file to resolve.", META)
 CANCELLED = agent.cancelled("reviewer", "pr", True, META)
 TODO_TODAY = {"questions": "Answer the questions with /plan, or say /review",
               "plan approved": "Say /work to build the plan",
@@ -456,16 +458,36 @@ TODO_TODAY = {"questions": "Answer the questions with /plan, or say /review",
               "escalated": "Settle the escalation",
               "ready": "Ready for approval",
               "not every check passed": "See why not every check passed"}
+OUTSIDE_PLAN = [{"file": "README.md", "change": "a new line"}]
+OUTSIDE_SCOPE = [{"file": "setup.cfg", "why": "a typo"}]
+# A plan approved, built and passed by its code review, whose checks failed on the pull request.
+APPROVED = rec("reviewer", "plan", verdict="approve", summary="The plan holds.", blockers=[], asks=[])
+BUILT = rec("worker", summary="Built.", criteria={"299.1": "returns a job id"}, evidence="1 passed")
+PASSED_REVIEW = rec("reviewer", "pr", verdict="approve", summary="The work holds.", blockers=[], asks=[])
+FAILING_RUNS = [{"name": "299.1 · A slow call returns a job id", "status": "completed", "conclusion": "failure",
+                 "html_url": "https://x/check/1"},
+                {"name": "299.2 · Nothing leaks", "status": "completed", "conclusion": "success",
+                 "html_url": "https://x/check/2"},
+                {"name": card.ALL_TESTS, "status": "completed", "conclusion": "failure", "html_url": "https://x/check/3"}]
+
+
+def failing_found(review):
+    """The issue card's input for a pull request whose checks failed after `review`."""
+    found = found_for([rec("planner", **PLAN), APPROVED, BUILT, review])
+    found["check_runs"], found["pr"] = FAILING_RUNS, {"number": 5, "merged": False}
+    return found
 
 
 @pytest.mark.parametrize("name, record", [("rejected.md", REJECTED), ("clash.md", CLASH), ("not-started.md", NOT_STARTED),
-                                          ("cancelled.md", CANCELLED)])
+                                          ("merge-failed.md", MERGE_FAILED), ("cancelled.md", CANCELLED)])
 def test_what_code_detects_draws_exactly_as_today(record_property, env, name, record):
-    """Rejected hand-backs, clashes, runs stopped early and cancelled runs draw exactly as today.
+    """Rejected hand-backs, merge conflicts, red main and cancelled runs draw exactly as today.
 
     Draws each record, the rejected one carrying a raise in its hand-back, and checks each comment is byte for byte
-    what today's code drew, kept in tests/raised_goldens/, with no Raised section; then checks the same planner run,
-    passed, does draw its raise in Raised, so the rejected one leaves it out on purpose.
+    what today's code drew, kept in tests/raised_goldens/, with no Raised section: a rejected hand-back, a clash with
+    main found after a merge, main found red before the worker started, a merge of main that failed, and a cancelled
+    run. Then checks the same planner run, passed, does draw its raise in Raised, so the rejected one leaves it out on
+    purpose.
 
     Proves 299.5."""
     record_property("proves", "299.5")
@@ -480,22 +502,84 @@ def test_what_code_detects_draws_exactly_as_today(record_property, env, name, re
     assert items and len(items) == 1, "299.5: the same planner run, passed, does not draw its one raise in Raised"
 
 
-def test_what_code_detects_never_enters_the_raised_section(record_property, env):
-    """What code found stays out of Raised, which holds only what the agent raised.
+@pytest.mark.parametrize("record, title, line, raises", [
+    (NEW_REVIEW, "<img> Outside the plan", "- README.md: a new line", [R_TO_WORKER, R_TO_PLANNER, R_QUESTION, R_ISSUE]),
+    (NEW_WORKER, "What it found", "- <img> Outside the plan: setup.cfg: a typo", [W_BLOCKER]),
+])
+def test_work_outside_the_plan_keeps_its_fold_beside_raised(record_property, env, record, title, line, raises):
+    """Work outside the plan keeps its own fold and icon, and stays out of Raised.
 
-    Draws a passed review that raised four things and whose run the fence trimmed, and checks the Raised section holds
-    exactly the four raises and no dropped file; then checks the issue card of a rejected hand-back carrying a raise is
-    byte for byte today's, with its to-do for the owner, and every to-do the card can show still reads as today.
+    Draws a review that found a file changed outside the plan and a worker that changed one outside its scope, each
+    also carrying raises, and checks the Outside the plan fold is drawn exactly as today's code draws it, with the
+    outside the plan icon, while the Raised section holds exactly the run's raises and never names that file.
 
     Proves 299.5."""
     record_property("proves", "299.5")
-    fenced = dict(copy.deepcopy(NEW_REVIEW), dropped_by_fence=["tests/test_secret_change.py", "setup.cfg"])
-    items = section(shown(draw(fenced, earlier=[NEW_PLANNER, NEW_WORKER])), "Raised:")
-    assert items is not None and len(items) == 4, "299.5: the Raised section must hold exactly the review's 4 raises"
+    r = copy.deepcopy(record)
+    r["handback"]["outside_plan" if r["role"] == "reviewer" else "outside_scope"] = \
+        OUTSIDE_PLAN if r["role"] == "reviewer" else OUTSIDE_SCOPE
+    body = shown(draw(r, earlier=[NEW_PLANNER, NEW_WORKER]))
+    mark = img("outside the plan")
+    fold = "\n".join(card.fold(title.replace("<img>", mark), [line.replace("<img>", mark)]))
+    assert fold in body, f"299.5: the {r['role']}'s Outside the plan fold is no longer drawn as today:\n{fold}\n--- in ---\n{body}"
+    items = section(body, "Raised:")
+    assert items is not None and len(items) == len(raises), \
+        f"299.5: the {r['role']}'s Raised section must hold exactly its {len(raises)} raises:\n{body}"
     text = "\n".join("\n".join(i) for i in items)
-    for f in fenced["dropped_by_fence"]:
-        assert f not in text, f"299.5: the file the fence dropped, {f}, is listed in the Raised section:\n{text}"
+    for f in ("README.md", "setup.cfg", "Outside the plan"):
+        assert f not in text, f"299.5: work outside the plan ({f}) is listed in the Raised section:\n{text}"
+
+
+def test_failing_tests_keep_their_marks_and_to_do_beside_raised(record_property, env):
+    """Failing tests keep their red marks and to-do, and stay out of Raised.
+
+    Draws the issue card of a pull request whose code review passed but whose criterion check and All tests failed,
+    and checks it is byte for byte today's card, kept in tests/raised_goldens/, with the failed marks and Needs you:
+    See why not every check passed. Then draws it again with the review raising one issue, and checks the Raised
+    section holds that one raise and no failing check, while the failed marks and the to-do stay as they were.
+
+    Proves 299.5."""
+    record_property("proves", "299.5")
+    drawn = card.render(REPO, ISSUE, failing_found(PASSED_REVIEW))
+    assert drawn == golden("failing-tests-issue-card.md"), f"299.5: the issue card of failing tests changed:\n{drawn}"
+    raised = card.render(REPO, ISSUE, failing_found(rec("reviewer", "pr", verdict="approve", summary="The work holds.",
+                                                        blockers=[], asks=[], raises=[R_ISSUE], answers=[])))
+    items = section(raised, "Raised:")
+    assert items is not None and len(items) == 1, \
+        f"299.5: the issue card must show the review's one raise in Raised beside the failing tests:\n{raised}"
+    text = "\n".join(items[0])
+    for f in ("A slow call returns a job id", card.ALL_TESTS, "not every check passed", "https://x/check/"):
+        assert f not in text, f"299.5: a failing test ({f}) is listed in the Raised section:\n{text}"
+    for kept in ("Needs you: See why not every check passed", '<a href="https://x/check/1">', '<a href="https://x/check/3">'):
+        assert drawn.count(kept) == raised.count(kept) == 1, \
+            f"299.5: {kept!r} no longer shows once beside the Raised section:\n{raised}"
+    failed = card.icon(REPO, card.ICON_FILE["failed"], alt="failed")
+    assert raised.count(failed) == drawn.count(failed), f"299.5: the failed marks changed beside Raised:\n{raised}"
+
+
+def test_what_code_detects_never_enters_the_raised_section(record_property, env, monkeypatch):
+    """Rejected hand-backs, workflow file changes and three blocks in a row read as today.
+
+    Checks the issue card of a rejected hand-back carrying a raise is byte for byte today's, with its to-do and no
+    Raised section, while the same card for a passed planner does show the raise; that autopilot refuses to merge a
+    pull request that changes a workflow file with today's words, so the owner merges it; and every to-do the card
+    can show, three blocks in a row among them, still reads as today.
+
+    Proves 299.5."""
+    record_property("proves", "299.5")
     drawn = card.render(REPO, ISSUE, found_for([NEW_PLANNER, REJECTED]))
     assert drawn == golden("rejected-issue-card.md"), f"299.5: the issue card of a rejected hand-back changed:\n{drawn}"
     assert not headings(drawn, "Raised:"), f"299.5: a rejected hand-back's raise is drawn in Raised:\n{drawn}"
+    calls = []
+
+    def fake_gh(*args):
+        calls.append(args)
+        if "pulls/5/files" in " ".join(args):
+            return json.dumps([{"filename": "dokima/agent.py"}, {"filename": ".github/workflows/ci.yml"}])
+        raise AssertionError(f"299.5: autopilot went on past a workflow file change: gh {args}")
+    monkeypatch.setattr(agent, "gh", fake_gh)
+    assert agent.try_merge(REPO, 5) == (False, "it changes a workflow file (.github/workflows/ci.yml), and only the owner "
+                                               "merges those"), "299.5: a workflow file change that needs you reads differently"
     assert card.TODO == TODO_TODAY, f"299.5: the owner's to-dos for what code detects changed: {card.TODO}"
+    assert headings(card.render(REPO, ISSUE, found_for([NEW_PLANNER])), "Raised:"), \
+        "299.5: the same issue card with the planner's hand-back passed shows no Raised section"
