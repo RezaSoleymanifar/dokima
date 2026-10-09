@@ -220,7 +220,7 @@ def plan_handback(*found, tests=True):
             "issues_found": [dict(f) for f in found], "_tests": tests}
 
 
-def work_handback(*found, summary="Built it. The fix is in x.py."):
+def work_handback(*found, summary="Built the fix in x.py."):
     """A worker's hand-back for #57 listing these issues found outside it.
 
     An empty summary is rejected by the check."""
