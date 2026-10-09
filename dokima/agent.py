@@ -1344,15 +1344,15 @@ def start_planner(repo, number, line=AUTOPILOT_LINE):
        "-f", "client_payload[stage]=plan", "-f", f"client_payload[issue]={number}")
 
 
-def start_waiting(repo, numbers, need_blocker=False, line=AUTOPILOT_LINE):
+def start_waiting(repo, numbers, line=AUTOPILOT_LINE):
     """Start the planner of every open issue among `numbers` with no sub-issues, nothing open blocking it and nothing
-    started on it yet; with need_blocker, only those blocked by at least one issue (all now closed). Returns those started."""
+    started on it yet. Returns those started."""
     started = []
     for n in numbers:
         if json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("state") != "open" or sub_issues(repo, n):
             continue
         blockers = blocked_by(repo, n)
-        if (need_blocker and not blockers) or any(b.get("state") != "closed" for b in blockers):
+        if any(b.get("state") != "closed" for b in blockers):
             continue
         if started_before(repo, n):
             continue
@@ -1361,60 +1361,55 @@ def start_waiting(repo, numbers, need_blocker=False, line=AUTOPILOT_LINE):
     return started
 
 
-WAIT_LINE = "Autopilot: plan approved, waiting for {} to close"
-GO_LINE = "Autopilot: blockers closed, starting work"
-
-
 def open_blockers_of(repo, number):
     """The numbers of the open issues blocking this one on GitHub, oldest first."""
     return sorted(b["number"] for b in blocked_by(repo, number) if b.get("state") != "closed")
 
 
-def worker_waits(items, owners, body, number):
-    """True when the issue's approved newest plan still waits for its worker to start.
+def plans_again(items, owners, body, number):
+    """True when a plan approved while blocked built nothing and nothing started since.
 
-    The river would have started its worker on autopilot, and no worker started since the approval: no `/work` from
-    the owner, no worker record and no Autopilot line starting it."""
-    if not approved(records(items)):
+    Its newest record is the approving plan review, and since then no record, run card or Autopilot line started a
+    stage and the owner gave no command."""
+    at = max((i for i, c in enumerate(items) if is_record(c)), default=None)
+    if at is None or not is_record(items[at], "reviewer", "plan"):
         return False
-    at = max(i for i, c in enumerate(items) if is_record(c, "reviewer", "plan") and records([c])[0].get("check", {}).get("passed"))
-    if any(started(c, owners) == "Work" or is_record(c, "worker") for c in items[at + 1:]):
+    rec = records([items[at]])[0]
+    if not rec.get("check", {}).get("passed") or (rec.get("handback") or {}).get("verdict") != "approve":
         return False
-    step = next_step(items[:at], records([items[at]])[0], owners, autopilot=lambda: True, body=body, number=number)
+    lines = (AUTOPILOT_LINE, AUTOPILOT_START_LINE, *AUTOPILOT_LINES.values())
+    for c in items[at + 1:]:
+        who, said = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
+        if (who in owners and command_of(said)) or (who in (BOT, f"{BOT}[bot]") and (LIVE in said or said in lines)):
+            return False
+    step = next_step(items[:at], rec, owners, autopilot=lambda: True, body=body, number=number)
     return step[:2] == ("start", "worker") and step[3:] == ("autopilot",)
 
 
-def start_worker(repo, number):
-    """Start the issue's worker with the river's own signal, after one Autopilot line.
+def start_unblocked(repo, numbers, owners):
+    """Start a fresh planner on every issue among `numbers` whose blockers have all closed.
 
-    The line stands where the owner would have said /work, and goes first: it is the record that the worker was started, so no later close starts it again."""
-    gh("issue", "comment", str(number), "-R", repo, "--body", GO_LINE)
-    gh("api", "-X", "POST", f"repos/{repo}/dispatches", "-f", "event_type=dokima-next", "-f", "client_payload[role]=worker",
-       "-f", "client_payload[stage]=", "-f", f"client_payload[issue]={number}")
-
-
-def start_blocked_workers(repo, numbers, owners):
-    """Start the worker of every waiting issue among `numbers` whose blockers have all closed.
-
-    An issue waits with an approved plan whose worker has not started, and must have been blocked. Returns (the issues whose worker waits, what was done as lines): a waiting issue never starts
-    its planner. When GitHub cannot list an issue's blockers its worker does not start and the issue says why."""
-    waits, did = [], []
+    Each was blocked, and has nothing started on it yet or a plan approved while it was blocked; its old plan's worker
+    never starts. Returns (the issues started, what was done as lines). When GitHub cannot list an issue's blockers nothing
+    starts and the issue says why."""
+    started, did = [], []
     for n in numbers:
-        d, items = conversation(repo, n)
-        if not worker_waits(items, owners, d.get("body") or "", n):
-            continue
-        waits.append(n)
+        if started_before(repo, n):
+            d, items = conversation(repo, n)
+            if not plans_again(items, owners, d.get("body") or "", n):
+                continue
         try:
             blockers = blocked_by(repo, n)
         except subprocess.CalledProcessError as e:
             gh("issue", "comment", str(n), "-R", repo, "--body",
-               f"Autopilot did not start the worker: GitHub could not list the issues blocking #{n}: {gh_reason(e)}.")
+               f"Autopilot did not start the planner: GitHub could not list the issues blocking #{n}: {gh_reason(e)}.")
             did.append(f"could not list the blockers of #{n}")
             continue
         if blockers and all(b.get("state") == "closed" for b in blockers):
-            start_worker(repo, n)
-            did.append(f"started the worker for #{n}")
-    return waits, did
+            start_planner(repo, n)
+            started.append(n)
+            did.append(f"started the planner for #{n}")
+    return started, did
 
 
 def tree_done_comment(number):
@@ -1429,8 +1424,7 @@ def autopilot_closed(repo):
     Every open parent on autopilot whose sub-issues are all closed closes as completed, saying its tree is done, and
     counts as a close one level up in turn. Every closed issue on autopilot with no parent on autopilot is the top of a
     done tree: the tree goes off autopilot. Then every open issue left on autopilot that was blocked and whose blockers
-    have all closed starts its worker when its approved plan waits for one, else its planner, unless something already
-    started on it."""
+    have all closed starts a fresh planner, unless something already started on it since its plan, if any, was approved."""
     did = []
     while True:
         issues = {i["number"]: i for i in json.loads(gh(
@@ -1455,11 +1449,8 @@ def autopilot_closed(repo):
     from dokima.plan import repo_approvers
     owners = [o for o in os.environ.get("OWNERS", "").split(",") if o] or \
         sorted(repo_approvers(os.environ.get("GITHUB_REPOSITORY_OWNER", repo.split("/")[0])))
-    # An approved plan whose worker waited on its blockers starts its worker; such an issue never plans again.
-    workers, lines = start_blocked_workers(repo, waiting, owners)
-    did += lines
-    waiting = [n for n in waiting if n not in workers]
-    did += [f"started the planner for #{n}" for n in start_waiting(repo, waiting, need_blocker=True)]
+    # A plan approved while the issue was blocked built nothing, so the issue plans afresh.
+    did += start_unblocked(repo, waiting, owners)[1]
     return did
 
 
@@ -1759,7 +1750,7 @@ def started(c, owners):
     """Column of the stage a code owner's `/work`, or the bot's line or run card, starts."""
     who, body = (c.get("author") or {}).get("login"), (c.get("body") or "").strip()
     card = who in (BOT, f"{BOT}[bot]") and re.match(re.escape(LIVE) + r"[^*]*\*\*(Planner|Worker|Reviewer) ?\(?(\w*)", body)
-    if who in owners and command_of(body) == "worker" and "(approved)" not in c.get("where", "") or who in (BOT, f"{BOT}[bot]") and body in (AUTOPILOT_LINES["worker"], GO_LINE):
+    if who in owners and command_of(body) == "worker" and "(approved)" not in c.get("where", "") or who in (BOT, f"{BOT}[bot]") and body == AUTOPILOT_LINES["worker"]:
         return "Work"
     return STAGE_COLUMN.get((card[1].lower(), card[2])) if card else None
 
@@ -1951,15 +1942,15 @@ def main(argv):
             if why:
                 step = ("stop", why)
             elif step[:2] == ("start", "worker") and step[3:] == ("autopilot",):
-                # On autopilot the worker of a blocked issue waits until every issue blocking it closes.
+                # On autopilot a blocked issue builds nothing; it plans afresh once every issue blocking it closes.
                 try:
                     left = open_blockers_of(repo, number)
                 except subprocess.CalledProcessError as e:
                     left, step = None, ("stop", f"GitHub could not list the issues blocking #{number}, so the worker "
                                                 f"did not start: {gh_reason(e)}. Say `/work` once GitHub answers.")
                 if left:
-                    gh("issue", "comment", str(number), "-R", repo, "--body", WAIT_LINE.format(named(left)))
-                    step = ("waiting", f"The worker starts by itself when {named(left)} close.")
+                    # Nothing is built from a plan written before its blockers landed: the issue plans again.
+                    step = ("waiting", f"Nothing is built: the issue plans again by itself when {named(left)} close.")
         if rec.get("role") == "worker":
             # The pull request is opened after the record is written, so the worker's sentence links it only now.
             try:
