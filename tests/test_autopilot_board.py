@@ -276,6 +276,8 @@ def test_the_river_keeps_the_pill_when_it_moves_a_card_on_autopilot(record_prope
     w = make(labels={("issue", 57): {LABEL}, ("pr", 60): {LABEL}, ("issue", 58): set()}, prs={57: 60, 58: 61})
     monkeypatch.setenv("DOKIMA_BOARD", "o/1")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    # A run that decided what follows; its own board.txt never counts since #331.
+    (tmp_path / "board.txt").write_text("Backlog none\n")
     for n in ("57", "58"):
         agent.main(["agent", "board", n, str(tmp_path)])
     for kind, n in (("issue", 57), ("pr", 60)):

@@ -22,11 +22,13 @@ and the history (the bot's records, everyone's words, pull request reviews) is r
 `gh pr list`, `gh pr view` and `gh api`, as agent.conversation does. A history entry that is a (login, words) pair is
 a comment by that person; a plain string is the code owner's words.
 """
+import datetime
 import json
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
 
 import pytest
 
@@ -77,14 +79,13 @@ def places(w, *items):
     return {f"{k} #{n}": place(w, k, n) for k, n in items}
 
 
-def run_ends(n, monkeypatch, tmp_path, board_txt=None):
-    """Run the end of a run's board step on issue n: `agent board N OUT`.
+def run_ends(n, monkeypatch, tmp_path, board_txt="Backlog none\n"):
+    """Run `agent board N OUT` on issue n, for a run that decided what follows.
 
-    board_txt, when given, is what the run itself decided (OUT/board.txt), which must not count."""
+    board_txt is what the run itself decided (OUT/board.txt), which must not count."""
     monkeypatch.setenv("DOKIMA_BOARD", SPEC)
     monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
-    if board_txt:
-        (tmp_path / "board.txt").write_text(board_txt)
+    (tmp_path / "board.txt").write_text(board_txt)
     return agent.main(["agent", "board", str(n), str(tmp_path)])
 
 
@@ -249,13 +250,148 @@ def triggers(text):
     return out
 
 
-# 331.2: every 15 minutes a sweep sets every issue and pull request card on the board
+# 331.2: every 15 minutes a sweep rechecks only what changed since the last sweep that succeeded
+
+RUNS = "repos/o/r/actions/workflows/board.yml/runs"
+
+
+def when(t):
+    """A GitHub timestamp as a datetime, so "Z" and "+00:00" compare alike."""
+    return datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+
+
+def with_github_lists(w, monkeypatch, runs=(), updated=None, refuse=()):
+    """Answer the sweep's two lists on top of the world's `gh`, and return the world.
+
+    `gh api repos/o/r/actions/workflows/board.yml/runs` lists the board workflow's runs, newest first, honouring the
+    event, status and per_page query parameters as GitHub does (status may be a status or a conclusion).
+    `gh api repos/o/r/issues` lists issues and pull requests (a pull request carries a "pull_request" key), honouring
+    since (updated at or after it) and state (open by default, as on GitHub). Parameters may be in the path's query or
+    given with -f/-F. `updated` maps (kind, n) to its updated_at; `refuse` holds "runs" and/or "issues" for a list
+    GitHub answers with HTTP 502."""
+    base, updated = agent.gh, dict(updated or {})
+
+    def gh(*args):
+        a = [str(x) for x in args]
+        path = next((x for x in a[1:] if x.lstrip("/").startswith("repos/")), "").lstrip("/") if a[:1] == ["api"] else ""
+        url, _, query = path.partition("?")
+        if url not in (RUNS, "repos/o/r/issues"):
+            return base(*args)
+        params = dict(urllib.parse.parse_qsl(query))
+        params.update(x.split("=", 1) for f, x in zip(a, a[1:]) if f in ("-f", "-F", "--field", "--raw-field") and "=" in x)
+        w.lists.append((url, params))
+        if ("runs" if url == RUNS else "issues") in refuse:
+            raise subprocess.CalledProcessError(1, ["gh", *a], output="", stderr="HTTP 502: Bad Gateway")
+        if url == RUNS:
+            out = [r for r in runs if params.get("event") in (None, r["event"])
+                   and params.get("status") in (None, r["status"], r["conclusion"])]
+            out = out[:int(params["per_page"])] if "per_page" in params else out
+            return json.dumps({"total_count": len(out), "workflow_runs": out})
+        state, since = params.get("state", "open"), params.get("since")
+        found = []
+        for (kind, n), t in sorted(updated.items()):
+            closed = (kind, n) in w.closed
+            if (since and when(t) < when(since)) or (state != "all" and (state == "closed") != closed):
+                continue
+            item = {"number": n, "state": "closed" if closed else "open", "updated_at": t,
+                    "labels": [{"name": x} for x in sorted(w.labels.get((kind, n), set()))]}
+            if kind == "pr":
+                item["pull_request"] = {"url": f"https://api.github.com/repos/o/r/pulls/{n}"}
+            found.append(item)
+        return json.dumps(found)
+
+    w.lists = []
+    monkeypatch.setattr(agent, "gh", gh)
+    return w
+
+
+def run(n, event, status, conclusion, started):
+    """One run of the board workflow as GitHub's runs list gives it."""
+    return {"id": n, "name": "board", "path": ".github/workflows/board.yml", "event": event, "status": status,
+            "conclusion": conclusion, "created_at": started, "run_started_at": started}
+
+
+# Newest first: this sweep (still running), a sweep that failed, an event's run, the last sweep that succeeded, an older one.
+BOARD_RUNS = [run(5, "schedule", "in_progress", None, "2026-10-09T15:45:00Z"),
+              run(4, "schedule", "completed", "failure", "2026-10-09T15:30:00Z"),
+              run(3, "issue_comment", "completed", "success", "2026-10-09T15:20:00Z"),
+              run(2, "schedule", "completed", "success", "2026-10-09T15:15:00Z"),
+              run(1, "schedule", "completed", "success", "2026-10-09T15:00:00Z")]
+
+
+def read_about(w, n):
+    """Every read the run made through `gh` about #n: history, pull request or state."""
+    return [c for c in w.calls if re.search(rf"(?<!\d){n}(?!\d)", " ".join(str(x) for x in c))]
+
+
+def test_the_15_minute_sweep_rechecks_only_what_changed_since_the_last_sweep(record_property, make, monkeypatch):
+    """Every 15 minutes the sweep rechecks only what changed since the last good sweep.
+
+    Proves 331.2. The last sweep that succeeded started at 15:15; a newer sweep failed at 15:30 and an event's run
+    ended at 15:20, and neither counts. Updated since 15:15: #57 at 15:25 (its PR #60 not), #58's PR #61 at 15:40 (#58
+    not) and #62 at 15:18. Not updated: #59 at 15:05 (after the older sweep at 15:00, before 15:15), #63 at 14:00,
+    which GitHub cannot read, and #67. Every card starts in the wrong place. After the run: #57 and PR #60 in Review
+    with Needs you, #58 and PR #61 in Plan with Autopilot, #62 in Backlog with no pill; closed #66, never updated,
+    in Done with no pill, read from the board alone; #59, #63 and #67 left exactly where they were, with no read of
+    their history, pull request or state, and the run passes though #63 cannot be read. Then a comment on #67
+    arrives and puts it in Backlog with no pill at once."""
+    record_property("proves", "331.2")
+    wrong = {("issue", 57): ("Plan", None), ("pr", 60): ("Plan", None), ("issue", 58): ("Done", NEEDS),
+             ("pr", 61): ("Done", NEEDS), ("issue", 62): ("Work", NEEDS), ("issue", 59): ("Work", None),
+             ("issue", 63): ("Review", AUTO), ("issue", 66): ("Work", NEEDS), ("issue", 67): ("Review", NEEDS)}
+    w = make(labels={("issue", 58): {LABEL}, ("pr", 61): {LABEL}}, prs={57: 60, 58: 61}, closed={("issue", 66)},
+             unreadable={63}, records={57: tny.code_approved(), 58: tny.plan_blocked(), 59: tny.plan_approved(),
+                                       66: tny.code_approved()},
+             cards={k: {"Status": c, **({"Action": a} if a else {})} for k, (c, a) in wrong.items()})
+    with_github_lists(w, monkeypatch, BOARD_RUNS, updated={
+        ("issue", 57): "2026-10-09T15:25:00Z", ("pr", 60): "2026-10-09T14:00:00Z", ("issue", 58): "2026-10-09T14:00:00Z",
+        ("pr", 61): "2026-10-09T15:40:00Z", ("issue", 62): "2026-10-09T15:18:00Z", ("issue", 59): "2026-10-09T15:05:00Z",
+        ("issue", 63): "2026-10-09T14:00:00Z", ("issue", 66): "2026-10-08T09:00:00Z", ("issue", 67): "2026-10-08T09:00:00Z"})
+    board.sync("schedule", {"schedule": "*/15 * * * *"}, SPEC, REPO)
+    assert any(url == "repos/o/r/issues" for url, _ in w.lists), \
+        "331.2: the sweep never asked GitHub which issues and pull requests changed since the last sweep"
+    want = {"issue #57": ("Review", NEEDS), "pr #60": ("Review", NEEDS), "issue #58": ("Plan", AUTO), "pr #61": ("Plan", AUTO),
+            "issue #62": ("Backlog", None), "issue #66": ("Done", None),
+            "issue #59": ("Work", None), "issue #63": ("Review", AUTO), "issue #67": ("Review", NEEDS)}
+    got = places(w, *wrong)
+    bad = {k: f"{got[k]}, not {want[k]}" for k in want if got[k] != want[k]}
+    assert not bad, f"331.2: after the sweep since 15:15 these cards are in the wrong place: {bad}"
+    read = {n: read_about(w, n) for n in (59, 63, 67)}
+    assert not any(read.values()), f"331.2: the sweep read issues not updated since the last sweep: {read}"
+    board.sync("issue_comment", tny.comment(67, "Any news?", STRANGER), SPEC, REPO)
+    assert place(w, "issue", 67) == ("Backlog", None), \
+        f"331.2: a comment on #67 left its card at {place(w, 'issue', 67)}; an event rebuilds its own issue at once"
+
+
+def test_with_no_sweep_to_count_from_the_sweep_rechecks_every_card(record_property, make, monkeypatch):
+    """When GitHub cannot say what changed since the last sweep, the sweep rechecks every card.
+
+    Proves 331.2. Three runs, each on a board where #57 (code review approved, PR #60), #58 (plan approved) and #59
+    (no record) sit in the wrong place and only #57 was updated lately: GitHub lists no earlier sweep that succeeded
+    (only this one, running, and a failed one); GitHub refuses the list of runs; GitHub refuses the list of what
+    changed. Each time every card ends where its state says: #57 and PR #60 in Review with Needs you, #58 in Plan
+    with Needs you, #59 in Backlog with no pill, and the run passes."""
+    record_property("proves", "331.2")
+    cases = [("no earlier sweep succeeded", BOARD_RUNS[:2], ()), ("GitHub refused the runs", BOARD_RUNS, ("runs",)),
+             ("GitHub refused what changed", BOARD_RUNS, ("issues",))]
+    for name, runs, refuse in cases:
+        w = make(prs={57: 60}, records={57: tny.code_approved(), 58: tny.plan_approved()},
+                 cards={("issue", 57): {"Status": "Plan"}, ("pr", 60): {"Status": "Done"},
+                        ("issue", 58): {"Status": "Done"}, ("issue", 59): {"Status": "Work", "Action": NEEDS}})
+        with_github_lists(w, monkeypatch, runs, refuse=refuse, updated={
+            ("issue", 57): "2026-10-09T15:25:00Z", ("issue", 58): "2026-10-01T09:00:00Z", ("issue", 59): "2026-10-01T09:00:00Z"})
+        board.sync("schedule", {"schedule": "*/15 * * * *"}, SPEC, REPO)
+        got = places(w, ("issue", 57), ("pr", 60), ("issue", 58), ("issue", 59))
+        want = {"issue #57": ("Review", NEEDS), "pr #60": ("Review", NEEDS), "issue #58": ("Plan", NEEDS),
+                "issue #59": ("Backlog", None)}
+        assert got == want, f"331.2: {name}, yet the sweep left the cards at {got}, not {want}"
+
 
 def test_the_15_minute_sweep_puts_every_card_where_its_state_says(record_property, make):
-    """Every 15 minutes, every card on the board goes where its state says.
+    """With no earlier sweep on record, every card goes where its state says.
 
-    Proves 331.2. The scheduled run finds a board where every card is wrong: #57 (code review approved, waits for the merge) and its
-    PR #60 in Plan with no pill; #58 (on autopilot, plan sent back to the planner) in Done with Needs you; #59 (no
+    Proves 331.2. GitHub's lists answer nothing, as on the first sweep. The scheduled run finds a board where every
+    card is wrong: #57 (code review approved, waits for the merge) and its PR #60 in Plan with no pill; #58 (on autopilot, plan sent back to the planner) in Done with Needs you; #59 (no
     record yet) in Work with Needs you; #62 (split filed) in Plan with Needs you; #64 (plan approved, the code owner
     already said /work) in Review with Needs you; closed #63 in Plan with Needs you. After the run: #57 and PR #60 in
     Review with Needs you, #58 in Plan with Autopilot, #59 in Backlog, #62 in Work, #64 in Plan, #63 in Done, the last
@@ -368,6 +504,29 @@ def test_the_sweep_puts_closed_items_in_done_with_no_pill(record_property, make)
     wrong = {f"{k} #{n}": place(w, k, n) for k, n in closed if place(w, k, n) != ("Done", None)}
     assert not wrong, f"331.3: after the sweep these closed cards are not in Done with no pill: {wrong}"
     assert place(w, "issue", 57) == ("Backlog", AUTO), f"331.3: the sweep moved open #57 to {place(w, 'issue', 57)}"
+
+
+def board_section():
+    """AGENTS.md's "The board" section, as one paragraph of text."""
+    text = open(os.path.join(ROOT, "AGENTS.md")).read()
+    return " ".join(text.split("\n## The board\n", 1)[1].split("\n## ", 1)[0].split())
+
+
+def test_agents_md_says_a_closed_item_shows_no_pill_whatever_its_labels(record_property):
+    """AGENTS.md says a closed issue or PR shows no pill, whatever its labels.
+
+    Proves 331.3. Reads AGENTS.md's board section: one sentence must say that a closed issue, and a merged or closed
+    pull request, shows no pill (neither Needs you nor Autopilot) whatever its labels, and the old rule that the merge's
+    sweep puts Autopilot on every item on autopilot "open or closed" must be gone."""
+    record_property("proves", "331.3")
+    section = board_section()
+    assert "open or closed" not in section, \
+        "331.3: AGENTS.md still says the merge's sweep puts Autopilot on items on autopilot, open or closed"
+    said = [x for x in re.split(r"(?<=\.)\s", section)
+            if re.search(r"\bclosed\b", x) and re.search(r"\bpull request\b", x) and re.search(r"\bno (Action )?pill\b", x)
+            and "whatever its labels" in x]
+    assert said, ("331.3: AGENTS.md's board section has no sentence saying a closed issue or pull request shows no pill "
+                  "whatever its labels")
 
 
 # 331.4: an issue and its pull request share one board queue that keeps the newest recompute
@@ -518,3 +677,41 @@ def test_the_sweep_fixes_the_rest_and_fails_naming_the_unreadable_card(record_pr
     got = places(w, ("issue", 63), ("issue", 59), ("issue", 64))
     want = {"issue #63": ("Review", AUTO), "issue #59": ("Backlog", None), "issue #64": ("Done", None)}
     assert got == want, f"331.6: after a sweep that could not read #63, the cards are at {got}, not {want}"
+
+
+def test_a_failed_run_shows_needs_you_at_once_even_when_github_cannot_be_read(record_property, make, monkeypatch, tmp_path):
+    """A failed run shows Needs you at once, even when GitHub cannot be read.
+
+    Proves 331.6. GitHub answers 502 about every issue here when the run's board step runs. A worker run on #63 whose
+    hand-back code rejected, and whose deciding step failed too (no board.txt): #63 ends in Work with Needs you. A code
+    review on #64 that left nothing at all behind (ROLE reviewer, STAGE pr): #64 and its open PR #66 end in Review with
+    Needs you. A planner run on #65 whose hand-back code rejected, though deciding worked (board.txt "Plan needs"):
+    #65 ends in Plan with Needs you. Each board step exits 0, so the run's own failure is what the owner reads. Beside
+    them the good case: a plan review on #67 whose hand-back passed and decided (board.txt "Work none") keeps its card
+    in Plan with Autopilot and exits 1, since a run that did not fail is placed only from GitHub's state."""
+    record_property("proves", "331.6")
+    w = make(unreadable={63, 64, 65, 66, 67}, prs={64: 66},
+             cards={("issue", 63): {"Status": "Backlog"}, ("issue", 64): {"Status": "Plan"}, ("pr", 66): {"Status": "Work"},
+                    ("issue", 65): {"Status": "Backlog", "Action": AUTO}, ("issue", 67): {"Status": "Plan", "Action": AUTO}})
+    monkeypatch.setenv("DOKIMA_BOARD", SPEC)
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    rejected = {"check": {"passed": False, "problems": ["the hand-back is missing"]}, "handback": {}}
+    cases = [(63, "worker", "", {"record.json": {"role": "worker", "stage": "", **rejected}}, 0,
+              {"issue #63": ("Work", NEEDS)}),
+             (64, "reviewer", "pr", {}, 0, {"issue #64": ("Review", NEEDS), "pr #66": ("Review", NEEDS)}),
+             (65, "planner", "", {"record.json": {"role": "planner", "stage": "", **rejected}, "board.txt": "Plan needs\n"}, 0,
+              {"issue #65": ("Plan", NEEDS)}),
+             (67, "reviewer", "plan", {"record.json": {"role": "reviewer", "stage": "plan", "handback": {"verdict": "approve"},
+                                                       "check": {"passed": True, "problems": []}}, "board.txt": "Work none\n"}, 1,
+              {"issue #67": ("Plan", AUTO)})]
+    for n, role, stage, files, code, want in cases:
+        out = tmp_path / str(n)
+        out.mkdir()
+        for name, body in files.items():
+            (out / name).write_text(body if isinstance(body, str) else json.dumps(body))
+        monkeypatch.setenv("ROLE", role)
+        monkeypatch.setenv("STAGE", stage)
+        got_code = agent.main(["agent", "board", str(n), str(out)])
+        got = places(w, *[(k.split(" #")[0], int(k.split(" #")[1])) for k in want])
+        assert got == want, f"331.6: a {role} {stage} run on #{n} with GitHub unreadable left the cards at {got}, not {want}"
+        assert got_code == code, f"331.6: the board step of the {role} {stage} run on #{n} exited {got_code}, not {code}"

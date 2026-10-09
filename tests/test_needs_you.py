@@ -229,9 +229,13 @@ def review(n, body, state="commented", login=OWNER, kind="User", issue=None):
 
 
 def run_ends(n, monkeypatch, tmp_path):
-    """Run the end of a run's board step on issue n: `agent board N OUT`."""
+    """Run `agent board N OUT` on issue n, for a run that decided what follows.
+
+    The run's own board.txt says Backlog with no pill, which must not count: since #331 a run that decided is placed
+    from GitHub's state, and only a run that failed is placed by itself (#132)."""
     monkeypatch.setenv("DOKIMA_BOARD", SPEC)
     monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    (tmp_path / "board.txt").write_text("Backlog none\n")
     return agent.main(["agent", "board", str(n), str(tmp_path)])
 
 
