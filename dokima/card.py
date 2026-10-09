@@ -142,6 +142,42 @@ def escape(text):
     return html.escape(text or "", quote=False)
 
 
+RAISE_ICON = {"question": "question", "blocker": "blocker", "issue": "issue found"}
+
+
+def raises_of(h):
+    """The raises a hand-back carries; none for a record posted before raises existed."""
+    v = h.get("raises") if isinstance(h, dict) else None
+    return [r for r in v if isinstance(r, dict) and r.get("kind") in RAISE_ICON] if isinstance(v, list) else []
+
+
+def answers_of(h):
+    """The answers a hand-back gives to earlier raises, by their IDs."""
+    v = h.get("answers") if isinstance(h, dict) else None
+    return [a for a in v if isinstance(a, dict) and a.get("raise")] if isinstance(v, list) else []
+
+
+def raise_line(repo, r):
+    """One raise as a list item: icon, label, words and who it is for.
+
+    Its ID is never drawn."""
+    words = lambda s: escape(" ".join(str(s).split()))
+    label = f"**{words(r['label'])}:** " if isinstance(r.get("label"), str) and r["label"].strip() else ""
+    who = ("filed as an issue" if r["kind"] == "issue" else
+           "for you" if r.get("to") == "owner" else f"for the {words(r.get('to') or 'no one')}")
+    return f"- {field_icon(repo, RAISE_ICON[r['kind']])} {label}{words(r.get('text') or '')} · {who}"
+
+
+def waiting_raises(recs):
+    """Every raise on the issue still waiting for an answer, oldest first.
+
+    Only records whose hand-back passed count: a rejected hand-back's raises are not drawn, and its answers
+    take nothing off."""
+    used = [r.get("handback") for r in recs if (r.get("check") or {}).get("passed")]
+    answered = {a["raise"] for h in used for a in answers_of(h)}
+    return [x for h in used for x in raises_of(h) if x.get("id") not in answered]
+
+
 def checks_by_key(check_runs):
     """Index criterion checks by their key ('67.1') from names like '67.1 · ...'."""
     found = {}
@@ -320,6 +356,9 @@ def render(repo, issue, found, page="issue"):
     links = links_row(repo, issue, pr, worker, check_runs)
     if links:
         lines += [links, ""]
+    raised = waiting_raises(recs)
+    if raised:
+        lines += ["**Raised:**", ""] + [raise_line(repo, r) for r in raised] + [""]
     children = found.get("children") or []
     if children:
         lines += ["**Stories:**", ""] + [child_row(repo, c) for c in children] + [""]
