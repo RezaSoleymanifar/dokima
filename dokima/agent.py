@@ -1681,6 +1681,23 @@ def waiting(items, owners, body, number):
     return step[1]
 
 
+def waits_on_owner(items, owners, autopilot, body="", number=""):
+    """True when the issue waits on the owner.
+
+    The river's last word on it stopped for the owner and no code owner has answered with a command since; an Approve
+    is never one. Filing a split is the river going on; a cancel mentions no one."""
+    at = max((i for i, c in enumerate(items) if is_record(c)), default=None)
+    if at is None:
+        return False
+    rec = records([items[at]])[0]
+    if rec.get("role") == "split":
+        return False
+    if any((c.get("author") or {}).get("login") in owners and command_of(c.get("body"))
+           and not (c.get("where") or "").endswith("review (approved)") for c in items[at + 1:]):
+        return False
+    return next_step(items[:at], rec, owners, autopilot=autopilot, body=body, number=number)[0] == "stop"
+
+
 def criteria_texts(plan):
     """A plan's criteria as the owner approves them: every acceptance and non-functional criterion's text, in order."""
     return [[c.get("text") if isinstance(c, dict) else c for c in plan.get(k) or []] for k in ("acceptance_criteria", "non_functional")]
@@ -1731,12 +1748,22 @@ def move_card(repo, number, column, needs_you, spec, q=None):
     pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number", "-q", ".[0].number").strip()
     if pr:
         targets.append(("pr", int(pr)))
-    pill = "Needs you" if needs_you else "Autopilot" if b.autopilot("issue", int(number)) else None
     for kind, n in targets:
         iid = b.item(kind, n)
         b.set(iid, "Status", column)
-        b.set(iid, "Action", pill)
+        # A closed item never waits on the owner, as when a run stops after the owner merged.
+        b.set(iid, "Action", "Needs you" if needs_you and not is_closed(repo, n) else "Autopilot" if b.autopilot("issue", int(number)) else None)
     return targets
+
+
+def is_closed(repo, number):
+    """True only when GitHub says the issue or pull request is closed.
+
+    Merged counts as closed; when GitHub cannot say, False, so nothing waiting is hidden."""
+    try:
+        return json.loads(gh("api", f"repos/{repo}/issues/{number}")).get("state") == "closed"
+    except (subprocess.CalledProcessError, json.JSONDecodeError, AttributeError):
+        return False
 
 
 def next_line(step, owners):
