@@ -296,7 +296,6 @@ def fix_view(board):
         raise RuntimeError(f"Could not fix the Autopilot view's filter to {new}: {(e.stderr or str(e)).strip()}") from e
 
 
-<<<<<<< HEAD
 def sweep(board, repo, owners):
     """Set every card's pill on the board by the rules.
 
@@ -333,7 +332,8 @@ def sweep(board, repo, owners):
             board.set(board.item(kind, n), "Action", pill)
     if unread:
         raise RuntimeError(f"Could not read the history of {', '.join(unread)}, so the board left its pill as it was.")
-=======
+
+
 def label_priority(labels):
     """The pill the highest priority label gives, or None."""
     return next((option for label, option in PRIORITY.items() if label in labels), None)
@@ -381,21 +381,16 @@ def recompute(board, touched):
             board.set(iid, "Priority", want)
     if failed:
         raise RuntimeError("Could not list the blocked-by links of " + "; ".join(failed) + "; their pills were left as they are")
->>>>>>> origin/main
 
 
 def sync(event, payload, spec, repo, q=gql, rest=api):
     changes, pill = decide(event, payload), priority(event, payload)
     on_off, pr = switched(event, payload), opened(event, payload)
-<<<<<<< HEAD
     owners = plan.repo_approvers(repo.split("/")[0]) if spec and event in ("issue_comment", "pull_request_review") else set()
     answers = answered(event, payload, owners)
     merged = event in ("pull_request", "pull_request_target") and payload["action"] == "closed" and payload["pull_request"].get("merged")
-    if not spec or not (changes or pill or on_off or answers):
-=======
     touched = blockers(event, payload)
-    if not spec or not (changes or pill or on_off or touched is not None):
->>>>>>> origin/main
+    if not spec or not (changes or pill or on_off or answers or touched is not None):
         return []
     board = Board(spec, repo, q, rest)
     if pr and any(board.autopilot("issue", n) for n in pr[1]) and not board.autopilot("pr", pr[0]):
@@ -425,12 +420,9 @@ def sync(event, payload, spec, repo, q=gql, rest=api):
     if merged:
         # An old Autopilot view is fixed on the next merge, after the merged cards have moved; then every pill is swept.
         fix_view(board)
-<<<<<<< HEAD
         sweep(board, repo, plan.repo_approvers(repo.split("/")[0]))
-=======
     if touched is not None and "Priority" in board.fields:
         recompute(board, touched)
->>>>>>> origin/main
     return changes
 
 

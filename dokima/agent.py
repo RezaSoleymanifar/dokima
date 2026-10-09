@@ -1655,15 +1655,16 @@ def waiting(items, owners, body, number):
 def waits_on_owner(items, owners, autopilot, body="", number=""):
     """True when the issue waits on the owner.
 
-    The river's last word on it stopped for the owner and no code owner has answered with a command since. Filing a
-    split is the river going on; a cancel mentions no one."""
+    The river's last word on it stopped for the owner and no code owner has answered with a command since; an Approve
+    is never one. Filing a split is the river going on; a cancel mentions no one."""
     at = max((i for i, c in enumerate(items) if is_record(c)), default=None)
     if at is None:
         return False
     rec = records([items[at]])[0]
     if rec.get("role") == "split":
         return False
-    if any((c.get("author") or {}).get("login") in owners and command_of(c.get("body")) for c in items[at + 1:]):
+    if any((c.get("author") or {}).get("login") in owners and command_of(c.get("body"))
+           and not (c.get("where") or "").endswith("review (approved)") for c in items[at + 1:]):
         return False
     return next_step(items[:at], rec, owners, autopilot=autopilot, body=body, number=number)[0] == "stop"
 
