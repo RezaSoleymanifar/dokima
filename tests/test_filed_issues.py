@@ -374,8 +374,9 @@ def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property
     command after any, and checks each run filed exactly one issue per finding, titled with the finding's own title,
     carrying exactly the labels parked and filed-by-dokima and nothing else. It runs the same four on a repo that has
     neither label yet, and checks the issues are filed with both all the same. Beside them, each agent handing back
-    no finding files nothing. The planner and the worker handing their findings back in a field of their own
-    (issues_found) or as a raise of another kind (blocker) file nothing, so no new raise-type field files issues. Each
+    no finding files nothing. Every agent, the reviewer too, handing its findings back in a field of its own
+    (issues_found) files nothing, and the planner and the worker raising them as another kind (blocker) file nothing,
+    so only a raise of kind issue is filed. Each
     agent's prompt gives found issues as raises of kind issue, with a title, why and evidence, and none still names
     issues_found."""
     record_property("proves", "268.1")
@@ -394,12 +395,14 @@ def test_every_issue_any_agent_finds_is_filed_parked_and_labeled(record_property
             wrong.append(f"{case} found nothing yet filed issues: {titles(m)}")
     own_field = {"title": "Found in a field of its own", "why": "w", "evidence": "e"}
     other_kind = {"kind": "blocker", "title": "Raised as another kind", "why": "w", "evidence": "e"}
-    for case, handback in (("planner with issues_found", {**plan_handback(), "issues_found": [own_field]}),
-                           ("worker with issues_found", {**work_handback(), "issues_found": [own_field]}),
-                           ("planner raising a blocker", {**plan_handback(), "raises": [other_kind]}),
-                           ("worker raising a blocker", {**work_handback(), "raises": [other_kind]})):
-        role = case.split()[0]
-        m = Agents(tmp_path / case.replace(" ", "-"), "plan" if role == "planner" else "pr")
+    for case, role, stage, handback in (
+            ("planner with issues_found", "planner", "plan", {**plan_handback(), "issues_found": [own_field]}),
+            ("worker with issues_found", "worker", "pr", {**work_handback(), "issues_found": [own_field]}),
+            ("plan review with issues_found", "reviewer", "plan", {**plan_review(), "issues_found": [own_field]}),
+            ("code review with issues_found", "reviewer", "pr", {**code_review(), "issues_found": [own_field]}),
+            ("planner raising a blocker", "planner", "plan", {**plan_handback(), "raises": [other_kind]}),
+            ("worker raising a blocker", "worker", "pr", {**work_handback(), "raises": [other_kind]})):
+        m = Agents(tmp_path / case.replace(" ", "-"), stage)
         m.run(role, handback)
         if titles(m):
             wrong.append(f"{case} filed {titles(m)}; only a raise of kind issue is filed, and no new field files")
