@@ -2,7 +2,8 @@
 
 Most tests here run the real command the done-whens workflow runs, `python3 -m dokima.checks matrix`, from the repo
 root, with GitHub faked: a stub `gh` on PATH answers the pull request's changed files (GitHub's `pulls/N/files` list,
-split over two pages the way `gh api --paginate` prints them back to back) and finds no issue linked and no plan.
+split over two pages the way `gh api --paginate` prints them back to back) and finds no plan: either no issue is
+linked, or the description says "Closes #77" and issue #77 has no comments and no pull requests.
 Others run the shell of the done-whens workflow's own steps, cut out of `.github/workflows/done-whens.yml`, with a fake
 `pytest` on PATH, so the workflow GitHub runs is the thing judged. Nothing here touches the network.
 
@@ -33,6 +34,8 @@ if any("pulls/%d/files" % data["pr"] in x for x in a):
         sys.exit(1)
     for page in data["pages"]:
         print(json.dumps(page))
+elif a[:2] == ["issue", "view"]:
+    print(json.dumps({"number": int(a[2]), "title": "An issue with no plan", "body": "", "comments": []}))
 elif a[:2] == ["api", "graphql"]:
     print(json.dumps({"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": []}}}}}))
 else:
@@ -45,8 +48,8 @@ def changed(*names, status="modified"):
     return [{"filename": n, "status": status} for n in names]
 
 
-def run_matrix(tmp_path, files, files_fail=False):
-    """Run the merge check's matrix command for a pull request changing these files.
+def run_matrix(tmp_path, files, files_fail=False, body=""):
+    """Run the merge check's matrix command for a pull request with these files and description.
 
     Returns (rows or None, output)."""
     bin_dir = tmp_path / "bin"
@@ -58,7 +61,7 @@ def run_matrix(tmp_path, files, files_fail=False):
     data = tmp_path / "data.json"
     data.write_text(json.dumps({"pr": PR, "pages": [files[:half], files[half:]], "files_fail": files_fail}))
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"number": PR, "head": {"ref": "owner/text-edit"}, "body": ""}}))
+    event.write_text(json.dumps({"pull_request": {"number": PR, "head": {"ref": "owner/text-edit"}, "body": body}}))
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r",
            "GITHUB_EVENT_PATH": str(event), "STUB_DATA": str(data), "GH_TOKEN": "x", "PYTHONPATH": ROOT}
     p = subprocess.run([sys.executable, "-m", "dokima.checks", "matrix"], cwd=ROOT, env=env,
@@ -117,8 +120,8 @@ def test_a_pull_request_changing_only_text_files_gets_the_text_only_check(record
     Proves 358.1.
     Runs the real merge check for pull requests with no issue and no plan that change only text files: AGENTS.md
     alone, README.md alone, a wiki page, and several Markdown files at once (added, changed and removed, over two pages
-    of GitHub's file list). Each must get exactly one check, "Text only: no plan needed", in place of the plan's
-    criteria and the failing "No approved plan found"."""
+    of GitHub's file list). Then a text-only pull request saying "Closes #77", for an issue with no plan. Each must get
+    exactly one check, "Text only: no plan needed", in place of the failing "No approved plan found"."""
     record_property("proves", "358.1")
     cases = {
         "AGENTS.md alone": changed("AGENTS.md"),
@@ -132,6 +135,9 @@ def test_a_pull_request_changing_only_text_files_gets_the_text_only_check(record
         rows, out = run_matrix(tmp_path, files)
         assert is_shortcut(rows), (f"358.1: a pull request changing only text files ({what}) did not get the single "
                                    f"'{SHORTCUT}' check: {rows}\n{out}")
+    rows, out = run_matrix(tmp_path, changed("AGENTS.md"), body="Closes #77")
+    assert is_shortcut(rows), (f"358.1: a text-only pull request saying 'Closes #77', for an issue with no plan, did not "
+                               f"get the single '{SHORTCUT}' check: {rows}\n{out}")
 
 
 def test_the_text_only_check_passes_without_running_any_test(record_property, tmp_path):
@@ -161,7 +167,8 @@ def test_a_pull_request_touching_anything_but_text_files_goes_the_full_way(recor
     Runs the real merge check for pull requests with no issue and no plan, each changing AGENTS.md plus one other
     file: Python code, a test, a workflow, a role file under dokima/roles/ (Markdown, but it is the agents' prompt), a
     JSON file, a file with no extension, a .md file under tests/ and one under .github/. Then a file renamed from code to
-    a .md name, and one deleted code file beside a text file. Each must get today's failing "No approved plan found"
+    a .md name, one deleted code file beside a text file, and a code change saying "Closes #77" for an issue with no
+    plan. Each must get today's failing "No approved plan found"
     check, never the text-only one. A pull request changing only text files must still get the shortcut, so the check
     is not one that says no to everything."""
     record_property("proves", "358.3")
@@ -179,6 +186,9 @@ def test_a_pull_request_touching_anything_but_text_files_goes_the_full_way(recor
     rows, out = run_matrix(tmp_path, changed("README.md") + changed("dokima/trail.py", status="removed"))
     assert rows is not None and [r["name"] for r in rows] == [NO_ISSUE], \
         f"358.3: deleting a code file beside a text change took the text-only shortcut: {rows}\n{out}"
+    rows, out = run_matrix(tmp_path, changed("AGENTS.md", "dokima/checks.py"), body="Closes #77")
+    assert rows is not None and [r["name"] for r in rows] == ["No approved plan found for issue #77"], \
+        f"358.3: a code change saying 'Closes #77', for an issue with no plan, took the text-only shortcut: {rows}\n{out}"
     rows, out = run_matrix(tmp_path, changed("README.md", "docs/wiki/Home.md"))
     assert is_shortcut(rows), f"358.3: a text-only pull request lost its shortcut: {rows}\n{out}"
 
