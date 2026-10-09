@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from dokima import card, words
+from dokima import body, card, words
 from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
@@ -59,11 +59,21 @@ def conversation(repo, number):
 
 
 def issue_text(d, items):
-    """The issue as it stands: title, body and every comment with its author and where it was written, oldest first."""
-    parts = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"]
+    """The issue as it stands: title, body and every comment, oldest first. A record's JSON is in in/ as its own file,
+    so its comment points there instead of repeating it."""
+    parts, n = [f"# Issue #{d['number']}: {d['title']}", "", d["body"] or "", "", "## Comments"], 0
     for c in items:
-        parts += ["", f"### {c['author']['login']} on {c['where']} ({c['createdAt']})", "", c["body"]]
+        b = c["body"] or ""
+        if rs := records([c]):
+            n += 1
+            b = re.sub(r"```json\n.*?\n```", f"(full record: in/{name_of(rs[0], n)})", b, count=1, flags=re.S)
+        parts += ["", f"### {c['author']['login']} on {c['where']} ({c['createdAt']})", "", b]
     return "\n".join(parts) + "\n"
+
+
+def name_of(r, i):
+    """A record's file name in the pack's in/ folder."""
+    return f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
 
 
 def records(items):
@@ -682,12 +692,13 @@ def pack(repo, number, role, stage, dest):
     os.makedirs(os.path.join(dest, "in"), exist_ok=True)
     json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
+        listed = [{"number": i["number"], "title": i["title"], "card": body.card_text(i["body"])} for i in listed]
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
     answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
     json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
     for i, r in enumerate(recs, 1):
-        name = f"{i:02d}-{r['role']}{'-' + r['stage'] if r.get('stage') else ''}.json"
+        name = name_of(r, i)
         json.dump(r, open(os.path.join(dest, "in", name), "w"), indent=1)
     plan = latest(recs, "planner")
     if role == "worker" and not approved(recs):

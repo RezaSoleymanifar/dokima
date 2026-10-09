@@ -67,3 +67,16 @@ def save(repo, number, current, top):
         return False
     gh("issue", "edit", str(number), "-R", repo, "--body-file", "-", input=new)
     return True
+
+
+def card_text(body, cap=1200):
+    """An issue's current card, short: the text between the card markers with icons and HTML comments dropped.
+
+    An issue with no card gives the start of its own text instead."""
+    body = body or ""
+    m = re.search(r"<!-- dokima-card -->(.*?)<!-- /dokima-card -->", body, re.S)
+    text = m.group(1) if m and m.group(1).strip() else body
+    text = re.sub(r"<img[^>]*>", "", text)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text[:cap]
