@@ -74,13 +74,15 @@ class SweepHub(Hub):
         head = open(gh).read().split(FAKE_GH, 1)[0]
         open(gh, "w").write(head + fake)
 
-    def last_sweep(self, at, conclusion="success", event="schedule"):
-        """Record a finished run of card.yml started at `at`, as GitHub lists it."""
+    def last_sweep(self, at, conclusion="success", event="schedule", ended=None):
+        """Record a finished run of card.yml started at `at`, as GitHub lists it.
+
+        It ended at `ended` when given, else at `at`."""
         s = self.load()
         runs = s.setdefault("runs", {}).setdefault("card.yml", [])
         runs.append({"id": 1000 + len(runs), "name": "card", "path": ".github/workflows/card.yml", "event": event,
                      "status": "completed", "conclusion": conclusion, "head_branch": "main",
-                     "run_started_at": at, "created_at": at, "updated_at": at,
+                     "run_started_at": at, "created_at": at, "updated_at": ended or at,
                      "html_url": f"https://github.com/o/r/actions/runs/{1000 + len(runs)}"})
         self.save()
 
@@ -267,6 +269,45 @@ def test_a_failed_sweep_does_not_count_as_the_last_sweep(tmp_path, record_proper
         "347.2: #246 was updated after the last sweep that succeeded, but a newer failed sweep kept it from a redraw"
     assert stale(hub, 312) and stale(hub, p=314), \
         "347.2: #312 was not updated since the last sweep that succeeded, yet its cards were redrawn"
+
+
+def test_only_a_scheduled_sweep_counts_as_the_last_sweep(tmp_path, record_property):
+    """Only the 15-minute sweep counts as the last sweep, not card.yml's event runs.
+
+    card.yml also runs on every issue event, comment and merge, and those runs redraw only their own issue's card.
+    The last scheduled sweep succeeded at 05:00; #246 was updated at 06:00; then card.yml ran for an issue event at
+    07:00 and for a comment at 07:30, both successfully. After one scheduled run, #246's and PR #260's cards are
+    redrawn, and #312's and PR #314's are not. Proves 347.2."""
+    record_property("proves", "347.2")
+    hub = SweepHub(tmp_path)
+    hub.touch("issue", 246, "2026-10-09T06:00:00Z")
+    hub.last_sweep("2026-10-09T05:00:00Z")
+    hub.last_sweep("2026-10-09T07:00:00Z", event="issues")
+    hub.last_sweep("2026-10-09T07:30:00Z", event="issue_comment")
+    must_redraw(hub, schedule(), "347.2")
+    assert not stale(hub, 246) and not stale(hub, p=260), \
+        "347.2: #246 was updated after the last scheduled sweep, but a newer card.yml run on an issue event or " \
+        "comment was taken as the last sweep and #246's cards were not redrawn"
+    assert stale(hub, 312) and stale(hub, p=314), \
+        "347.2: #312 was not updated since the last scheduled sweep, yet its cards were redrawn"
+
+
+def test_a_change_made_while_the_last_sweep_ran_is_not_missed(tmp_path, record_property):
+    """A change made while the last sweep ran is picked up by the next one.
+
+    The last sweep started at 05:00 and finished at 05:10; #246 was updated at 05:05, while it ran. After one
+    scheduled run, #246's and PR #260's cards are redrawn, so the sweep counts from when the last one started, not
+    from when it ended; #312, updated at 01:00, keeps its old card. Proves 347.2."""
+    record_property("proves", "347.2")
+    hub = SweepHub(tmp_path)
+    hub.touch("issue", 246, "2026-10-09T05:05:00Z")
+    hub.last_sweep("2026-10-09T05:00:00Z", ended="2026-10-09T05:10:00Z")
+    must_redraw(hub, schedule(), "347.2")
+    assert not stale(hub, 246) and not stale(hub, p=260), \
+        "347.2: #246 was updated while the last sweep ran (05:05, between its start 05:00 and end 05:10), " \
+        "but the next sweep counted from the end and did not redraw its cards"
+    assert stale(hub, 312) and stale(hub, p=314), \
+        "347.2: #312 was not updated since the last sweep, yet its cards were redrawn"
 
 
 # 347.3 -----------------------------------------------------------------------------------------------------------
