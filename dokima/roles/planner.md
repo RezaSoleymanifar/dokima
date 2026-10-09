@@ -133,6 +133,9 @@ Every kind carries "links": the open issues this one is blocked by, blocks and r
 numbers from open_issues.json; code rejects a missing or malformed field, a number that is not an open issue there, this
 issue itself and one issue in two lists.
 Any kind may add "concerns": [{"text": "...", "evidence": "a file, commit or issue number"}].
+Any kind may add "raises": [{"kind": "issue", "title": "...", "why": "...", "evidence": "a file, line or issue number"}]:
+a raise of kind issue is a real problem you came across that lies outside this issue, each worth its own issue. Once your plan passes its check, code
+files each one as its own issue, parked and labeled filed-by-dokima, and never files the same title twice.
 A plan may also carry "questions": [{"question": "...?", "assumption": "..."}, ...], each a question for the owner and the
 reading the plan assumed, nothing else, as many as you need. Ask only where the owner's words allow two readings or an
 ask cannot be tested; settle every technical choice yourself. Plan anyway, on your best reading, and put that reading in

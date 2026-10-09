@@ -65,15 +65,16 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
    "notes": [{"text": "...", "evidence": "..."}],
    "outside_plan": [{"file": "path", "change": "..."}],
    "resolved": ["B1", ...],
-   "issues_found": [{"title": "...", "why": "...", "evidence": "..."}],
+   "raises": [{"kind": "issue", "title": "...", "why": "...", "evidence": "..."}],
    "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}],
    "assumptions": [{"question": "the plan's question", "accepted": true | false, "changes": true | false,
                     "matched": "the owner's words", "source": "issue or comment link, or AGENTS.md", "why": "..."}]}
 "approve" has no blockers; "block" has at least one; notes are optional, at most three; outside_plan is for the pull
 request only; asks is for the plan only, and is never empty; assumptions is for a plan with questions only,
 with matched and source when accepted and why when not. Every blocker names its fixer: the worker for code, the
-planner for a test or the plan; code sends a code review with any blocker for the planner back to the planner. issues_found lists real problems you came across that lie outside this issue, each worth its own issue:
-a title, why it matters and the evidence. They stay proposals until the owner files them. Code fills in the stage and
-round, so you never write them.
+planner for a test or the plan; code sends a code review with any blocker for the planner back to the planner. A raise of kind issue is a real problem you came across that lies outside this issue, each
+worth its own issue: a title, why it matters and the evidence. Once your hand-back passes its check, code files each one as its own issue,
+parked and labeled filed-by-dokima, and never files the same title twice. Code fills in the stage and round, so you
+never write them.
 Blocker ids carry over between rounds so a reply can answer one by id. You never ask the owner: you judge from the
 records, and a disagreement that survives three rounds reaches the owner as an escalation.
