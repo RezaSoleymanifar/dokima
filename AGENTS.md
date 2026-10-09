@@ -8,6 +8,7 @@
 - Never change `.github/workflows/`, `dokima/card.py` or `dokima/roles/` unless the issue explicitly asks.
 - Keep changes small. Add no dependencies unless the issue asks.
 - Read this whole file before changing how Dokima works.
+- Whenever an agent or assistant refers the owner to an issue or pull request, it writes the number as a clickable link followed by a few plain words saying what it is about, e.g. [#289](https://github.com/dokima-dev/dokima/issues/289) (raises and answers). Never a bare number.
 
 ## The picture
 
