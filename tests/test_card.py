@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import card, plan  # noqa: E402
+from test_start import load_yaml  # noqa: E402
 
 REPO = "o/r"
 BODY = ("- [ ] Goal: show a card\n"
@@ -118,5 +119,11 @@ def test_same_card_on_issue_and_pr_and_only_icons_change(record_property):
     src = open(os.path.join(os.path.dirname(__file__), "..", "dokima", "card.py")).read()
     assert 'f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md"' in src
     yml = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "card.yml")).read()
-    assert "types: [opened, edited]" in yml and "github.event.sender.type != 'Bot'" in yml
+    on = load_yaml(yml)["on"]
+    issues = on.get("issues") if isinstance(on, dict) else None
+    types = (issues or {}).get("types") if isinstance(issues, dict) else None
+    types = [types] if isinstance(types, str) else types
+    assert isinstance(on, dict) and "issues" in on, "67.6: card.yml no longer starts on issue events"
+    assert not types or {"opened", "edited"} <= set(types), f"67.6: card.yml no longer starts when an issue is opened or edited: {types}"
+    assert "github.event.sender.type != 'Bot'" in yml
 

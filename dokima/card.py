@@ -120,6 +120,80 @@ def their_links(repo, number, sources, plans=None):
     return mine
 
 
+BLOCKING = re.compile(r"<!-- dokima-blocking: (\{.*?\}) -->")
+NO_LINKS = {"blocked_by": [], "blocks": [], "loop": []}
+
+
+def reason(e):
+    """GitHub's own words for a call that failed, on one line."""
+    return " ".join((getattr(e, "stderr", None) or str(e)).split())
+
+
+def blocking(repo, number, cache):
+    """GitHub's own blocked-by links of the issue, read now.
+
+    {"blocked_by": [...], "blocks": [...]}, kept in `cache` for this run, or the error GitHub answered with when it
+    cannot list them."""
+    from dokima import agent
+    if number not in cache:
+        try:
+            cache[number] = {kind: sorted({i["number"] for p in agent.pages(gh(
+                "api", f"repos/{repo}/issues/{number}/dependencies/{path}", "--paginate")) for i in p})
+                for kind, path in (("blocked_by", "blocked_by"), ("blocks", "blocking"))}
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as e:
+            cache[number] = e
+    return cache[number]
+
+
+def loop_of(repo, number, cache):
+    """The issues blocking each other with this one on GitHub, this one among them.
+
+    Directly or through others, sorted; [] when none. An issue whose links GitHub cannot list counts as blocked by
+    nothing."""
+    def by(i):
+        got = blocking(repo, i, cache)
+        return got["blocked_by"] if isinstance(got, dict) else []
+    reach, todo = set(), list(by(number))
+    while todo:
+        i = todo.pop()
+        if i not in reach:
+            reach.add(i)
+            todo += by(i)
+    if number not in reach:
+        return []
+    back, todo = {number}, [number]
+    while todo:
+        j = todo.pop()
+        for i in sorted(reach - back):
+            if j in by(i):
+                back.add(i)
+                todo.append(i)
+    return sorted(back)
+
+
+def github_links(repo, number, cache):
+    """What the card's Blocked by, Blocks and loop lines show, from GitHub now.
+
+    {"unread": True} when GitHub cannot list the issue's links."""
+    got = blocking(repo, number, cache)
+    if not isinstance(got, dict):
+        return {"unread": True}
+    return {**got, "loop": loop_of(repo, number, cache)}
+
+
+def shown_links(text):
+    """The blocking links and loop the card was last drawn from.
+
+    As code noted them in its card part; none when the issue has no such note yet."""
+    if body.MARKER not in (text or ""):
+        return dict(NO_LINKS)
+    m = BLOCKING.search(text.split(body.MARKER, 1)[0])
+    try:
+        return json.loads(m.group(1)) if m else dict(NO_LINKS)
+    except json.JSONDecodeError:
+        return dict(NO_LINKS)
+
+
 def state(check):
     """GitHub's verdict for one check run (already filtered to the PR's latest commit): passed, failed, running or not started."""
     if check is None:
@@ -320,6 +394,9 @@ def render(repo, issue, found, page="issue"):
     lines = [plan.CARD_START]
     if found.get("sources"):
         lines += [f"<!-- dokima-linked-from: {', '.join(str(n) for n in found['sources'])} -->"]
+    gh_links = found.get("blocking")
+    if gh_links is not None:
+        lines += [f"<!-- dokima-blocking: {json.dumps(gh_links)} -->"]
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
     lines += [status_line(repo, *status(issue, found)), ""]
@@ -329,7 +406,17 @@ def render(repo, issue, found, page="issue"):
     children = found.get("children") or []
     if children:
         lines += ["**Stories:**", ""] + [child_row(repo, c) for c in children] + [""]
-    related = link_lines(repo, merged(h.get("links") if h else None, found.get("linked")))
+    own = h.get("links") if h else None
+    if gh_links is not None and isinstance(own, dict) and planned is agent.approved_plan(recs):
+        # An approved plan's blocking links are on GitHub now, so the card shows GitHub's, as they are right then.
+        own = {"relates_to": own.get("relates_to")}
+    related = link_lines(repo, merged(own, found.get("linked")))
+    if found.get("unread"):
+        related.insert(0, f"{field_icon(repo, 'blocked by')} **Blocked by and Blocks:** GitHub could not list this "
+                          f"issue's blocked-by links: {escape(found['unread'])}")
+    if (gh_links or {}).get("loop"):
+        related.append(f"{field_icon(repo, 'blocker')} {agent.named(gh_links['loop'])} block each other on GitHub: "
+                       "removing one of their blocked-by links breaks the loop.")
     if related:
         lines += related + [""]
     if not h:
@@ -522,6 +609,7 @@ def gallery(repo, out):
         print(f"Drew {name}.md")
 
 
+<<<<<<< HEAD
 def merged_prs(repo):
     """Every merged pull request that carries a card, page by page."""
     out, page = [], 1
@@ -544,6 +632,67 @@ def redraw_merged(repo):
             print(f"PR #{p['number']} closes no issue; its card is left as it is.")
             continue
         draw(repo, number, p["number"], stale_only=True)
+=======
+def refresh(repo, numbers, cache, bodies=None):
+    """Redraw each card whose blocking links or loop on GitHub differ from what it shows.
+
+    One that cannot be updated is named in the run and the others still go on; returns how many failed."""
+    failed = 0
+    for n in numbers:
+        try:
+            text = (bodies or {}).get(n)
+            if text is None:
+                text = json.loads(gh("api", f"repos/{repo}/issues/{n}")).get("body") or ""
+            if github_links(repo, n, cache) != shown_links(text):
+                draw(repo, n, issue_pr(repo, n), cache=cache)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+            print(f"::error title=Card not updated::the card of #{n} could not be updated: {reason(e)}")
+            failed += 1
+    return failed
+
+
+def follow(repo, number, before, now, cache):
+    """Update the cards of the issues linked to one just drawn, when their links changed.
+
+    Every issue it blocks, is blocked by or loops with, on GitHub now or on its card before, so a link a person added
+    or removed by hand shows on both sides."""
+    others = {n for links in (before, now) for k in NO_LINKS for n in links.get(k) or []}
+    return refresh(repo, sorted(others - {int(number)}), cache)
+
+
+def sweep(repo):
+    """The scheduled run: redraw every card whose blocking links or loop changed on GitHub.
+
+    It looks at every open issue and every issue linked to one; no other card is touched."""
+    from dokima import agent
+    cache = {}
+    bodies = {i["number"]: i["body"] for i in agent.open_issues(repo)}
+    numbers = set(bodies)
+    for n, text in bodies.items():
+        got = blocking(repo, n, cache)
+        numbers |= {m for links in (got if isinstance(got, dict) else {}, shown_links(text))
+                    for k in NO_LINKS for m in links.get(k) or []}
+    return refresh(repo, sorted(numbers), cache, bodies)
+
+
+def stop_for_loop(repo, number, loop, owners):
+    """On autopilot, a loop of issues blocking each other stops the river for the owner.
+
+    One comment mentioning them, and the Needs you pill. Off autopilot nothing runs, so the card's loop line is all.
+    When GitHub cannot say whether the issue is on autopilot, the river stops."""
+    from dokima import agent
+    if agent.on_autopilot(repo, number) is False:
+        return
+    mention = " ".join(f"@{o}" for o in sorted(owners or []))
+    gh("issue", "comment", str(number), "-R", repo, "--body",
+       f"{mention} {agent.named(loop)} block each other on GitHub, so the river stops here for you: remove one of "
+       "their blocked-by links to break the loop.".strip())
+    spec = os.environ.get("DOKIMA_BOARD")
+    if spec:
+        from dokima import board
+        b = board.Board(spec, repo)
+        b.set(b.item("issue", int(number)), "Action", "Needs you")
+>>>>>>> origin/main
 
 
 def main():
@@ -551,16 +700,25 @@ def main():
         gallery(os.environ.get("REPO") or "dokima-dev/dokima", sys.argv[2])
         return
     repo = os.environ["REPO"]
+<<<<<<< HEAD
     if sys.argv[1:] == ["merged"]:
         redraw_merged(repo)
         return
+=======
+    if not os.environ.get("ISSUE_NUMBER") and os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+        sys.exit(1 if sweep(repo) else 0)
+>>>>>>> origin/main
     number, pr_number = find_work(repo)
     if not number:
         print("No issue for this event; nothing to write.")
         return
-    draw(repo, number, pr_number)
+    cache = {}
+    before, now = draw(repo, number, pr_number, cache=cache)
+    if follow(repo, number, before, now, cache):
+        sys.exit(1)
 
 
+<<<<<<< HEAD
 def stale(current, card):
     """True when the issue's text with a fresh card differs from what it holds now."""
     try:
@@ -570,31 +728,54 @@ def stale(current, card):
 
 
 def draw(repo, number, pr_number, plans=None, noted=None, stale_only=False):
+=======
+def draw(repo, number, pr_number, plans=None, noted=None, cache=None):
+>>>>>>> origin/main
     """Write the card at the top of the issue and its PR.
 
+    Returns the blocking links and loop its card showed before and shows now.
     `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
+<<<<<<< HEAD
     (False) issues from the index of those whose approved plans link here. With `stale_only`, a page whose card already
     matches a fresh drawing is left alone.
+=======
+    (False) issues from the index of those whose approved plans link here. The Blocked by and Blocks lines are
+    GitHub's own blocked-by links, read now; `cache` keeps what this run already read.
+>>>>>>> origin/main
     """
+    cache = {} if cache is None else cache
     issue = plan.fetch_issue(repo, number)
     found = gather(repo, number, pr_number)
     sources = set(linked_from(issue["current_body"]))
     for s, on in (noted or {}).items():
         (sources.add if on else sources.discard)(s)
     found["sources"] = sorted(sources)
-    found["linked"] = their_links(repo, number, found["sources"], plans)
+    before, now = shown_links(issue["current_body"]), github_links(repo, int(number), cache)
+    found["blocking"] = now
+    if now.get("unread"):
+        found["unread"] = reason(blocking(repo, int(number), cache))
+    found["linked"] = {"relates_to": their_links(repo, number, found["sources"], plans)["relates_to"],
+                       "blocked_by": now.get("blocked_by") or [], "blocks": now.get("blocks") or []}
     pr = found["pr"]
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
+<<<<<<< HEAD
     card = render(repo, issue, found)
     if not stale_only or stale(issue["current_body"] or "", card):
         if body.save(repo, number, issue["current_body"] or "", card):
             print(f"Card written into issue #{number}")
+=======
+    if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
+        print(f"Card written into issue #{number}")
+    if now.get("loop") and now["loop"] != before.get("loop"):
+        stop_for_loop(repo, number, now["loop"], found.get("owners"))
+>>>>>>> origin/main
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
     if pr and (not stale_only or pr_body(card, pr.get("body")) != pr.get("body")):
         with open("pr.md", "w") as f:
             f.write(pr_body(card, pr.get("body")))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
+    return before, now
 
 
 if __name__ == "__main__":
