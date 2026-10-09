@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+from dokima import manifest
+
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 YOUR_TURN = ("Plan written above", "**Planner question**", "**Plan rejected:**")
 PRIORITY = {"blocker": "Blocker", "high": "High", "parked": "Parked"}  # highest first
@@ -181,7 +183,8 @@ def switch(board, number):
         return
     try:
         if "Autopilot" not in board.views():
-            board.add_view("Autopilot", "table", f"label:{AUTOPILOT}")
+            view = manifest.VIEWS["Autopilot"]
+            board.add_view("Autopilot", view["layout"], view["filter"])
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Could not add the Autopilot view to the board: {(e.stderr or str(e)).strip()}") from e
 
