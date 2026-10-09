@@ -563,12 +563,12 @@ def test_autopilot_goes_off_for_the_whole_tree_when_it_is_done(record_property, 
 
 
 def test_a_close_off_autopilot_does_nothing(record_property, tmp_path):
-    """Off autopilot a close starts no sibling, closes no parent and posts no Autopilot line; on autopilot the same close does.
+    """Off autopilot a close starts no sibling and posts no Autopilot line.
 
     The same two trees as above, once with no issue on autopilot and once with all of them on. Tree one: #57 with #101
     and #102, #102 blocked by #101. Tree two: #57 with #101 and #102, #102 already closed. Closing #101 off autopilot
-    must start no planner, post no comment starting 'Autopilot:', leave #57 open with no new comment, and fail no
-    workflow. On autopilot, the same close starts #102 in tree one and closes #57 in tree two."""
+    must start no planner, post no comment starting 'Autopilot:' and fail no workflow; #57 in tree two still closes,
+    on autopilot or not (#367). On autopilot, the same close starts #102 in tree one."""
     record_property("proves", "213.4")
     for on in (False, True):
         case = "on autopilot" if on else "off autopilot"
@@ -586,11 +586,9 @@ def test_a_close_off_autopilot_does_nothing(record_property, tmp_path):
         m = Repo(tmp_path / f"last-{on}", {57: [101, 102]}, labels, closed=[102])
         m.close(101)
         assert not m.failed, f"213.4 ({case}, parent): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
-        if on:
-            assert m.state(57)[0] == "closed", f"213.4 ({case}, parent): #57 did not close with its last sub-issue\n{m.tail()}"
-        else:
-            assert m.state(57)[0] == "open", f"213.4 ({case}, parent): #57 closed though it is not on autopilot"
-            assert m.new_comments(57) == [], f"213.4 ({case}, parent): #57 got comments: {m.new_comments(57)}"
+        # Since #367 a parent closes with its last sub-issue on autopilot or not; off autopilot it posts no Autopilot line.
+        assert m.state(57)[0] == "closed", f"213.4 ({case}, parent): #57 did not close with its last sub-issue\n{m.tail()}"
+        if not on:
             assert m.any_autopilot_line() == [], f"213.4 ({case}, parent): Autopilot lines were posted: {m.any_autopilot_line()}"
 
 

@@ -731,19 +731,28 @@ def stale_cards(repo, cache):
 
 
 def sweep(repo):
-    """The scheduled run: redraw every card whose links changed, then every stale card.
+    """The scheduled run: close finished parents, redraw cards whose links changed, then stale cards.
+
+    A finished parent is an open one whose sub-issues are all closed (see agent.close_done_trees).
 
     The link check looks at every open issue and every issue linked to one; the stale cards are looked for only among
     the issues and PRs updated since the last sweep (see stale_cards)."""
     from dokima import agent
-    cache = {}
+    cache, failed = {}, 0
+    try:
+        # The safety net for a close whose run never went: every open parent whose sub-issues are all closed closes.
+        for line in agent.close_done_trees(repo):
+            print(line)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+        print(f"::error title=Parents not closed::the open parents whose sub-issues are all closed could not be closed: {reason(e)}")
+        failed += 1
     bodies = {i["number"]: i["body"] for i in agent.open_issues(repo)}
     numbers = set(bodies)
     for n, text in bodies.items():
         got = blocking(repo, n, cache)
         numbers |= {m for links in (got if isinstance(got, dict) else {}, shown_links(text))
                     for k in NO_LINKS for m in links.get(k) or []}
-    return refresh(repo, sorted(numbers), cache, bodies) + stale_cards(repo, cache)
+    return failed + refresh(repo, sorted(numbers), cache, bodies) + stale_cards(repo, cache)
 
 
 def stop_for_loop(repo, number, loop, owners):
