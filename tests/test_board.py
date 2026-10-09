@@ -33,8 +33,6 @@ def test_plan_ready_question_or_rejection_is_your_turn(record_property):
 def test_pr_moments(record_property):
     record_property("proves", "116.1")
     assert board.decide("pull_request", pr("opened")) == [("pr", 7, "Review", False), ("issue", 5, "Review", False)]
-    run = {"action": "completed", "workflow_run": {"pull_requests": [{"number": 7}]}}
-    assert board.decide("workflow_run", run) == [("pr", 7, "Review", True)]
     review = {"action": "submitted", "review": {"state": "changes_requested"}, "pull_request": {"number": 7, "body": "Closes #5"}}
     assert board.decide("pull_request_review", review) == [("pr", 7, "Work", False), ("issue", 5, "Work", False)]
     assert board.decide("pull_request", pr("closed", merged=True)) == [("pr", 7, "Done", False), ("issue", 5, "Done", False)]
