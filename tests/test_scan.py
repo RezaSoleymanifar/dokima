@@ -13,18 +13,19 @@ issue and pull request cards it checked) and exits 0. It only reads: it never mo
 How the tests run it. dokima.scan.main() is called in-process with DOKIMA_BOARD and REPO set; it returns the exit code
 (or raises SystemExit with it). GitHub is faked in one World:
 - dokima.board.Board is replaced by a fake whose cards() lists every issue and pull request card as
-  {kind, number, status, action, closed, autopilot}: the existing fields plus `status`, the card's column. Every write
-  the fake board offers (set, label, add_view, set_view_filter, and item() for something not on the board) is logged.
-- The `gh` helper of every dokima module that has one (dokima.agent, dokima.card, dokima.plan, and dokima.scan if it
-  defines its own) answers from the World: issues and pull requests with their state, body, records and checks, the
-  `gh api` REST reads the card code makes, and the GraphQL issue and closing-issue queries. Writes are logged. A call
-  the fake does not know fails loudly, naming the call, so a test that fails on it says why.
-The column a card's state gives follows AGENTS.md and the river's own rules on the newest record, as the board sets it:
-no record is Backlog, a plan waiting for /work or sent back to the planner is Plan, a worker's record or an approving
-code review is Review, and a pull request follows its issue. A closed issue or a merged or closed pull request is in
-Done with no pill.
-The card a state gives is the one Dokima's card code draws from GitHub now (the part between the card markers);
-dokima.scan.card_now(repo, kind, number) returns it, and a card is stale when the card part of its body differs from it.
+  {kind, number, status, action, closed, autopilot}, as the real Board.cards() does on main (#339). Every write the
+  fake board offers (set, label, add_view, set_view_filter, and item() for something not on the board) is logged.
+- The `gh` helper of every dokima module that has one (dokima.agent, dokima.body, dokima.card, dokima.plan, and
+  dokima.scan if it defines its own) answers from the World: issues and pull requests with their state, body, records
+  and checks, the `gh api` REST reads the card code makes, and the GraphQL issue and closing-issue queries. Writes are
+  logged. A call the fake does not know fails loudly, naming the call, so a test that fails on it says why.
+The column an open card's state gives is the one the board code puts it in now (dokima.board.where, #339): no record is
+Backlog, a plan waiting for /work or sent back to the planner is Plan, an approving code review is Review, and a pull
+request follows its issue. A closed issue or a merged or closed pull request belongs in Done with no pill
+(dokima.board.DONE).
+The card a state gives is the one Dokima's card code writes when it redraws the issue now (dokima.card.draw, the part
+above the marker, the same on the PR); dokima.scan.card_now(repo, kind, number) returns it, and a card is stale when
+its body does not already show it, as card.draw's own changed_only check decides (#347).
 """
 import json
 import os
@@ -36,7 +37,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from dokima import agent, board, card, plan  # noqa: E402
+from dokima import agent, board, body, card, plan  # noqa: E402
 from test_agent import GOOD_REVIEW, GOOD_WORK, rec  # noqa: E402
 
 try:
@@ -181,7 +182,7 @@ def fake_gh(world):
                 "user": {"login": agent.BOT}, "merged_by": {"login": OWNER} if p["state"] == "MERGED" else None,
                 "html_url": f"https://github.com/o/r/pull/{n}"}
 
-    def gh(*args):
+    def gh(*args, **kw):
         a = [str(x) for x in args]
         world.calls.append(a)
         if tuple(a[:2]) in WRITE_VERBS:
@@ -246,7 +247,7 @@ def fake_gh(world):
         if bare.startswith("repos/o/r/actions/workflows/"):
             return json.dumps({"total_count": 0, "workflow_runs": []})
         if bare == "repos/o/r/pulls":
-            m = re.search(r"head=o:try/issue-(\d+)", path)
+            m = re.search(r"head=o:(?:try|work)/issue-(\d+)", path)
             p = world.pr_of(int(m.group(1))) if m else None
             return json.dumps([rest_pr(p)] if p else [] if m else [rest_pr(x) for x in world.prs])
         if bare == "repos/o/r/issues":
@@ -284,7 +285,7 @@ def world(monkeypatch):
     """A fresh World wired into the board and every `gh` helper, with the scan's settings."""
     w = World()
     monkeypatch.setattr(board, "Board", fake_board(w))
-    for mod in (agent, card, plan, scan):
+    for mod in (agent, body, card, plan, scan):
         if mod is not None and hasattr(mod, "gh"):
             monkeypatch.setattr(mod, "gh", fake_gh(w))
     monkeypatch.setenv("DOKIMA_BOARD", SPEC)
@@ -308,13 +309,23 @@ def true_card(w, kind, n):
 
 
 def make_true(w, *items):
-    """Write into each body the card Dokima draws now, so that card matches its state."""
+    """Write the card Dokima draws now into each body, saved the way Dokima saves it."""
     for kind, n in items:
-        text = true_card(w, kind, n)
+        text = scan.card_now(REPO, kind, n)
         if kind == "pr":
-            w.prs[n]["body"] = text + f"\n\nCloses #{w.prs[n]['issue']}"
+            w.prs[n]["body"] = card.pr_body(text, w.prs[n]["body"])
         else:
-            w.issues[n]["body"] = text + "\n\n<!-- dokima-ask -->" + w.issues[n]["body"].split("<!-- dokima-ask -->", 1)[-1]
+            w.issues[n]["body"] = body.redraw(w.issues[n]["body"], text)
+
+
+def drawn(w, n, pr_number, monkeypatch, tmp_path):
+    """The card Dokima's card code writes when it redraws issue n, caught before saving."""
+    caught = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(body, "save", lambda repo, number, current, top: caught.append(top) or False)
+    card.draw(REPO, n, pr_number)
+    assert caught, f"test setup: Dokima's card code wrote no card for #{n}"
+    return caught[-1].strip()
 
 
 def run(w, capsys):
@@ -411,15 +422,15 @@ def test_the_scan_names_every_open_card_in_the_wrong_column(world, capsys, recor
 
 # 333.1: the scan names every stale card
 
-def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, record_property):
+def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, monkeypatch, tmp_path, record_property):
     """The card the scan compares with is the one Dokima draws from GitHub's state now.
 
     Proves 333.1.
     #312 has no record and its card is the old one: the card the scan expects says Backlog and that the issue has no
     plan yet. Once a plan is recorded on #312, the card it expects says the plan's summary and no longer says there is
     no plan. Merged PR #260 of #246, with every check passed: the card it expects for the PR says Merged, with All tests
-    passed, and is the same card it expects on #246. A scan that trusted the card already on the issue, or drew one
-    fixed card, would fail here."""
+    passed, and is the same card it expects on #246. For both issues it is exactly the card Dokima's card code writes
+    when it redraws them. A scan that trusted the card already on the issue, or drew one fixed card, would fail here."""
     record_property("proves", "333.1")
     need_scan("333.1")
     w = world
@@ -438,6 +449,9 @@ def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, record_pro
     assert re.search(r'alt="passed"></a> All tests', pr_card), \
         f"333.1: for PR #260, whose every check passed, the scan expects a card without All tests passed: {pr_card}"
     assert pr_card == true_card(w, "issue", 246), "333.1: the scan expects a different card on PR #260 than on #246"
+    for n, pr_number in ((312, None), (246, 260)):
+        assert true_card(w, "issue", n) == drawn(w, n, pr_number, monkeypatch, tmp_path), \
+            f"333.1: the card the scan expects for #{n} is not the one Dokima's card code writes on a redraw"
 
 
 def test_the_scan_names_every_stale_issue_card_and_pr_card(world, capsys, record_property):
@@ -502,60 +516,6 @@ def test_the_scan_of_a_true_board_exits_0_saying_all_is_true(world, capsys, reco
              for x in named(lines, kind, n)]
     assert not wrong, f"333.1: on a board where every card is true the scan named: {wrong}"
     assert code == 0, f"333.1: on a board where every card is true the scan exited {code}, not 0"
-
-
-# 333.1: the board lists each card's column for the scan
-
-class GitHub:
-    """GitHub's GraphQL for the real Board: two pages of cards with Status and Action.
-
-    The card's field values are answered every way a query can ask: fieldValueByName (also under any alias the query
-    gives it, by the field name it asks for) and fieldValues."""
-
-    PAGES = [[("issue", 57, "CLOSED", "Review", None), ("issue", 58, "OPEN", "Plan", NEEDS), ("draft", 0, "", "Backlog", None)],
-             [("pr", 60, "MERGED", "Done", AUTO), ("issue", 59, "OPEN", None, None)]]
-
-    def q(self, query, **v):
-        text = " ".join(query.split())
-        if "organization" not in text:
-            return {}
-        second = any(str(x) == "c1" for x in v.values()) or '"c1"' in text
-        page = self.PAGES[1 if second else 0]
-        asked = re.findall(r"(?:(\w+)\s*:\s*)?fieldValueByName\s*\(\s*name\s*:\s*\"(\w+)\"\s*\)", text)
-
-        def node(kind, n, state, status, action):
-            values = {"Status": status, "Action": action}
-            content = {"__typename": "DraftIssue", "title": "An idea"} if kind == "draft" else \
-                {"__typename": "Issue" if kind == "issue" else "PullRequest", "number": n, "state": state,
-                 "closed": state != "OPEN", "merged": state == "MERGED", "labels": {"nodes": []}}
-            out = {"id": f"ITEM_{kind}_{n}", "type": {"issue": "ISSUE", "pr": "PULL_REQUEST", "draft": "DRAFT_ISSUE"}[kind],
-                   "content": content, "fieldValues": {"nodes": [{"name": val, "field": {"name": f}} for f, val in values.items() if val]}}
-            for alias, field in asked:
-                out[alias or "fieldValueByName"] = {"name": values[field]} if values.get(field) else None
-            return out
-
-        return {"organization": {"projectV2": {"id": "P", "fields": {"nodes": [
-            {"id": "S", "name": "Status", "options": [{"id": "s-" + o, "name": o} for o in ("Backlog", "Plan", "Work", "Review", "Done")]},
-            {"id": "W", "name": "Action", "options": [{"id": "w-1", "name": NEEDS}, {"id": "w-2", "name": AUTO}]}]},
-            "items": {"totalCount": 5, "pageInfo": {"hasNextPage": not second, "endCursor": None if second else "c1"},
-                      "nodes": [node(*x) for x in page]}}}}
-
-    def rest(self, method, path, **fields):
-        return {}
-
-
-def test_the_board_lists_every_card_with_its_column(monkeypatch, record_property):
-    """The real board lists every issue and PR card with the column it sits in.
-
-    Proves 333.1.
-    A project of two pages: closed #57 in Review, open #58 in Plan with Needs you and a draft on the first; merged PR
-    #60 in Done with Autopilot and open #59 with no column on the second. The board's card list must give each of the
-    four its column (None for #59) beside its pill, so the scan can compare the column with the state."""
-    record_property("proves", "333.1")
-    real = board.Board("o/1", "o/r", q=GitHub().q, rest=GitHub().rest)
-    got = {(c["kind"], c["number"]): (c.get("status"), c.get("action")) for c in real.cards()}
-    want = {("issue", 57): ("Review", None), ("issue", 58): ("Plan", NEEDS), ("pr", 60): ("Done", AUTO), ("issue", 59): (None, None)}
-    assert got == want, f"333.1: the board listed its cards' (column, pill) as {got}, not {want}"
 
 
 def test_the_scan_names_an_open_card_with_no_column(world, capsys, record_property):
