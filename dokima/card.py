@@ -67,6 +67,57 @@ def link_lines(repo, links):
     return out
 
 
+LINKED = re.compile(r"<!-- dokima-linked-from:([\d ,]*)-->")
+SIDE = {"blocked_by": "blocks", "blocks": "blocked_by", "relates_to": "relates_to"}
+
+
+def merged(*many):
+    """Several links fields as one, each kind's numbers in order and once."""
+    out = {}
+    for links in many:
+        for kind in SIDE:
+            v = links.get(kind) if isinstance(links, dict) else None
+            for n in v if isinstance(v, list) else []:
+                if n not in out.setdefault(kind, []):
+                    out[kind].append(n)
+    return out
+
+
+def linked_from(text):
+    """The issues whose approved plans link here, as code noted them in the card part.
+
+    Only an index of where to look: what each one links is read from its own records, never from this text. A body
+    with no card part yet has none.
+    """
+    if body.MARKER not in (text or ""):
+        return []
+    m = LINKED.search(text.split(body.MARKER, 1)[0])
+    return sorted({int(x) for x in re.findall(r"\d+", m.group(1))}) if m else []
+
+
+def their_links(repo, number, sources, plans=None):
+    """The links the approved plans of `sources` make here, seen from this side.
+
+    `plans` gives, by issue, the links of a plan approved just now, before its review is on record. An issue that
+    cannot be read is skipped with a warning in the run.
+    """
+    from dokima import agent
+    mine = {k: [] for k in SIDE}
+    for s in sources:
+        if s in (plans or {}):
+            links = plans[s]
+        else:
+            try:
+                links = agent.plan_links(agent.approved_plan(agent.records(agent.conversation(repo, s)[1])))
+            except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as e:
+                print(f"::warning title=Links not read::the links of #{s} could not be read: {e}")
+                continue
+        for kind, other in SIDE.items():
+            if int(number) in links.get(kind, []) and s not in mine[other]:
+                mine[other].append(s)
+    return mine
+
+
 def state(check):
     """GitHub's verdict for one check run (already filtered to the PR's latest commit): passed, failed, running or not started."""
     if check is None:
@@ -261,6 +312,8 @@ def render(repo, issue, found, page="issue"):
     planned = agent.latest(recs, "planner")
     h = planned["handback"] if planned else None
     lines = [plan.CARD_START]
+    if found.get("sources"):
+        lines += [f"<!-- dokima-linked-from: {', '.join(str(n) for n in found['sources'])} -->"]
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
     lines += [status_line(repo, *status(issue, found)), ""]
@@ -270,14 +323,14 @@ def render(repo, issue, found, page="issue"):
     children = found.get("children") or []
     if children:
         lines += ["**Stories:**", ""] + [child_row(repo, c) for c in children] + [""]
+    related = link_lines(repo, merged(h.get("links") if h else None, found.get("linked")))
+    if related:
+        lines += related + [""]
     if not h:
         lines += ["This issue has no plan yet.", ""]
     else:
         criteria, nfr = h.get("acceptance_criteria") or [], h.get("non_functional") or []
         tests, plan_tests = found["tests"], h.get("tests") or {}
-        related = link_lines(repo, h.get("links"))
-        if related:
-            lines += related + [""]
         if h.get("user_story"):
             lines += [f"**User story:** {escape(h['user_story'])}", ""]
         lines += [f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria**", ""]
@@ -307,24 +360,25 @@ def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
+def issue_pr(repo, n):
+    """The PR built for issue n from its try or work branch, or None."""
+    owner = repo.split("/")[0]
+    for branch in (f"try/issue-{n}", f"work/issue-{n}"):
+        prs = json.loads(gh("api", f"repos/{repo}/pulls?head={owner}:{branch}&state=all"))
+        if prs:
+            return prs[0]["number"]
+    return None
+
+
 def find_work(repo):
     """The issue and open PR this event is about, as (issue number, PR number or None)."""
-    owner = repo.split("/")[0]
-
-    def open_pr(n):
-        for branch in (f"try/issue-{n}", f"work/issue-{n}"):
-            prs = json.loads(gh("api", f"repos/{repo}/pulls?head={owner}:{branch}&state=all"))
-            if prs:
-                return prs[0]["number"]
-        return None
-
     if os.environ.get("ISSUE_NUMBER"):
         n = int(os.environ["ISSUE_NUMBER"])
-        return n, open_pr(n)
+        return n, issue_pr(repo, n)
     title = re.match(r"worker for #(\d+)$", os.environ.get("RUN_TITLE", ""))
     if title:
         n = int(title.group(1))
-        return n, open_pr(n)
+        return n, issue_pr(repo, n)
     pr = os.environ.get("PR_NUMBER")
     if not pr:
         prs = json.loads(gh("api", f"repos/{repo}/commits/{os.environ['HEAD_SHA']}/pulls"))
@@ -471,8 +525,22 @@ def main():
     if not number:
         print("No issue for this event; nothing to write.")
         return
+    draw(repo, number, pr_number)
+
+
+def draw(repo, number, pr_number, plans=None, noted=None):
+    """Write the card at the top of the issue and its PR.
+
+    `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
+    (False) issues from the index of those whose approved plans link here.
+    """
     issue = plan.fetch_issue(repo, number)
     found = gather(repo, number, pr_number)
+    sources = set(linked_from(issue["current_body"]))
+    for s, on in (noted or {}).items():
+        (sources.add if on else sources.discard)(s)
+    found["sources"] = sorted(sources)
+    found["linked"] = their_links(repo, number, found["sources"], plans)
     pr = found["pr"]
     # Only the part above the marker is code's; the owner's ask below it is saved as it is, or the save is refused.
     if body.save(repo, number, issue["current_body"] or "", render(repo, issue, found)):
