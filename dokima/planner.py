@@ -26,7 +26,7 @@ import tempfile
 from dokima import body as issue_body
 from dokima import words
 from dokima.checks import PROVES, TEST_DEF
-from dokima.agent import problems_items, problems_questions  # noqa: E402
+from dokima.agent import problems_questions, problems_raises  # noqa: E402
 
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 CRITERION_CAP = 25  # words in a criterion's first sentence
@@ -143,7 +143,7 @@ def from_kind(p, issue=None):
     kind = p["kind"]
     if kind in ("feature", "user_story") and (not isinstance(p.get("summary"), str) or not p["summary"].strip()):
         raise Garbled("plan.json needs a summary: one plain sentence saying what the issue is about")
-    found = problems_items(p, "issues_found", ("title", "why", "evidence"))
+    found = problems_raises(p)
     if found:
         raise Garbled("; ".join(found))
     if kind == "feature":

@@ -46,8 +46,8 @@ One file, `work.json`, in the hand-back folder:
    "outside_scope": [{"file": "path", "why": "..."}],
    "suspect_tests": [{"test": "path::name", "evidence": "..."}],
    "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}],
-   "issues_found": [{"title": "...", "why": "...", "evidence": "a file, line or issue number"}]}
-Every criterion gets a line. Empty lists may be left out. issues_found lists real problems you came across that lie
-outside this issue, each worth its own issue; you never fix them here. Once your hand-back passes its check, code files
+   "raises": [{"kind": "issue", "title": "...", "why": "...", "evidence": "a file, line or issue number"}]}
+Every criterion gets a line. Empty lists may be left out. A raise of kind issue is a real problem you came across that
+lies outside this issue, each worth its own issue; you never fix them here. Once your hand-back passes its check, code files
 each one as its own issue, parked and labeled filed-by-dokima, and never files the same title twice. You never stop to ask: the plan is the contract and you work
 until every test is green. If the plan itself cannot be built, report the tests that prove it in suspect_tests.

@@ -274,7 +274,9 @@ def why_refused(e):
 
 
 def found_body(f, role, stage, number, pr, link):
-    """A filed issue's body: where and by which agent it was found, its why and evidence, and the run's record."""
+    """A filed issue's body: where and by whom it was found, why, evidence and record.
+
+    The record is the run's record comment."""
     doing = {"planner": "planning", "worker": "building"}.get(role, "grading the plan" if stage == "plan" else "grading the work")
     where = f"#{number}" + (f" (pull request #{pr})" if pr else "")
     return "\n".join([f"Found by the {role} while {doing} on {where}, outside that issue.", "",
@@ -284,8 +286,10 @@ def found_body(f, role, stage, number, pr, link):
 
 
 def record_link(repo, number, pr, body):
-    """The address of the comment that carries this run's record: the run's card, or, with no card up, the record
-    posted now (where the workflow would post it), its id handed to the workflow's next steps to edit in place."""
+    """The address of the comment that carries this run's record.
+
+    That is the run's card, or, with no card up, the record posted now (where the workflow would post it), its id
+    handed to the workflow's next steps to edit in place."""
     card_id = os.environ.get("CARD_ID", "")
     try:
         if card_id:
@@ -300,12 +304,40 @@ def record_link(repo, number, pr, body):
         return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
 
 
+def raised_issues(h):
+    """The issues a hand-back found outside its own: its raises of kind issue.
+
+    Nothing else is ever filed."""
+    raises = h.get("raises")
+    return [r for r in raises if isinstance(r, dict) and r.get("kind") == "issue"] if isinstance(raises, list) else []
+
+
+def problems_raises(h):
+    """Everything wrong with a hand-back's raises, each naming its item.
+
+    Raises are a list of objects, each with a kind; an issue needs title, why and evidence."""
+    raises = h.get("raises", [])
+    if not isinstance(raises, list):
+        return ["raises must be a list"]
+    bad = []
+    for i, r in enumerate(raises, 1):
+        if not isinstance(r, dict) or not filled(r.get("kind")):
+            bad.append(f"raises item {i} must be an object with a kind")
+            continue
+        missing = [k for k in ("title", "why", "evidence") if not filled(r.get(k))] if r["kind"] == "issue" else []
+        if missing:
+            bad.append(f"raises item {i} (issue) needs {', '.join(missing)}")
+    return bad
+
+
 def file_found(repo, rec, number, pr, link):
-    """File each issue a passed hand-back lists in issues_found as its own parked issue labeled filed-by-dokima,
-    skipping a title Dokima already filed (open or closed, case and spacing ignored) or that repeats in the list.
+    """File each issue a passed hand-back raises as its own parked issue.
+
+    Each is labeled filed-by-dokima, skipping a title Dokima already filed (open or closed, case and spacing ignored)
+    or that repeats in the list.
 
     Returns one entry per finding filed or refused: {title, issue} or {title, refused: GitHub's reason}."""
-    found = [f for f in rec["handback"].get("issues_found") or [] if isinstance(f, dict)]
+    found = raised_issues(rec["handback"])
     if not found:
         return []
     try:
@@ -607,12 +639,9 @@ def render(rec, pr=None, plan=None):
             lines += [f"- {a.get('question', '')} Accepted on your words \"{a.get('matched', '')}\" ({a.get('source', '')})."
                       if a.get("accepted") is True else f"- {a.get('question', '')} Not accepted: {a.get('why', '')}"
                       for a in judged]
-<<<<<<< HEAD
-=======
         if h.get("issues_found"):
             lines += ["", f"{field_icon(repo, 'issue found')} **Issues found outside this one** (proposals until you file them):"]
             lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
->>>>>>> origin/main
     elif role == "split":
         num = {f["story"]: f["issue"] for f in h.get("stories", [])}
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
@@ -625,14 +654,10 @@ def render(rec, pr=None, plan=None):
         lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
-    if passed and role in HANDBACK and "filed" in rec:
-        if rec["filed"]:
-            lines += ["", "**Issues found outside this one**, filed and parked:"]
-            lines += [f"- #{f['issue']} {f.get('title')}" + (" (filed before)" if f.get("before") else "") if "issue" in f else
-                      f"- Not filed: {f.get('title')}. GitHub said: {f.get('refused')}" for f in rec["filed"]]
-    elif passed and role in HANDBACK and isinstance(h.get("issues_found"), list) and h["issues_found"]:
-        lines += ["", "**Issues found outside this one:**"]
-        lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1) if isinstance(f, dict)]
+    if passed and role in HANDBACK and rec.get("filed"):
+        lines += ["", f"{field_icon(repo, 'issue found')} **Issues found outside this one**, filed and parked:"]
+        lines += [f"- #{f['issue']} {f.get('title')}" + (" (filed before)" if f.get("before") else "") if "issue" in f else
+                  f"- Not filed: {f.get('title')}. GitHub said: {f.get('refused')}" for f in rec["filed"]]
     lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
 
@@ -959,6 +984,7 @@ def problems_shape(kind, h):
         bad += problems_items(h, "notes", ("text", "evidence"))
         bad += problems_items(h, "outside_plan", ("file", "change"))
         bad += problems_items(h, "issues_found", ("title", "why", "evidence"))
+        bad += problems_raises(h)
         resolved = h.get("resolved", [])
         if not isinstance(resolved, list) or not all(filled(x) for x in resolved):
             bad.append("resolved must be a list of blocker ids")
@@ -975,7 +1001,7 @@ def problems_shape(kind, h):
     bad += problems_items(h, "outside_scope", ("file", "why"))
     bad += problems_items(h, "suspect_tests", ("test", "evidence"))
     bad += problems_items(h, "replies", ("blocker", "answer", "why"), name="blocker")
-    bad += problems_items(h, "issues_found", ("title", "why", "evidence"))
+    bad += problems_raises(h)
     for i, r in enumerate(h.get("replies") if isinstance(h.get("replies"), list) else [], 1):
         if isinstance(r, dict) and filled(r.get("answer")) and r["answer"] not in ANSWERS:
             bad.append(f"replies item {i}: answer must be fixed or disagree")
@@ -1860,11 +1886,6 @@ def main(argv):
                 step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
                     ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
                              "with a command to send it back.")
-<<<<<<< HEAD
-        on_pr = rec.get("role") == "worker" or (rec.get("role") == "reviewer" and rec.get("stage") == "pr")
-        pr = ""
-        if on_pr:
-=======
         if rec.get("role") == "reviewer" and (rec.get("stage") or "") == "plan" and rec.get("check", {}).get("passed") \
                 and (rec.get("handback") or {}).get("verdict") == "approve":
             # Code records the approved plan's links on GitHub and redraws the cards they touch; anything that keeps
@@ -1872,8 +1893,8 @@ def main(argv):
             why = record_links(repo, number, items)
             if why:
                 step = ("stop", why)
-        if rec.get("role") == "worker":
->>>>>>> origin/main
+        pr = ""
+        if rec.get("role") == "worker" or (rec.get("role") == "reviewer" and rec.get("stage") == "pr"):
             # The pull request is opened after the record is written, so the worker's sentence links it only now.
             try:
                 pr = gh("pr", "list", "-R", repo, "--head", f"try/issue-{number}", "--state", "open", "--json", "number",
@@ -1882,7 +1903,7 @@ def main(argv):
                 pr = ""
             pr = pr if pr.isdigit() else ""
         url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}" if pr else None
-        if rec.get("role") in HANDBACK and rec["check"]["passed"] and rec["handback"].get("issues_found"):
+        if rec.get("role") in HANDBACK and rec["check"]["passed"] and raised_issues(rec["handback"]):
             # Issues the agent found outside this one are filed now, with the key made after its hand-back passed,
             # each linking the comment that carries this run's record.
             rec["filed"] = file_found(repo, rec, number, pr, record_link(repo, number, pr, render(rec, url)))
