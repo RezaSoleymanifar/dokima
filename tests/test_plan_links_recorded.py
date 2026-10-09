@@ -612,7 +612,7 @@ def test_links_with_no_loop_are_recorded_and_autopilot_goes_on(tmp_path, record_
     hub = Hub(tmp_path, deps={302: [301]}, autopilot=True)
     hub.post(plan(links([301], [302])))
     step, comment, out = hub.next(review())
-    assert hub.blocked_by(N) == [301] and hub.blocked_by(302) == [301, N], \
+    assert hub.blocked_by(N) == [301] and hub.blocked_by(302) == sorted([301, N]), \
         f"252.3: links with no loop were not recorded: #252 {hub.blocked_by(N)}, #302 {hub.blocked_by(302)}"
     assert step == "start worker", f"252.3: autopilot should start the worker, the river said {step!r}"
 
