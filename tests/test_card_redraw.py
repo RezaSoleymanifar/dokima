@@ -817,10 +817,11 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
     """A waiting redraw is never dropped for another PR's redraw or an idle run.
 
     GitHub keeps one waiting run per concurrency group and cancels it when a newer one arrives. card.yml's group
-    is read for redraws of PR #5 (two checks), PR #6 (merge), PR #7 (approval) and issue #41 (an owner's edit), and
-    for two runs that draw nothing: the bot's own edit of an issue (each card write makes one) and a command typed
-    in an issue comment. The two redraws of PR #5 must share a group, each other target must have its own, no run
-    that draws nothing may sit in a redraw's group, and no run may cancel one already running. Proves 315.5."""
+    is read for redraws of PR #5 (two checks), PR #6 (merge), PR #7 (approval), issue #41 and issue #40 (an owner's
+    edit of each), and for two runs that draw nothing: the bot's own edit of issue #40 (each card write makes one)
+    and a command typed in an issue comment. The two redraws of PR #5 must share a group, each other issue and pull
+    request must have its own, no run that draws nothing may sit in a redraw's group (not even the group of the
+    issue it edits), and no run may cancel one already running. Proves 315.5."""
     record_property("proves", "315.5")
     events = {"all tests on PR #5": ("workflow_run", workflow_run("full suite")),
               "criteria checks on PR #5": ("workflow_run", workflow_run("done-whens")),
@@ -831,6 +832,7 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
               "approval of PR #7": ("workflow_run", workflow_run("commands", pr=7, event="pull_request_review",
                                                                  head="7" * 40)),
               "owner's edit of issue #41": ("issues", issue_edit(41, "User")),
+              "owner's edit of issue #40": ("issues", issue_edit(40, "User")),
               "bot's edit of issue #40": ("issues", issue_edit(40, "Bot")),
               "command in an issue comment": ("workflow_run", workflow_run("commands", pr=None, event="issue_comment",
                                                                          head=MAIN, title="/plan"))}
@@ -841,13 +843,17 @@ def test_a_redraw_waiting_its_turn_is_never_dropped_for_an_unrelated_run(record_
     assert g["all tests on PR #5"][0] == g["criteria checks on PR #5"][0], \
         f"315.5: two redraws of PR #5 wait in different groups ({g['all tests on PR #5'][0]!r}, " \
         f"{g['criteria checks on PR #5'][0]!r}), so they can draw at once and an older one can land last"
-    redraws = ["all tests on PR #5", "merge of PR #6", "approval of PR #7", "owner's edit of issue #41"]
+    redraws = ["all tests on PR #5", "merge of PR #6", "approval of PR #7", "owner's edit of issue #41",
+               "owner's edit of issue #40"]
     seen = {}
     for name in redraws:
         assert g[name][0] not in seen, \
             f"315.5: {name} and {seen.get(g[name][0])} share the group {g[name][0]!r}, so one drops the other's redraw"
         seen[g[name][0]] = name
     for name in ("bot's edit of issue #40", "command in an issue comment"):
-        groups_of_redraws = {g[r][0] for r in redraws + ["criteria checks on PR #5"]}
+        assert g[name][0] != g["owner's edit of issue #40"][0], \
+            f"315.5: the {name} waits in the group {g[name][0]!r} of a redraw of issue #40, so it cancels that redraw"
+        groups_of_redraws = {g[r][0]: r for r in redraws + ["criteria checks on PR #5"]}
         assert g[name][0] not in groups_of_redraws, \
-            f"315.5: {name} draws nothing but waits in the group {g[name][0]!r} of a redraw, so it cancels that redraw"
+            f"315.5: {name} draws nothing but waits in the group {g[name][0]!r} of the redraw of " \
+            f"{groups_of_redraws.get(g[name][0])}, so it cancels that redraw"
