@@ -25,6 +25,17 @@ What the faked GitHub offers, and the audit is expected to use (a read may raise
     close_issue(repo, n)
     pin_issue(repo, n)
     needs_you(repo, n)        marks the issue's card Needs you on the board
+
+Since #284 the audit also fixes declared labels, board options and views itself, through these (a write may raise
+subprocess.CalledProcessError too, when GitHub refuses it):
+    create_label(repo, name, color, description)
+    update_label(repo, name, color, description)
+    set_options(field, options)   replaces the field's options with the list given, as GitHub does: each option is
+                                  {"id": id or None, "name", "color", "description"}; one passed with its id keeps it,
+                                  one without gets a new id, and one left out is deleted, clearing every card on it
+    create_view(name, layout, filter)
+    update_view(name, layout, filter)
+fields() gives each option its "id" too. Board writes are kept with BOARD in place of a repo: the board is the org's.
 """
 import copy
 import importlib
@@ -41,6 +52,7 @@ from dokima import manifest  # noqa: E402
 
 REPO = "acme/widgets"
 FORBIDDEN = "gh: Resource not accessible by integration (HTTP 403)"
+BOARD = "board"
 BROKEN = "gh: Server Error (HTTP 502)"
 
 
@@ -67,6 +79,11 @@ class GitHub:
     def __init__(self, fail=None, issues=None):
         self.label_list = copy.deepcopy(manifest.LABELS)
         self.field_map = copy.deepcopy(manifest.FIELDS)
+        for field, options in self.field_map.items():
+            for option, v in options.items():
+                v["id"] = f"{field}:{option}"
+        self.cards = {}  # card -> {field: option id}
+        self.new_ids = 0
         self.view_map = copy.deepcopy(manifest.VIEWS)
         self.rules = copy.deepcopy(manifest.BRANCH_RULES)
         self.perms = copy.deepcopy(manifest.PERMISSIONS)
@@ -127,6 +144,57 @@ class GitHub:
     def needs_you(self, repo, n):
         self.issues[n]["needs_you"] = True
         self.writes.append(("needs_you", repo, n))
+
+    def _write(self, what):
+        if what in self.fail:
+            raise refused(self.fail[what])
+
+    def create_label(self, repo, name, color, description):
+        self._write("create_label")
+        if name in self.label_list:
+            raise refused("gh: Validation Failed: already_exists (HTTP 422)")
+        self.label_list[name] = {"color": color, "description": description}
+        self.writes.append(("create_label", repo, name))
+
+    def update_label(self, repo, name, color, description):
+        self._write("update_label")
+        if name not in self.label_list:
+            raise refused("gh: Not Found (HTTP 404)")
+        self.label_list[name] = {"color": color, "description": description}
+        self.writes.append(("update_label", repo, name))
+
+    def set_options(self, field, options):
+        self._write("set_options")
+        if field not in self.field_map:
+            raise refused("gh: Could not resolve to a node (HTTP 404)")
+        old_ids = {v.get("id") for v in self.field_map[field].values()}
+        new = {}
+        for o in options:
+            oid = o.get("id")
+            if oid and oid not in old_ids:
+                raise refused(f"gh: Could not resolve to a node with the global id of '{oid}' (HTTP 422)")
+            if not oid:
+                self.new_ids += 1
+                oid = f"new:{self.new_ids}"
+            new[o["name"]] = {"color": o["color"], "description": o.get("description") or "", "id": oid}
+        kept = {v["id"] for v in new.values()}
+        for values in self.cards.values():
+            if values.get(field) is not None and values[field] not in kept:
+                del values[field]
+        self.field_map[field] = new
+        self.writes.append(("set_options", BOARD, field))
+
+    def create_view(self, name, layout, filter):
+        self._write("create_view")
+        self.view_map[name] = {"layout": layout, "filter": filter}
+        self.writes.append(("create_view", BOARD, name))
+
+    def update_view(self, name, layout, filter):
+        self._write("update_view")
+        if name not in self.view_map:
+            raise refused("gh: Not Found (HTTP 404)")
+        self.view_map[name] = {"layout": layout, "filter": filter}
+        self.writes.append(("update_view", BOARD, name))
 
     def kinds(self):
         return [w[0] for w in self.writes]
@@ -287,24 +355,26 @@ def test_drift_opens_one_pinned_setup_issue_marked_needs_you(record_property, tm
 def test_a_later_run_updates_the_same_setup_issue(record_property, tmp_path):
     """A later run updates the open Setup issue with what is off now.
 
-    Proves 283.2. A first run opens the Setup issue for a missing plan label. The label is then put back and the high label's
-    color changes. The second run opens no issue; the same issue now lists the high label and no longer the plan label,
-    and is still marked Needs you."""
+    Proves 283.2. A first run opens the Setup issue for the app's issues permission, read where Dokima needs write. The permission
+    is then put back and main's rule stops requiring the all done-whens passed check. The second run opens no issue;
+    the same issue now lists main's rule and no longer the issues permission, and is still marked Needs you. (Since
+    #284 the audit fixes labels itself, so this uses settings it only reports.)"""
     record_property("proves", "283.2")
     a = audit("283.2")
     root = codeowners(tmp_path, "* @alice\n")
     g = GitHub()
-    del g.label_list["plan"]
+    g.perms["issues"] = "read"
     n = a.run(g, REPO, root)
-    g.label_list["plan"] = copy.deepcopy(manifest.LABELS["plan"])
-    g.label_list["high"]["color"] = "000000"
+    g.perms["issues"] = manifest.PERMISSIONS["issues"]
+    g.rules["main"]["required_checks"] = ["all tests"]
     g.issues[n]["needs_you"] = False
     again = a.run(g, REPO, root)
     assert g.kinds().count("create_issue") == 1, f"283.2: the second run opened another issue: {g.writes}"
     assert again == n, f"283.2: the second run returned {again!r}, not the open Setup issue #{n}"
     body = g.issues[n]["body"]
-    one_line(body_lines(body), "283.2", "the high label's new color", "high", "000000")
-    assert "1d76db" not in body, f"283.2: the plan label, now fixed, is still listed on the Setup issue:\n{body}"
+    one_line(body_lines(body), "283.2", "main's rule now missing a check", "main", "all done-whens passed")
+    assert not [l for l in body_lines(body) if re.search(r"(?<![\w-])issues(?![\w-])", l) and "permission" in l.lower()], \
+        f"283.2: the issues permission, now put back, is still listed on the Setup issue:\n{body}"
     assert g.issues[n]["needs_you"], "283.2: the updated Setup issue is not marked Needs you"
 
 
@@ -389,7 +459,8 @@ def test_the_audit_posts_only_on_the_repo_it_runs_on(record_property, tmp_path):
     """Every write the audit makes goes to the repo it runs on.
 
     Proves 283.4. Runs the audit on acme/widgets three times: opening the Setup issue, updating it, and closing it once clean. Every
-    write names acme/widgets; then the same on other/place names only other/place."""
+    write names acme/widgets; then the same on other/place names only other/place. Writes to the org's board (its
+    options and views, fixed since #284) belong to no repo and are left out."""
     record_property("proves", "283.4")
     a = audit("283.4")
     for repo in (REPO, "other/place"):
@@ -402,7 +473,7 @@ def test_the_audit_posts_only_on_the_repo_it_runs_on(record_property, tmp_path):
         a.run(clean, repo, root)
         writes = g.writes + clean.writes
         assert writes, f"283.4: the audit on {repo} wrote nothing"
-        elsewhere = [w for w in writes if w[1] != repo]
+        elsewhere = [w for w in writes if w[1] not in (repo, BOARD)]
         assert not elsewhere, f"283.4: the audit on {repo} wrote outside it: {elsewhere}"
 
 

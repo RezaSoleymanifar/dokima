@@ -18,18 +18,34 @@ What it answers (OWNER/REPO is the state's repo; any other repo is logged as uns
     gh api [-X POST] repos/OWNER/REPO/issues/N/comments -f body=..                     comments on it
         (fields may also come as -F key=@file or --input file.json)
     gh issue create|edit|close|comment|pin|list|view ... --repo OWNER/REPO   the same, the gh way
+    gh api -X POST repos/OWNER/REPO/labels -f name=.. -f color=.. -f description=..   creates a label
+    gh api -X PATCH repos/OWNER/REPO/labels/NAME [-f new_name=..] -f color=.. -f description=..   edits it
+    gh api -X DELETE repos/OWNER/REPO/labels/NAME                                      deletes it
+    gh label create|edit|delete NAME [--name ..] [--color ..] [--description ..] --repo OWNER/REPO   the same
+    gh api -X POST orgs/OWNER/projectsV2/1/views -f name=.. -f layout=.. -f filter=..  adds a board view
     gh api graphql -f query=...  answering organization{projectV2{id fields{nodes{id name options{id name color
         description}}} views{nodes{id name layout filter}}}} and repository{issue(number:){id number title body state
         isPinned projectItems{nodes{id project{id}}}}}, and the mutations addProjectV2ItemById,
-        updateProjectV2ItemPosition, updateProjectV2ItemFieldValue and pinIssue.
+        updateProjectV2ItemPosition, updateProjectV2ItemFieldValue and pinIssue;
+        updateProjectV2Field(input:{fieldId:, singleSelectOptions:[{id:, name:, color:, description:}]}), with the
+        options inline in the query or as a GraphQL variable (gh api graphql --input file.json holding
+        {"query": .., "variables": {..}}, or -F/-f variables), which replaces the field's options as GitHub does:
+        an option passed with its id keeps it, an option passed without one gets a new id, and an option left out is
+        deleted, clearing every card that had it; updateProjectV2View(input:{viewId:, filter:, layout:, name:});
+        and deleteProjectV2Field / deleteProjectV2View, which delete.
+A write listed under "fail" as label_write, field_write or view_write is refused with GitHub's reason, as a read is.
+Writes to labels, fields and views are logged under "writes" as kinds label, label_delete, field, field_delete, view
+and view_delete, with the state's repo.
 Ids: an issue's node id is I_<number>, its board item PVTI_I_<number>, a field F_<Field>, an option
-O_<Field>_<Option with spaces as _>, the project PVT_1. Views come back with GitHub's layouts (TABLE_LAYOUT, ...).
+O_<Field>_<Option with spaces as _> unless the state gives it an "id" (a new option gets O_<Field>_<Option>_new<a..>),
+the project PVT_1, a view PVTV_<name with spaces as _>. A card's value is state["items"][item][Field] = option id. Views come back with GitHub's layouts (TABLE_LAYOUT, ...).
 No --jq, --template or --paginate output shaping: the audit reads the JSON itself.
 """
 import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 STATE = os.environ["FAKE_GH_STATE"]
 
@@ -71,6 +87,189 @@ def reply(state, value):
 def opt_id(field, option):
     """The node id of a board option."""
     return f"O_{field}_{option.replace(' ', '_')}"
+
+
+def view_id(name):
+    """The node id of a board view."""
+    return f"PVTV_{name.replace(' ', '_')}"
+
+
+def write(state, kind):
+    """Log one write to the repo's labels or the board."""
+    state["writes"].append({"kind": kind, "repo": state["repo"], "number": None})
+
+
+def refuse_write(state, what):
+    """Refuse a write the state lists under "fail", with GitHub's reason."""
+    if what in state.get("fail", {}):
+        refuse(state, state["fail"][what])
+
+
+def set_label(state, name, fields):
+    """Create a label (name None) or edit the named one; returns its name now."""
+    refuse_write(state, "label_write")
+    labels = state["labels"]
+    if name is None:
+        name = fields.get("name")
+        if not name or name in labels:
+            refuse(state, f"Validation Failed: label {name!r} already exists or has no name (HTTP 422)")
+        labels[name] = {"color": "ededed", "description": ""}
+    elif name not in labels:
+        refuse(state, "Not Found (HTTP 404)")
+    label = labels.pop(name)
+    for k in ("color", "description"):
+        if fields.get(k) is not None:
+            label[k] = str(fields[k]).lstrip("#")
+    labels[fields.get("new_name") or name] = label
+    write(state, "label")
+    return fields.get("new_name") or name
+
+
+def delete_label(state, name):
+    """Delete a label and log the write."""
+    refuse_write(state, "label_write")
+    if state["labels"].pop(name, None) is None:
+        refuse(state, "Not Found (HTTP 404)")
+    write(state, "label_delete")
+
+
+def label_json(state, name):
+    """One label as GitHub's REST answers it."""
+    l = state["labels"][name]
+    return {"id": 1, "name": name, "color": l["color"], "description": l["description"], "default": False}
+
+
+def literal(text):
+    """The value of one GraphQL literal: a string, an enum name, a number or null."""
+    if text.startswith('"'):
+        return json.loads(text)
+    return None if text == "null" else text
+
+
+def inline_options(q):
+    """The singleSelectOptions written inline in a mutation, or None."""
+    m = re.search(r"singleSelectOptions\s*:\s*\[(.*?)\]", q, re.S)
+    if not m:
+        return None
+    pair = r'(\w+)\s*:\s*("(?:[^"\\]|\\.)*"|[\w.-]+)'
+    return [{k: literal(v) for k, v in re.findall(pair, body)} for body in re.findall(r"\{([^{}]*)\}", m.group(1))]
+
+
+def variable_options(fields):
+    """The singleSelectOptions passed as a GraphQL variable, or None."""
+    def find(v):
+        if isinstance(v, list) and v and all(isinstance(o, dict) and "name" in o for o in v):
+            return v
+        if isinstance(v, dict):
+            for w in v.values():
+                found = find(w)
+                if found is not None:
+                    return found
+        if isinstance(v, str) and v.strip().startswith("["):
+            try:
+                return find(json.loads(v))
+            except ValueError:
+                return None
+        return None
+    return find(fields)
+
+
+def fresh_id(state, field, name):
+    """A new option id, never one the board had before."""
+    taken = {v.get("id") or opt_id(f, o) for f, opts in state["fields"].items() for o, v in opts.items()}
+    taken |= set(state.get("retired", []))
+    k = 0
+    while True:
+        k += 1
+        n, letters = k, ""
+        while n:
+            n, r = divmod(n - 1, 26)
+            letters = chr(97 + r) + letters
+        candidate = f"{opt_id(field, name)}_new{letters}"
+        if candidate not in taken:
+            return candidate
+
+
+def update_field(state, q, fields):
+    """Replace a field's options as GitHub's updateProjectV2Field does."""
+    refuse_write(state, "field_write")
+    every = q + " " + json.dumps(fields)
+    m = re.search(r"\bF_([A-Za-z]+)\b", every)
+    if not m or m.group(1) not in state["fields"]:
+        unsupported(state, "updateProjectV2Field without a field of the board")
+    field = m.group(1)
+    options = inline_options(q)
+    if options is None:
+        options = variable_options(fields)
+    if options is None:
+        unsupported(state, "updateProjectV2Field without singleSelectOptions")
+    old = state["fields"][field]
+    old_ids = {v.get("id") or opt_id(field, o): o for o, v in old.items()}
+    new, names = {}, set()
+    for o in options:
+        name = o.get("name")
+        if not name or not o.get("color") or name in names:
+            refuse(state, "Each option needs a unique name and a color (HTTP 422)")
+        names.add(name)
+        oid = o.get("id")
+        if oid and oid not in old_ids:
+            refuse(state, f"Could not resolve to a node with the global id of '{oid}' (HTTP 422)")
+        new[name] = {"color": o["color"], "description": o.get("description") or "",
+                     "id": oid or fresh_id(state, field, name)}
+    kept = {v["id"] for v in new.values()}
+    state.setdefault("retired", []).extend(i for i in old_ids if i not in kept)
+    for item in state["items"].values():
+        if item.get(field) is not None and item[field] not in kept:
+            del item[field]
+    state["fields"][field] = new
+    write(state, "field")
+    return {"id": f"F_{field}", "name": field}
+
+
+def view_by_id(state, vid):
+    """The name of the view with that id, or None."""
+    return next((n for n in state["views"] if view_id(n) == vid), None)
+
+
+def update_view(state, q, fields):
+    """Change a view's filter, layout or name as updateProjectV2View does."""
+    refuse_write(state, "view_write")
+    every = q + " " + json.dumps(fields)
+    m = re.search(r"\bPVTV_[A-Za-z0-9_]+\b", every)
+    name = view_by_id(state, m.group(0)) if m else None
+    if name is None:
+        unsupported(state, "updateProjectV2View without a view of the board")
+    view = state["views"][name]
+    inner = q.split("input", 1)[-1]
+    for k in ("filter", "layout", "name"):
+        hit = re.search(rf'\b{k}\s*:\s*(\$\w+|"(?:[^"\\]|\\.)*"|\w+)', inner)
+        if not hit:
+            continue
+        v = hit.group(1)
+        v = fields.get(v[1:]) if v.startswith("$") else literal(v)
+        if v is None:
+            continue
+        if k == "layout":
+            view["layout"] = re.sub(r"_LAYOUT$", "", str(v), flags=re.I).lower()
+        elif k == "filter":
+            view["filter"] = v
+        elif v != name:
+            state["views"] = {(v if n == name else n): w for n, w in state["views"].items()}
+    write(state, "view")
+    return {"id": m.group(0)}
+
+
+def add_view(state, fields):
+    """Add a board view as GitHub's REST does."""
+    refuse_write(state, "view_write")
+    name = fields.get("name")
+    if not name:
+        refuse(state, "Validation Failed: a view needs a name (HTTP 422)")
+    state["views"][name] = {"layout": re.sub(r"_LAYOUT$", "", str(fields.get("layout") or "table"), flags=re.I).lower(),
+                            "filter": fields.get("filter") or ""}
+    write(state, "view")
+    return {"id": 1, "node_id": view_id(name), "name": name, "layout": state["views"][name]["layout"],
+            "filter": state["views"][name]["filter"]}
 
 
 def issue_json(state, n):
@@ -174,6 +373,9 @@ def rest(state, method, path, fields):
     """Answer one REST call on the state's repo."""
     path, _, query = path.lstrip("/").partition("?")
     params = dict(p.partition("=")[::2] for p in query.split("&") if p)
+    owner = state["repo"].split("/")[0]
+    if method == "POST" and re.fullmatch(rf"orgs/{re.escape(owner)}/projectsV2/1/views", path):
+        reply(state, add_view(state, fields))
     prefix = f"repos/{state['repo']}/"
     if not path.startswith(prefix):
         unsupported(state, f"{method} {path} is not on the repo {state['repo']}")
@@ -183,6 +385,14 @@ def rest(state, method, path, fields):
             refuse(state, fail["labels"])
         reply(state, [{"id": k, "name": n, "color": l["color"], "description": l["description"], "default": False}
                       for k, (n, l) in enumerate(state["labels"].items())])
+    if method == "POST" and rest_path == "labels":
+        reply(state, label_json(state, set_label(state, None, fields)))
+    m = re.fullmatch(r"labels/([^/]+)", rest_path)
+    if m and method in ("PATCH", "POST"):
+        reply(state, label_json(state, set_label(state, unquote(m.group(1)), fields)))
+    if m and method == "DELETE":
+        delete_label(state, unquote(m.group(1)))
+        reply(state, {})
     m = re.fullmatch(r"branches/([^/]+)/protection(/required_status_checks)?", rest_path)
     if method == "GET" and m:
         if "protection" in fail:
@@ -226,10 +436,10 @@ def project(state):
     """The board as GitHub's GraphQL answers it."""
     return {"id": "PVT_1", "number": 1, "title": "Board",
             "fields": {"nodes": [{"id": f"F_{f}", "name": f, "dataType": "SINGLE_SELECT",
-                                  "options": [{"id": opt_id(f, o), "name": o, "color": v["color"],
+                                  "options": [{"id": v.get("id") or opt_id(f, o), "name": o, "color": v["color"],
                                                "description": v["description"]} for o, v in options.items()]}
                                  for f, options in state["fields"].items()]},
-            "views": {"nodes": [{"id": f"PVTV_{k}", "name": n, "layout": v["layout"].upper() + "_LAYOUT",
+            "views": {"nodes": [{"id": view_id(n), "name": n, "layout": v["layout"].upper() + "_LAYOUT",
                                  "filter": v["filter"], "number": k + 1}
                                 for k, (n, v) in enumerate(state["views"].items())]}}
 
@@ -237,6 +447,7 @@ def project(state):
 def graphql(state, fields):
     """Answer one GraphQL query or mutation."""
     q = fields.pop("query", "")
+    fields.update(fields.pop("variables", None) or {})
     every = q + " " + " ".join(str(v) for v in fields.values())
     if re.match(r"\s*mutation", q):
         if "addProjectV2ItemById" in q:
@@ -258,6 +469,26 @@ def graphql(state, fields):
             state["items"][item.group(0)][field.group(1)] = option.group(0)
             state["writes"].append({"kind": "board", "repo": state["repo"], "number": int(item.group(0)[7:])})
             reply(state, {"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": item.group(0)}}}})
+        if re.search(r"\bupdateProjectV2Field\s*\(", q):
+            field = update_field(state, q, fields)
+            reply(state, {"data": {"updateProjectV2Field": {"projectV2Field": field}}})
+        if "updateProjectV2View" in q:
+            reply(state, {"data": {"updateProjectV2View": {"projectV2View": update_view(state, q, fields)}}})
+        if "deleteProjectV2Field" in q:
+            m = re.search(r"\bF_([A-Za-z]+)\b", every)
+            if not m or m.group(1) not in state["fields"]:
+                unsupported(state, "deleteProjectV2Field without a field of the board")
+            del state["fields"][m.group(1)]
+            write(state, "field_delete")
+            reply(state, {"data": {"deleteProjectV2Field": {"projectV2Field": {"id": m.group(0)}}}})
+        if "deleteProjectV2View" in q:
+            m = re.search(r"\bPVTV_[A-Za-z0-9_]+\b", every)
+            name = view_by_id(state, m.group(0)) if m else None
+            if name is None:
+                unsupported(state, "deleteProjectV2View without a view of the board")
+            del state["views"][name]
+            write(state, "view_delete")
+            reply(state, {"data": {"deleteProjectV2View": {"projectV2View": {"id": m.group(0)}}}})
         if "pinIssue" in q:
             m = re.search(r"\bI_(\d+)\b", every)
             if not m:
@@ -354,6 +585,46 @@ def issue_command(state, sub, args):
     unsupported(state, f"gh issue {sub}")
 
 
+def label_command(state, sub, args):
+    """Answer `gh label create|edit|delete NAME ...` the way gh does."""
+    flags, positional, i = {}, [], 0
+    short = {"-R": "--repo", "-c": "--color", "-d": "--description", "-n": "--name", "-f": "--force"}
+    while i < len(args):
+        a = short.get(args[i], args[i])
+        if a.startswith("--") and "=" in a:
+            k, _, v = a.partition("=")
+            flags[k] = v
+            i += 1
+        elif a in ("--yes", "--force"):
+            flags[a] = True
+            i += 1
+        elif a.startswith("--"):
+            flags[a] = args[i + 1] if i + 1 < len(args) else ""
+            i += 2
+        else:
+            positional.append(a)
+            i += 1
+    if flags.get("--repo") != state["repo"]:
+        unsupported(state, f"gh label {sub} on {flags.get('--repo')}, not --repo {state['repo']}")
+    if not positional:
+        unsupported(state, f"gh label {sub} without a name")
+    name = positional[0]
+    fields = {"color": flags.get("--color"), "description": flags.get("--description")}
+    if sub == "create":
+        if name in state["labels"] and flags.get("--force"):
+            set_label(state, name, fields)
+        else:
+            set_label(state, None, dict(fields, name=name))
+    elif sub == "edit":
+        set_label(state, name, dict(fields, new_name=flags.get("--name")))
+    elif sub == "delete":
+        delete_label(state, name)
+    else:
+        unsupported(state, f"gh label {sub}")
+    save(state)
+    sys.exit(0)
+
+
 def main(argv):
     """Log the call, then answer it from the state."""
     state = load()
@@ -370,6 +641,8 @@ def main(argv):
         if path.lstrip("/") == "graphql":
             graphql(state, fields)
         rest(state, method, path, fields)
+    if argv[:1] == ["label"] and len(argv) > 1:
+        label_command(state, argv[1], argv[2:])
     if argv[:1] == ["issue"] and len(argv) > 1:
         issue_command(state, argv[1], argv[2:])
     unsupported(state, " ".join(argv[:2]))
