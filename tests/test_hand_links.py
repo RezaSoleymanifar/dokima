@@ -568,16 +568,17 @@ def test_card_yml_starts_on_every_change_a_person_makes_and_on_a_schedule(record
 # 254.5 ---------------------------------------------------------------------------------------------------------------
 
 def test_the_scheduled_run_redraws_only_cards_whose_links_changed(tmp_path, record_property):
-    """The scheduled run rewrites only the cards whose links changed.
+    """The scheduled run rewrites the cards whose links changed, and nothing when nothing changed.
 
-    A person adds #252 blocked by #301 by hand: the scheduled run rewrites the cards of #252 and #301 only. The next
-    scheduled run, with nothing changed, writes nothing on GitHub at all. Proves 254.5."""
+    A person adds #252 blocked by #301 by hand: the scheduled run rewrites the cards of #252 and #301 (since #347 it
+    also draws any card that does not show its issue's state, such as an issue with no card yet). The next scheduled
+    run, with nothing changed, writes nothing on GitHub at all. Proves 254.5."""
     record_property("proves", "254.5")
     hub = HandHub(tmp_path)
     hub.set_links({N: [301]})
     hub.sweep("254.5")
     first = {w["issue"] for w in hub.writes("body")}
-    assert first == {N, 301}, f"254.5: the scheduled run should rewrite only #252 and #301, it rewrote {sorted(first)}"
+    assert {N, 301} <= first, f"254.5: the scheduled run should rewrite #252 and #301, it rewrote {sorted(first)}"
     count = len(hub.writes())
     hub.sweep("254.5")
     assert hub.writes()[count:] == [], f"254.5: a scheduled run with nothing changed wrote {hub.writes()[count:]}"
