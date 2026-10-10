@@ -632,7 +632,7 @@ def line_note(n, p, who=OWNER, action="created"):
                                            "repository": REPOSITORY}
 
 
-def checks_finished(n, p, workflow="done-whens"):
+def checks_finished(n, p, workflow="Acceptance criteria"):
     """A workflow_run event: the checks of PR p finished."""
     run = {"name": workflow, "head_sha": f"sha{p}", "head_branch": f"try/issue-{n}", "display_title": f"Issue {n}",
            "event": "pull_request_target", "status": "completed", "conclusion": "success",

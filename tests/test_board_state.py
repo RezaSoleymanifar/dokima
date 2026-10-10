@@ -108,7 +108,7 @@ def events_about(issue, pr):
                                  "review": {"state": "commented", "body": "Nice.", "user": {"login": STRANGER, "type": "User"}}}),
         ("pull_request_review_comment", {"action": "created", "pull_request": pr_payload(pr, issue),
                                          "comment": {"body": "Rename this.", "user": {"login": STRANGER, "type": "User"}}}),
-        ("workflow_run", {"action": "completed", "workflow_run": {"name": "done-whens", "pull_requests": [
+        ("workflow_run", {"action": "completed", "workflow_run": {"name": "Acceptance criteria", "pull_requests": [
             {"number": pr, "head": {"ref": f"try/issue-{issue}"}}]}}),
     ]
 
@@ -228,7 +228,7 @@ def test_the_board_runs_on_every_event_about_an_issue_or_its_pull_request(record
     """The board workflow runs on every event about an issue or its PR.
 
     Proves 331.1. Reads .github/workflows/board.yml's triggers: issues opened, edited, closed, reopened, labeled and unlabeled; a
-    comment created; a pull request opened, reopened, synchronized and closed; the done-whens checks completed; the
+    comment created; a pull request opened, reopened, synchronized and closed; the criteria checks completed; the
     schedule */15 * * * *; and, through a keyless workflow it runs after (#396), a review submitted and a line note created."""
     record_property("proves", "331.1")
     on = triggers(open(WORKFLOW).read())
