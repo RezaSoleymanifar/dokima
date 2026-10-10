@@ -12,8 +12,8 @@ What the code these tests run must do, as the plan pins it:
 - `agent.render(rec, pr=None, plan=None, earlier=None)`: `earlier` is the issue's records before this one, oldest
   first; an answer finds the raise it answers there by its ID. The workflow's record step,
   `python3 -m dokima.agent record ROLE STAGE OUT CHECK PASSED LOGS`, passes the records in `$PACK/in/` as `earlier`.
-- `card.render(repo, issue, found)`: the issue card shows every raise on the issue still waiting for an answer, from
-  every record whose hand-back passed; a raise leaves it once a passed record answers its ID, done or disagree.
+- `card.render(repo, issue, found)`: the issue card lists no raises since #455; they stay in the comment that raised
+  them, and tests/test_card_raises_status.py pins the card.
 - A rejected hand-back's raises are not drawn: its comment and the issue card stay as today, showing why it was
   rejected.
 
@@ -276,44 +276,6 @@ def answering(answers, passed=True):
                summary="Answered.", asks=[], raises=[], answers=answers)
 
 
-def test_the_issue_card_shows_every_raise_still_waiting_for_an_answer(record_property, env):
-    """The issue card keeps every raise from every run until it is answered.
-
-    Draws the issue card after a planner's raises; after a later run that raised nothing (they stay); after a worker's
-    raise (both runs' raises show); after a review that answered the planner's question and the worker's blocker and
-    raised four of its own (the two answered leave, the unanswered planner issue stays, the four join); and after a
-    rejected review that answered everything (nothing leaves, since a rejected hand-back is not used). Each time it
-    checks one Raised section with exactly the waiting raises, each line with its kind's icon and who it is for.
-    Last, a review answering every raise left, one done and one disagree, leaves the card with no Raised section.
-
-    Proves 299.1."""
-    record_property("proves", "299.1")
-    quiet = copy.deepcopy(NEW_WORKER)
-    quiet["handback"]["raises"] = []
-    every = [{"raise": "P17", "answer": "done", "why": "Settled."}, {"raise": "P18", "answer": "disagree", "why": "Not ours."}]
-    cases = (
-        ("after the planner's run", [NEW_PLANNER], [P_QUESTION, P_ISSUE]),
-        ("after a later run that raised nothing", [NEW_PLANNER, quiet], [P_QUESTION, P_ISSUE]),
-        ("after the planner's and the worker's runs", [NEW_PLANNER, NEW_WORKER], [P_QUESTION, P_ISSUE, W_BLOCKER]),
-        ("after a review that answered two raises and raised four", [NEW_PLANNER, NEW_WORKER, NEW_REVIEW],
-         [P_ISSUE, R_TO_WORKER, R_TO_PLANNER, R_QUESTION, R_ISSUE]),
-        ("after a rejected review that answered both", [NEW_PLANNER, answering(every, passed=False)], [P_QUESTION, P_ISSUE]),
-    )
-    for when, recs, raises in cases:
-        drawn = card.render(REPO, ISSUE, found_for(recs))
-        assert len(headings(drawn, "Raised:")) == 1, \
-            f"299.1: {when}, the issue card must have exactly one Raised section:\n{drawn}"
-        items = section(drawn, "Raised:")
-        assert len(items) == len(raises), (f"299.1: {when}, {len(raises)} raises are still waiting for an answer but the "
-                                           f"card's Raised section has {len(items)} lines:\n{drawn}")
-        for r in raises:
-            check_raise_line(item_with(items, r["text"]), r, "299.1", f"the issue card {when}")
-    drawn = card.render(REPO, ISSUE, found_for([NEW_PLANNER, answering(every)]))
-    assert not headings(drawn, "Raised:"), f"299.1: every raise has an answer, yet the card shows Raised:\n{drawn}"
-    for r in (P_QUESTION, P_ISSUE):
-        assert r["text"] not in drawn, f"299.1: the answered raise {r['text']!r} is still on the issue card:\n{drawn}"
-
-
 # 299.2: no ID on any card.
 
 def test_no_card_shows_a_raise_or_answer_id(record_property, env):
@@ -449,18 +411,16 @@ def test_a_record_posted_before_this_change_keeps_its_comment_exactly(record_pro
 
 
 def test_the_issue_card_draws_old_records_as_before_and_raised_only_for_newer(record_property, env):
-    """The issue card draws old records as before, and Raised only for newer ones.
+    """The issue card draws old records as before.
 
     Draws the issue card from old planner and review records and checks it is byte for byte today's card with no
-    Raised section; then adds a newer planner record with raises and checks the card now shows its Raised section.
+    Raised section.
 
     Proves 299.4."""
     record_property("proves", "299.4")
     drawn = card.render(REPO, ISSUE, found_for([OLD_PLANNER, OLD_REVIEW]))
     assert drawn == golden("old-issue-card.md"), f"299.4: the issue card of old records changed:\n{drawn}"
     assert not headings(drawn, "Raised:"), f"299.4: the issue card of old records shows Raised:\n{drawn}"
-    newer = card.render(REPO, ISSUE, found_for([OLD_PLANNER, OLD_REVIEW, NEW_PLANNER]))
-    assert headings(newer, "Raised:"), f"299.4: a newer record's raises are not drawn on the issue card:\n{newer}"
 
 
 # 299.5: what code detects keeps its own name, icon and place, and never appears in Raised.
@@ -558,8 +518,8 @@ def test_failing_tests_keep_their_marks_and_to_do_beside_raised(record_property,
 
     Draws the issue card of a pull request whose code review passed but whose criterion check and All tests failed,
     and checks it is byte for byte today's card, kept in tests/raised_goldens/, with the failed marks and Needs you:
-    See why not every check passed. Then draws it again with the review raising one issue, and checks the Raised
-    section holds that one raise and no failing check, while the failed marks and the to-do stay as they were.
+    See why not every check passed. Then draws it again with the review raising one issue, and checks the card
+    shows no Raised section and not that issue (#455), while the failed marks and the to-do stay as they were.
 
     Proves 299.5."""
     record_property("proves", "299.5")
@@ -567,12 +527,8 @@ def test_failing_tests_keep_their_marks_and_to_do_beside_raised(record_property,
     assert drawn == golden("failing-tests-issue-card.md"), f"299.5: the issue card of failing tests changed:\n{drawn}"
     raised = card.render(REPO, ISSUE, failing_found(rec("reviewer", "pr", verdict="approve", summary="The work holds.",
                                                         blockers=[], asks=[], raises=[R_ISSUE], answers=[])))
-    items = section(raised, "Raised:")
-    assert items is not None and len(items) == 1, \
-        f"299.5: the issue card must show the review's one raise in Raised beside the failing tests:\n{raised}"
-    text = "\n".join(items[0])
-    for f in ("A slow call returns a job id", card.ALL_TESTS, "not every check passed", "https://x/check/"):
-        assert f not in text, f"299.5: a failing test ({f}) is listed in the Raised section:\n{text}"
+    assert not headings(raised, "Raised:") and R_ISSUE["text"] not in raised, \
+        f"299.5: the issue card lists the review's raise beside the failing tests:\n{raised}"
     for kept in ("Needs you: See why not every check passed", '<a href="https://x/check/1">', '<a href="https://x/check/3">'):
         assert drawn.count(kept) == raised.count(kept) == 1, \
             f"299.5: {kept!r} no longer shows once beside the Raised section:\n{raised}"
@@ -584,7 +540,7 @@ def test_what_code_detects_never_enters_the_raised_section(record_property, env,
     """Rejected hand-backs, workflow file changes and three blocks in a row read as today.
 
     Checks the issue card of a rejected hand-back carrying a raise, after a planner that raised nothing, is byte for
-    byte today's, with its to-do and no Raised section, while the same card for a passed planner does show the raise;
+    byte today's, with its to-do and no Raised section;
     that autopilot refuses to merge a pull request that changes a workflow file with today's words, so the owner
     merges it; and every to-do the card can show, three blocks in a row among them, still reads as today.
 
@@ -604,5 +560,3 @@ def test_what_code_detects_never_enters_the_raised_section(record_property, env,
     assert agent.try_merge(REPO, 5) == (False, "it changes a workflow file (.github/workflows/ci.yml), and only the owner "
                                                "merges those"), "299.5: a workflow file change that needs you reads differently"
     assert card.TODO == TODO_TODAY, f"299.5: the owner's to-dos for what code detects changed: {card.TODO}"
-    assert headings(card.render(REPO, ISSUE, found_for([NEW_PLANNER])), "Raised:"), \
-        "299.5: the same issue card with the planner's hand-back passed shows no Raised section"
