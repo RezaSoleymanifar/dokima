@@ -308,7 +308,7 @@ def test_the_card_shows_no_field_icon_where_the_field_is_not_shown(record_proper
 
 
 ROLES = [("planner", "", "planner", "Planner"), ("worker", "", "worker", "Worker"),
-         ("reviewer", "plan", "plan review", "Reviewer (plan)"), ("reviewer", "pr", "code review", "Reviewer (pr)")]
+         ("reviewer", "plan", "plan review", "Plan review"), ("reviewer", "pr", "code review", "Code review")]
 
 
 @pytest.mark.parametrize("role,stage,field,head", ROLES)
@@ -409,15 +409,20 @@ def test_the_split_comment_shows_the_blocked_by_icon(record_property, env):
 @pytest.mark.parametrize("role,stage", [("planner", ""), ("worker", ""), ("reviewer", "plan"), ("reviewer", "pr"),
                                         ("split", "")])
 def test_every_run_comments_footnote_starts_with_the_stats_icon(record_property, env, role, stage):
-    """The stats footnote under every run comment starts with the stats icon.
+    """The stats of every run comment start with the stats icon.
 
-    Draws the comment of each kind of run and checks its last line, the footnote with model, time, turns, tokens and
-    cost, opens with the stats icon right after <sub>."""
+    Draws the comment of each kind of run and checks where its model, time, turns, tokens and cost sit opens with the
+    stats icon: the title of the Stats fold right above the full record (#236), or, for a record whose hand-back holds
+    a field retired by #300 and so keeps the comment it was posted with (#299), its footnote right after <sub>."""
     record_property("proves", "234.2")
     hb = {"planner": PLAN, "worker": WORK, "reviewer": REVIEW, "split": SPLIT}[role]
     body = agent.render(built(role, stage, hb))
+    head = body.split("<details><summary>Full record</summary>", 1)[0]
+    titles = re.findall(r"<summary>(.*?)</summary>", head, re.S)
     last = [l for l in body.splitlines() if l.strip()][-1]
-    assert last.startswith("<sub>" + img("stats")), f"234.2: the {role} comment's footnote does not open with the stats icon: {last}"
+    folded = bool(titles) and re.match(r"(?:<b>)?\s*" + re.escape(img("stats")), titles[-1]) and head.rstrip().endswith("</details>")
+    assert folded or last.startswith("<sub>" + img("stats")), \
+        f"234.2: the {role} comment's stats do not open with the stats icon, folded or in a footnote:\n{body}"
 
 
 # 234.3: no hand-back can choose, change or drop an icon

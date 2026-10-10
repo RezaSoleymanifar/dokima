@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 
-from dokima import agent, manifest, plan
+from dokima import agent, manifest, plan, retry
 
 PRIORITY = {"high": "High", "parked": "Parked"}  # highest first; Blocker comes from blocked-by links, not a label
 AUTOPILOT = "autopilot"
@@ -431,8 +431,10 @@ def main(argv=()):
     if not spec:
         print("No DOKIMA_BOARD set; nothing to sync.")
         return 0
+    event, payload = os.environ["GITHUB_EVENT_NAME"], json.load(open(os.environ["GITHUB_EVENT_PATH"]))
     try:
-        placed = sync(os.environ["GITHUB_EVENT_NAME"], json.load(open(os.environ["GITHUB_EVENT_PATH"])), spec, os.environ["GITHUB_REPOSITORY"])
+        # A run the empty API budget stopped runs once more, from scratch, after the budget resets.
+        placed = retry.once_more("the board run", lambda: sync(event, payload, spec, os.environ["GITHUB_REPOSITORY"]))
     except RuntimeError as e:
         print(f"::error::{e}")
         return 1
