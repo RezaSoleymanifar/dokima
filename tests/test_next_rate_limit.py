@@ -13,7 +13,9 @@ whose decision is to start the plan reviewer, against a fake GitHub that stands 
   is before the reset of the limit that ran out, or always, or never, as each test says.
 
 What the run decided is what `next` printed (the workflow reads it as NEXT) and the Next line it added to the
-record (OUT/comment.md, which the workflow posts on the issue); OUT/board.txt says whether the card shows Needs you.
+record (OUT/comment.md, which the workflow posts on the issue). Where the card lands is what the workflow's board step,
+`python3 -m dokima.agent board`, does with what the run left behind, run against a fake board as tests/test_failed_run_card.py
+does.
 So the fakes reach the code, `next` reads GitHub only through `dokima.agent.gh` and reads the clock and waits only
 through `time.time()` and `time.sleep()`.
 """
@@ -221,14 +223,48 @@ def test_a_failure_that_is_not_the_rate_limit_does_not_wait(record_property, tmp
     assert lines_with(text, SERVER_ERROR), f"417.2: the server error was not said on the record:\n{text[-800:]}"
 
 
+def board_step(tmp_path, out, failure):
+    """Run the workflow's board step on what `next` left in out.
+
+    The step is `python3 -m dokima.agent board 57 OUT`.
+
+    The board step runs right after `next` in agent.yml, in the same hour, so GitHub still refuses reads of the issue
+    (`gh issue view`, `gh pr view` and the issue's REST read) with failure's words; the board's own GraphQL calls are
+    answered by the fake board of tests/test_failed_run_card.py, which records every field set. Returns the step and
+    where the issue's card ended: (Status column, shows Needs you), or None when the step never touched it."""
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    import test_start as T
+    from test_failed_run_card import GH_EXTRA, board_state
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    gh, bin_ = tmp_path / "board-gh", tmp_path / "board-bin"
+    gh.mkdir()
+    bin_.mkdir()
+    refuse = (f'if a[:2] in (["issue", "view"], ["pr", "view"]) or (a[:1] == ["api"] and any(x.split("?")[0].strip("/") '
+              f'== "repos/o/r/issues/{N}" for x in a[1:])):\n'
+              f'    sys.stderr.write({failure + chr(10)!r})\n'
+              f'    sys.exit(1)\n')
+    anchor = 'if a[:2] == ["issue", "view"]:'
+    fake = T.FAKE_GH.replace(anchor, refuse + GH_EXTRA + anchor, 1)
+    (bin_ / "gh").write_text(fake.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
+    os.chmod(bin_ / "gh", 0o755)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_GH_DIR": str(gh), "PYTHONPATH": root,
+           "GITHUB_REPOSITORY": "o/r", "DOKIMA_BOARD": "o/1", "N": N, "OUT": str(out), "ROLE": "planner", "STAGE": ""}
+    p = subprocess.run([sys.executable, "-m", "dokima.agent", "board", N, str(out)], cwd=tmp_path, env=env,
+                       capture_output=True, text=True, timeout=60)
+    return p, board_state(str(gh / "board.jsonl")).get(f"issue-{N}")
+
+
 @pytest.mark.parametrize("failure", [GRAPHQL_LIMIT, SERVER_ERROR], ids=["rate-limit-again", "server-error"])
 def test_a_failed_decision_stops_for_the_owner(record_property, tmp_path, monkeypatch, capsys, failure):
-    """A decision that still fails stops for the owner, with Needs you.
+    """A decision that still fails stops for the owner, and its card shows Needs you.
 
     Proves 417.3.
     GitHub refuses every call for good, with its rate-limit words (so the try after the reset fails too) or a server
-    error. The run must start nothing, end the record with one Next line mentioning the owner, and place the card
-    with Needs you."""
+    error. The planner's run must start nothing and end the record with one Next line mentioning the owner. Then the
+    workflow's board step runs on what the run left behind, with GitHub still refusing reads of the issue, and the
+    issue's card must end in Plan, the planner's column, showing Needs you. A run that only writes 'needs' in its
+    board line, so the board step tries to rebuild the card from GitHub and leaves it as it was, fails here."""
     record_property("proves", "417.3")
     printed, text, board, hub, escaped = decide(tmp_path, monkeypatch, capsys, failure, until=float("inf"))
     assert escaped is None, f"417.3: the error escaped the step, so the record has no Next line: {escaped}"
@@ -236,7 +272,10 @@ def test_a_failed_decision_stops_for_the_owner(record_property, tmp_path, monkey
     nexts = next_lines(text)
     assert len(nexts) == 1 and nexts[0].startswith(f"**Next:** @{OWNER}"), \
         f"417.3: a failed decision's Next lines do not mention the owner once: {nexts!r}"
-    assert board.endswith(" needs"), f"417.3: a failed decision's card does not show Needs you: {board!r}"
+    p, card = board_step(tmp_path, tmp_path / "out", failure)
+    assert card == ("Plan", True), (f"417.3: after a failed decision, with GitHub still refusing, the board step left "
+                                    f"the issue's card at {card} (column, Needs you), not ('Plan', True):\n"
+                                    f"{p.stdout}{p.stderr}")
 
 
 def test_a_rate_limit_that_does_not_lift_waits_once_and_never_hangs(record_property, tmp_path, monkeypatch, capsys):
