@@ -220,10 +220,11 @@ def can_move(event, p):
             return action != "synchronize"
         if event == "workflow_run":
             run = p["workflow_run"]
-            if run["name"] == "reviews":
+            workflow = run["name"]
+            if workflow == "reviews":
                 return not (run["event"] in ("pull_request_review", "pull_request_review_comment")
                             and run["display_title"].endswith(QUIET))
-            return run["name"] != "done-whens"
+            return workflow != "done-whens"
     except (KeyError, TypeError, AttributeError):
         return True
     return True

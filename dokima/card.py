@@ -827,7 +827,7 @@ def main():
 
 
 def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_only=True):
-    """Write the card at the top of the issue and its PR, where it changed (#380).
+    """Write the card on the issue and its PR, only where it changed (#380).
 
     Each is written only when it differs from what it shows. Returns the blocking links and loop its card showed before and shows now. With `changed_only` false, a card that
     already shows what it would be drawn as is rewritten anyway.
