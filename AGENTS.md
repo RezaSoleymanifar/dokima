@@ -94,7 +94,7 @@ Example: the owner says in chat that a card's Next line should name the owner. O
 
 ## The issue body
 
-The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, open, exactly as written; only a split's sub-issue, whose text code quotes from the parent's approved plan, keeps it folded under Original issue. An ask folded before this opens on its next redraw. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses, leaves the body as it was and says why in a comment on the issue. A fresh ask gets the marker on its first redraw, with its whole body kept below it. The card and the planner both save through `dokima/body.py`.
+The body has two parts split by a fixed marker. Above it, the current-state card, redrawn by code every round. Below it, the owner's original ask, exactly as written, in a fold titled Original issue, closed by default; a split's sub-issue, whose text code quotes from the parent's approved plan, is folded the same way. An ask shown open before this folds on its next redraw. The pull request carries the same Original issue fold between its card and its Closes line, where a `#` right after a closing keyword in the owner's words is written `&#35;`, so only the Closes line closes an issue. Code only writes above the marker and checks the owner's part is unchanged before saving, or refuses, leaves the body as it was and says why in a comment on the issue. A fresh ask gets the marker on its first redraw, with its whole body kept below it. The card and the planner both save through `dokima/body.py`.
 
 ## Agent records and cards
 
