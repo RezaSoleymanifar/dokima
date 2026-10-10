@@ -96,15 +96,15 @@ def test_the_open_ask_stays_byte_for_byte_after_many_redraws(record_property):
 def test_the_card_shows_the_owners_ask_open(record_property, monkeypatch, github):
     """When the card is drawn on an issue the owner wrote, their text shows open below it.
 
-    Runs the card's main on a fresh owner-written issue, then again on what it saved, and checks both bodies have the
-    card on top and the owner's text open below the marker, byte for byte. The second run may save nothing when the
-    card has not changed; the body it leaves is then the first one."""
+    Runs the card's main on a fresh owner-written issue, then again on what it saved, and checks both saved bodies
+    have the card on top and the owner's text open below the marker, byte for byte."""
     record_property("proves", "237.1")
     saved = run_card(monkeypatch, github, TRICKY)
     assert saved is not None, "237.1: the card saved nothing on the issue"
     assert saved.startswith(plan.CARD_START), "237.1: the card is not at the top of the issue"
     assert_open("237.1", saved, TRICKY)
-    again = run_card(monkeypatch, github, saved) or saved
+    again = run_card(monkeypatch, github, saved)
+    assert again is not None, "237.1: the second card run saved nothing"
     assert_open("237.1", again, TRICKY)
     assert below(again) == below(saved), "237.1: the second card run changed the part below the marker"
 

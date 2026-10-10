@@ -8,10 +8,14 @@ check, though none of those can move a card. These tests hold the fix to the own
   also writes `run=true` or `run=false` to GITHUB_OUTPUT: false exactly for an event that cannot change a card's
   column or pill, true for every other one (and for any event it cannot read). board.yml's sync job runs only on
   true, so a skipped event spends no GraphQL call at all.
+- A review or line note reaches board.yml only as reviews.yml's run completing (#418), which carries no summary, so
+  the step reads it from the run's event and name: reviews.yml names its run from the review, and a run named any
+  other way (a pull request whose own reviews.yml is older) still runs the update.
 - Events about one issue that arrive within a minute become one update: board.yml waits one minute in a queue of
   the issue's own that a newer event cancels, and only then syncs.
 - The 15-minute sweep stays, so a card a skipped event could have put right is put right there.
-- The card is saved on the issue only when what code draws differs from what the issue shows.
+- A card run saves the card on the issue, and writes it on the pull request, only when what code draws differs
+  from what each already shows.
 - Skipping changes nothing: on every history played here, today's board update on a skipped event would have left
   every card exactly where it was.
 
@@ -32,12 +36,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import test_board_state as tbs  # noqa: E402
 import test_needs_you as tny  # noqa: E402
 from test_agent import GOOD_WORK, rec  # noqa: E402
-from test_body import github, run_card  # noqa: E402,F401  (github is the fixture run_card needs)
+from test_body import text_of  # noqa: E402
 from test_start import Ctx, condition, evaluate, fill, load_yaml  # noqa: E402
-from dokima import agent, board, body, plan  # noqa: E402
+from dokima import agent, board, body, card, plan  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BOARD_YML = os.path.join(ROOT, ".github", "workflows", "board.yml")
+REVIEWS_YML = os.path.join(ROOT, ".github", "workflows", "reviews.yml")
+PR_TITLE = "The board is updated only when it can change"
 SPEC, REPO, OWNER, LABEL = tny.SPEC, tny.REPO, tny.OWNER, tny.LABEL
 NEEDS, AUTO = tny.NEEDS, tny.AUTO
 BOT_LOGIN = f"{agent.BOT}[bot]"
@@ -73,7 +79,7 @@ def comment_on_pr(pr, issue, words, login=OWNER, kind="User"):
 
 def pr_payload(pr, issue, merged=False, state="open"):
     """A pull request as event payloads carry it, built for `issue` from its try branch."""
-    return {"number": pr, "state": state, "merged": merged, "body": f"Closes #{issue}", "labels": [],
+    return {"number": pr, "title": PR_TITLE, "state": state, "merged": merged, "body": f"Closes #{issue}", "labels": [],
             "head": {"ref": f"try/issue-{issue}"}}
 
 
@@ -82,16 +88,37 @@ def pr_event(action, pr, issue, merged=False):
     return {"action": action, "pull_request": pr_payload(pr, issue, merged, "closed" if action == "closed" else "open")}
 
 
+def reviews_run(gh_event, pr, issue, title):
+    """reviews.yml's run for a review or line note on `pr`, named `title`."""
+    return ("workflow_run", {"action": "completed", "workflow_run": {
+        "name": "reviews", "event": gh_event, "display_title": title, "status": "completed", "conclusion": "success",
+        "pull_requests": [{"number": pr, "head": {"ref": f"try/issue-{issue}"}}]}})
+
+
+def through_reviews(gh_event, payload):
+    """What board.yml receives for a review or line note, named as GitHub names it.
+
+    A review or line note reaches board.yml only as reviews.yml's run completing (#418), which carries no summary.
+    The run's name is reviews.yml's `run-name:`, filled in from the review event the way GitHub fills it, or the pull
+    request's title when reviews.yml names no run (or, on a branch from before #418, does not exist)."""
+    name = load_yaml(open(REVIEWS_YML).read()).get("run-name") if os.path.exists(REVIEWS_YML) else None
+    ctx = Ctx({"github": Ctx({"event_name": gh_event, "event": payload, "repository": REPO})})
+    title = fill(name, ctx, {"failed": False}) if name else payload["pull_request"]["title"]
+    pr = payload["pull_request"]
+    return reviews_run(gh_event, pr["number"], int(pr["head"]["ref"].rsplit("-", 1)[1]), title)
+
+
 def review(pr, issue, state, words, login=OWNER, kind="User"):
-    """A pull request review submitted with this state and summary."""
-    return {"action": "submitted", "pull_request": pr_payload(pr, issue),
-            "review": {"state": state, "body": words, "user": {"login": login, "type": kind}}}
+    """A pull request review submitted with this state and summary, as it reaches board.yml."""
+    return through_reviews("pull_request_review", {"action": "submitted", "pull_request": pr_payload(pr, issue),
+                                                   "review": {"state": state, "body": words, "user": {"login": login, "type": kind}}})
 
 
 def line_note(pr, issue, words):
-    """A line note created on the pull request's diff."""
-    return {"action": "created", "pull_request": pr_payload(pr, issue),
-            "comment": {"body": words, "path": "dokima/board.py", "line": 3, "user": {"login": OWNER, "type": "User"}}}
+    """A line note created on the pull request's diff, as it reaches board.yml."""
+    return through_reviews("pull_request_review_comment", {
+        "action": "created", "pull_request": pr_payload(pr, issue),
+        "comment": {"body": words, "path": "dokima/board.py", "line": 3, "user": {"login": OWNER, "type": "User"}}})
 
 
 def checks(pr, issue, conclusion):
@@ -142,10 +169,10 @@ def skipped_events(n=57, pr=60):
         "a comment on the pull request": ("issue_comment", comment_on_pr(pr, n, "A note on the diff.", STRANGER)),
         "a bot comment that is no record, run card or Autopilot line": (
             "issue_comment", comment_on_issue(n, "**Issue text not updated:** the owner's part would change.", BOT_LOGIN, "Bot")),
-        "a line note": ("pull_request_review_comment", line_note(pr, n, "Rename this.")),
-        "a review that only comments": ("pull_request_review", review(pr, n, "commented", "Nice.")),
-        "an Approve with no summary": ("pull_request_review", review(pr, n, "approved", "")),
-        "an Approve with a summary that is no command": ("pull_request_review", review(pr, n, "approved", "Looks good.")),
+        "a line note": line_note(pr, n, "Rename this."),
+        "a review that only comments": review(pr, n, "commented", "Nice."),
+        "an Approve with no summary": review(pr, n, "approved", ""),
+        "an Approve with a summary that is no command": review(pr, n, "approved", "Looks good."),
         "new commits on the pull request": ("pull_request_target", pr_event("synchronize", pr, n)),
         "the done-whens checks passing": ("workflow_run", checks(pr, n, "success")),
         "the done-whens checks failing": ("workflow_run", checks(pr, n, "failure")),
@@ -175,8 +202,8 @@ def run_events(n=57, pr=60):
         "a record the bot posts on the issue": ("issue_comment", comment_on_issue(n, record_text(worker), BOT_LOGIN, "Bot")),
         "a record the bot posts on the pull request": ("issue_comment", comment_on_pr(pr, n, record_text(worker), BOT_LOGIN, "Bot")),
         "a run card the bot puts up": ("issue_comment", comment_on_issue(n, live_card(), BOT_LOGIN, "Bot")),
-        "a review asking for changes with /work": ("pull_request_review", review(pr, n, "changes_requested", "/work Fix the name.")),
-        "a review the bot submits with its record": ("pull_request_review", review(pr, n, "commented", record_text(worker), BOT_LOGIN, "Bot")),
+        "a review asking for changes with /work": review(pr, n, "changes_requested", "/work Fix the name."),
+        "a review the bot submits with its record": review(pr, n, "commented", record_text(worker), BOT_LOGIN, "Bot"),
         "the pull request opened": ("pull_request_target", pr_event("opened", pr, n)),
         "the pull request reopened": ("pull_request_target", pr_event("reopened", pr, n)),
         "the pull request merged": ("pull_request_target", pr_event("closed", pr, n, merged=True)),
@@ -354,11 +381,15 @@ def test_events_that_can_move_a_card_still_run_the_board_update(record_property,
 def test_an_event_the_queue_step_cannot_read_still_runs_the_board_update(record_property, monkeypatch, tmp_path):
     """An event the queue step cannot read still runs the board update.
 
-    A comment event with no comment in it, a review with no review, an edit with no changes field and a label event
-    with no label must each write run=true and exit 0, so a payload the step does not understand never hides an update. Proves 380.1."""
+    A comment event with no comment in it, an edit with no changes field, a label event with no label, a review whose
+    reviews.yml run is named only by the pull request's title (as a pull request whose own reviews.yml names no run
+    sends it) and a reviews.yml run that names no event must each write run=true and exit 0, so a payload the step
+    does not understand never hides an update. Proves 380.1."""
     record_property("proves", "380.1")
     odd = {"a comment event with no comment": ("issue_comment", {"action": "created", "issue": {"number": 57}}),
-           "a review event with no review": ("pull_request_review", {"action": "submitted", "pull_request": pr_payload(60, 57)}),
+           "a review whose run is named by the pull request's title": reviews_run("pull_request_review", 60, 57, PR_TITLE),
+           "a reviews run that names no event": ("workflow_run", {"action": "completed", "workflow_run": {
+               "name": "reviews", "pull_requests": [{"number": 60, "head": {"ref": "try/issue-57"}}]}}),
            "an edit with no changes field": ("issues", {"action": "edited", "issue": {"number": 57, "labels": []}}),
            "a label event with no label": ("issues", {"action": "labeled", "issue": {"number": 57, "labels": []}})}
     skipped = [what for what, (e, p) in odd.items() if not runs(e, p, monkeypatch, tmp_path, "380.1")]
@@ -401,7 +432,7 @@ def test_events_about_one_issue_wait_a_minute_in_a_queue_of_their_own_that_a_new
         for what, (e, p) in {"/plan": ("issue_comment", comment_on_issue(n, "/plan Again.")),
                              "a record": ("issue_comment", comment_on_issue(n, record_text(worker), BOT_LOGIN, "Bot")),
                              "PR opened": ("pull_request_target", pr_event("opened", pr, n)),
-                             "a /work review": ("pull_request_review", review(pr, n, "changes_requested", "/work"))}.items():
+                             "a /work review": review(pr, n, "changes_requested", "/work")}.items():
             got = play(e, p, monkeypatch, tmp_path, "380.2")
             assert got[j]["ran"], f"380.2: on {what} about #{n} the {j!r} job did not run, so the update does not wait"
             assert got[j]["cancels"], f"380.2: on {what} about #{n} the {j!r} job does not cancel the one waiting before it"
@@ -482,52 +513,99 @@ def test_a_card_a_skipped_event_left_wrong_is_put_right_by_the_next_sweep(record
 
 
 # =================================================================================================================
-# 380.4: a card is written on the issue only when what it shows changed
+# 380.4: a card is written on the issue and its pull request only when what it shows changed
 
-CARD_A = "<!-- dokima-card -->\n**Plan**\n<!-- /dokima-card -->"
-CARD_B = "<!-- dokima-card -->\n**Work**\n<!-- /dokima-card -->"
+STALE = "<!-- dokima-card -->\n**Backlog**\n<!-- /dokima-card -->"
 
 
-class Recorder:
-    """Stands in for gh: records every call, answers nothing."""
+class Writes:
+    """Stands in for gh: records each write to the issue, its PR or a comment."""
 
     def __init__(self):
-        self.calls = []
+        self.issue, self.pr, self.comments = [], [], []
 
     def __call__(self, *args, **kw):
-        self.calls.append(([str(a) for a in args], kw.get("input")))
-        return ""
+        args = [str(a) for a in args]
+        text = text_of(args, kw)
+        if "comment" in args or any(a.endswith("/comments") for a in args):
+            self.comments.append(text)
+        elif any(a.endswith("pulls/60") for a in args) and ("PATCH" in args or "edit" in args):
+            self.pr.append(text)
+        elif ("PATCH" in args or "edit" in args) and any(a == "57" or a.endswith("issues/57") for a in args):
+            self.issue.append(text)
+        return "{}"
 
 
-def test_an_issue_already_showing_its_card_is_not_saved_again(record_property, monkeypatch):
-    """An issue showing its card is not saved again; a changed card is saved once.
+def card_run(monkeypatch, tmp_path, issue_text, pr_text):
+    """Run the card for #57 and PR #60 as card.yml does on an event.
 
-    Saves the same card on #57 whose text already holds it: no call reaches GitHub at all (no edit, no comment). Then
-    saves a different card: exactly one edit of #57, carrying the new card above the marker and the owner's ask
-    unchanged below it. Proves 380.4."""
-    record_property("proves", "380.4")
-    fake = Recorder()
+    Returns what it wrote."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REPO", REPO)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    fake = Writes()
+    monkeypatch.setattr(card, "gh", fake)
     monkeypatch.setattr(body, "gh", fake)
-    current = body.redraw(ASK, CARD_A)
-    body.save(REPO, 57, current, CARD_A)
-    assert fake.calls == [], f"380.4: the issue already showed this card, yet it was saved again: {fake.calls}"
-    body.save(REPO, 57, current, CARD_B)
-    edits = [(a, i) for a, i in fake.calls if a[:2] == ["issue", "edit"]]
-    assert len(fake.calls) == 1 and len(edits) == 1, f"380.4: a changed card made {fake.calls}, not one edit of the issue"
-    assert edits[0][1] == body.redraw(current, CARD_B), "380.4: the changed card was not saved as drawn above the owner's ask"
+    issue = {"number": 57, "title": "t", "url": f"https://github.com/{REPO}/issues/57", "approved_at": None,
+             "changes": [], "plan": plan.parse(issue_text), "current_body": issue_text, "body": issue_text}
+    pr = {"number": 60, "title": PR_TITLE, "state": "open", "body": pr_text, "head": {"sha": "s60", "ref": "try/issue-57"}}
+    planned = {"role": "planner", "stage": None, "check": {"passed": True}, "run": "https://github.com/o/r/actions/runs/1",
+               "handback": {"kind": "user_story", "user_story": "Owners see a card.", "non_functional": [],
+                            "acceptance_criteria": [{"text": "first thing works", "source": issue["url"]}],
+                            "scope": ["dokima/card.py"], "out_of_scope": [], "tests": {}}}
+    found = {"recs": [planned], "pr": pr, "check_runs": [], "reviews": [], "owners": set(), "tests": {}, "worker": None}
+    monkeypatch.setattr(card, "find_work", lambda repo: (57, 60))
+    monkeypatch.setattr(card, "latest_worker_run", lambda repo, n: None, raising=False)
+    monkeypatch.setattr(plan, "fetch_issue", lambda repo, n: issue)
+    monkeypatch.setattr(card, "gather", lambda repo, n, p: found)
+    monkeypatch.setattr(card, "github_links", lambda repo, n, cache: {"blocked_by": [], "blocks": [], "loop": []})
+    monkeypatch.setattr(card, "their_links", lambda *a, **k: {"relates_to": []})
+    try:
+        card.main()
+    except SystemExit:
+        pass
+    return fake
 
 
-def test_a_card_run_on_an_issue_already_showing_its_card_writes_nothing(record_property, monkeypatch, github):
-    """A card run on an issue whose card is current writes nothing to it.
+def drawn(monkeypatch, tmp_path):
+    """The issue and PR bodies a card run saves from a fresh ask."""
+    first = card_run(monkeypatch, tmp_path, ASK, "Closes #57")
+    assert len(first.issue) == 1 and len(first.pr) == 1, \
+        f"380.4: test setup: the first card run wrote {len(first.issue)} issue and {len(first.pr)} PR cards, not one each"
+    return first.issue[0], first.pr[0]
 
-    Runs the card on a fresh ask: it saves the card above the ask. Runs it again on what it saved: nothing is saved
-    and no comment is posted, because the card it draws is the one the issue already shows. Proves 380.4."""
+
+def test_a_card_run_on_cards_already_current_writes_nothing(record_property, monkeypatch, tmp_path):
+    """A card run on cards already current writes nothing to the issue or PR.
+
+    Runs the card, as card.yml does on an event, on #57 and its PR #60, then again on the bodies it saved: the second
+    run must not edit the issue, must not write the PR's description and must post no comment. Proves 380.4."""
     record_property("proves", "380.4")
-    saved = run_card(monkeypatch, github, ASK)
-    assert saved is not None, "380.4: the first card run on a fresh ask saved nothing"
-    again = run_card(monkeypatch, github, saved)
-    assert again is None, "380.4: the card run saved the issue again though its card had not changed"
-    assert not github.comments, f"380.4: the card run posted a comment: {github.comments}"
+    issue_text, pr_text = drawn(monkeypatch, tmp_path)
+    again = card_run(monkeypatch, tmp_path, issue_text, pr_text)
+    assert not again.issue, "380.4: the card run saved the issue again though its card had not changed"
+    assert not again.pr, "380.4: the card run wrote the pull request's card again though it had not changed"
+    assert not again.comments, f"380.4: the card run posted a comment: {again.comments}"
+
+
+def test_a_changed_card_is_saved_once_where_it_changed(record_property, monkeypatch, tmp_path):
+    """A changed card is saved once, on the issue or PR where it changed.
+
+    With #57 showing an older card and PR #60 current, the card run edits #57 once, to the card drawn now above the
+    owner's ask, and leaves the PR alone; with the PR older and #57 current, it writes the PR once and leaves #57
+    alone; with both older, it writes each once. Proves 380.4."""
+    record_property("proves", "380.4")
+    issue_text, pr_text = drawn(monkeypatch, tmp_path)
+    old_issue = body.redraw(issue_text, STALE)
+    for what, (i, p), want in (("only the issue's card older", (old_issue, pr_text), (1, 0)),
+                               ("only the PR's card older", (issue_text, "Closes #57"), (0, 1)),
+                               ("both cards older", (old_issue, "Closes #57"), (1, 1))):
+        got = card_run(monkeypatch, tmp_path, i, p)
+        assert (len(got.issue), len(got.pr)) == want, \
+            f"380.4: with {what}, the card run wrote {len(got.issue)} issue and {len(got.pr)} PR cards, not {want}"
+        assert all(t == issue_text for t in got.issue), f"380.4: with {what}, the issue was not saved as drawn now"
+        assert all(t == pr_text for t in got.pr), f"380.4: with {what}, the PR's card was not written as drawn now"
+        assert body.ask(issue_text) == ASK, "380.4: the owner's ask changed"
 
 
 # =================================================================================================================
