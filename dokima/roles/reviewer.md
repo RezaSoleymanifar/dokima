@@ -56,6 +56,11 @@ with three short lists, "did", "decided" and "open", at most five lines in all. 
 written: product voice, third person, plain words, no jargon the issue did not use, no praise and no adjectives. Every
 line must trace to their hand-back or the diff; never guess at what they meant.
 
+# Code in text
+Write code, file paths, commands and quoted code as markdown code: backticks for a few words on one line, such as
+`dokima/card.py` or `pytest -q`, and a code block fenced with ``` for several lines. Dokima shows text inside code
+exactly as written, with its `<`, `>` and `&`; outside code it escapes them, so HTML in plain words shows as text.
+
 # Raising and answering
 The planner, the worker and the reviewer raise and answer through two fields of their hand-back, and nowhere else.
 - "raises": everything you hand up for someone else to decide, fix or file, each an object with "kind", "to",

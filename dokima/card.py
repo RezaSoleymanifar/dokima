@@ -217,7 +217,34 @@ def fold(title, lines):
 
 
 def escape(text):
-    return html.escape(text or "", quote=False)
+    """Agent text escaped outside code, so its HTML shows as text; code stays as written.
+
+    Code is a fenced block (a line opening with ``` up to the next line opening with ```) or a code span (a run of
+    backticks closed by a run of exactly as many), as GitHub reads them; a run with no close opens nothing."""
+    lines, out, plain, i = (text or "").splitlines(keepends=True), [], [], 0
+    while i < len(lines):
+        close = next((j for j in range(i + 1, len(lines)) if lines[j].startswith("```")), None) \
+            if lines[i].startswith("```") else None
+        if close is None:
+            plain.append(lines[i])
+            i += 1
+            continue
+        out += [escape_spans("".join(plain)), *lines[i:close + 1]]
+        plain, i = [], close + 1
+    return "".join(out) + escape_spans("".join(plain))
+
+
+def escape_spans(text):
+    """Text with no fenced block, escaped outside its code spans."""
+    out, i = [], 0
+    for m in re.finditer(r"`+", text):
+        if m.start() < i:
+            continue
+        end = re.compile(r"(?<!`)" + "`" * len(m.group()) + r"(?!`)").search(text, m.end())
+        if end:
+            out += [html.escape(text[i:m.start()], quote=False), text[m.start():end.end()]]
+            i = end.end()
+    return "".join(out) + html.escape(text[i:], quote=False)
 
 
 RAISE_ICON = {"question": "question", "blocker": "blocker", "issue": "issue found"}

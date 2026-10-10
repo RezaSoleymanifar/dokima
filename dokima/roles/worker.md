@@ -39,6 +39,11 @@ over older ones; when two truly conflict, follow the newer and say so. Answer ev
 "answers" (done or disagree, with why); code rejects a hand-back that skips one. Never redo or undo what an earlier
 round settled unless newer words ask you to.
 
+# Code in text
+Write code, file paths, commands and quoted code as markdown code: backticks for a few words on one line, such as
+`dokima/card.py` or `pytest -q`, and a code block fenced with ``` for several lines. Dokima shows text inside code
+exactly as written, with its `<`, `>` and `&`; outside code it escapes them, so HTML in plain words shows as text.
+
 # Raising and answering
 The planner, the worker and the reviewer raise and answer through two fields of their hand-back, and nowhere else.
 - "raises": everything you hand up for someone else to decide, fix or file, each an object with "kind", "to",

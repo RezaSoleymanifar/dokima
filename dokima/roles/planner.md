@@ -108,6 +108,11 @@ List every promise of the issue, then give each to exactly one child. Each child
 context (what you found, so its planner does not redo your research), its criteria, the promises it keeps, and which
 siblings must merge first. Code files the children as sub-issues with blocked-by links.
 
+# Code in text
+Write code, file paths, commands and quoted code as markdown code: backticks for a few words on one line, such as
+`dokima/card.py` or `pytest -q`, and a code block fenced with ``` for several lines. Dokima shows text inside code
+exactly as written, with its `<`, `>` and `&`; outside code it escapes them, so HTML in plain words shows as text.
+
 # Raising and answering
 The planner, the worker and the reviewer raise and answer through two fields of their hand-back, and nowhere else.
 - "raises": everything you hand up for someone else to decide, fix or file, each an object with "kind", "to",
