@@ -174,3 +174,60 @@ def test_a_redraw_that_would_change_the_owners_part_is_still_refused(record_prop
     assert github.saves == [], "454.5: the body was written although the owner's words would change"
     assert len(github.comments) == 1 and str(refused.value) in (github.comments[0][1] or ""), \
         f"454.5: the refusal was not said once on the issue: {github.comments}"
+
+
+def icon(alt):
+    """One card icon, as dokima/card.py draws it, with its alt text."""
+    return f'<img src="https://example.invalid/{alt}.svg" width="16" height="16" align="absmiddle" alt="{alt}">'
+
+
+def done_line(review):
+    """A Definition of Done line whose Code review shows `review`."""
+    return (f"**Definition of Done:** {icon('passed')} All tests · {icon(review)} {icon('code review')} Code review · "
+            f"{icon('none')} {icon('owner approval')} Owner approval")
+
+
+def review_card(done=""):
+    """A card at Review, holding `done` as its last line when given, like a PR card."""
+    return (f"{plan.CARD_START}\n{icon('review')} **Review**\n\n**User story:** Owners see a card.\n\n"
+            + (done + "\n\n" if done else "") + plan.CARD_END)
+
+
+def planned_issue(review, ask="My ask."):
+    """A planned issue saved the #454 way, its Definition of Done last below the fold."""
+    return (review_card() + "\n\n" + body.MARKER + "\n" + FOLD_HEAD + "\n\n" + ask + "\n\n</details>\n\n"
+            + body.DONE + "\n" + done_line(review))
+
+
+def test_the_play_through_reads_code_review_below_the_fold(record_property):
+    """The play-through reads Code review's state below a planned issue's Original issue fold.
+
+    Proves 454.6.
+
+    Gives dokima/playthrough.py an issue body laid out the #454 way (the card, the Original issue fold, then the
+    Definition of Done last) beside a pull request whose card still holds its Definition of Done, and checks shown()
+    reads Code review passed and running from the issue and the pull request alike, and that judge() passes the code
+    review record step on passed and fails it saying Code review running on running. An owner's ask that quotes its own
+    Definition of Done line saying passed must not be read in place of the card's own line saying running."""
+    record_property("proves", "454.6")
+    import importlib
+    p = importlib.import_module("dokima.playthrough")
+    for review in ("passed", "running"):
+        issue, pr = planned_issue(review), review_card(done_line(review))
+        got = p.shown(issue)
+        assert got["stage"] == "Review" and got["review"] == review, \
+            (f"454.6: on a planned issue whose Definition of Done sits below the Original issue fold, the play-through "
+             f"should read Code review {review}, not {got}")
+        got = p.shown(pr)
+        assert got["review"] == review, f"454.6: the pull request's card should still read Code review {review}, not {got}"
+    line = p.judge("code review record posted", planned_issue("passed"), review_card(done_line("passed")))
+    assert line == "PASS: code review record posted", \
+        f"454.6: with Code review passed below the issue's fold and in the PR card, the step should pass, not {line!r}"
+    line = p.judge("code review record posted", planned_issue("running"), review_card(done_line("passed")))
+    assert line.startswith("FAIL: code review record posted") and "issue card showed Review, Code review running" in line, \
+        f"454.6: with Code review running below the issue's fold, the step should fail naming the issue card, not {line!r}"
+    ask = ("<!-- dokima-card -->\n<!-- /dokima-card -->\n\nMy ask quotes an old card:\n\n" + done_line("passed"))
+    got = p.shown(planned_issue("running", ask))
+    assert got["review"] == "running", \
+        (f"454.6: the play-through read the owner's quoted Definition of Done instead of the card's own last line "
+         f"below the fold: {got}")
