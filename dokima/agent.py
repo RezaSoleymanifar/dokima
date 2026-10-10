@@ -441,6 +441,8 @@ def live_card(role, stage, state, ahead=None):
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
     head = role_icon(repo, role, stage) + f"**{head}**"
+    # The card and card.yml still find a code review running by its old name, kept where the owner never reads it.
+    live = LIVE + ("\n<!-- **Reviewer (pr)** -->" if role == "reviewer" and stage == "pr" else "")
     if state in ("queued", "handoff"):
         if ahead:
             line = f"{icon(repo, 'queued')} {head} · waiting for [this run]({ahead})"
@@ -449,12 +451,12 @@ def live_card(role, stage, state, ahead=None):
         else:
             line = f"{icon(repo, 'queued')} {head} · queued"
             what = "Queued: the run starts in a moment. This card says working when the agent starts, then becomes the run's record."
-        return "\n".join([LIVE, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
+        return "\n".join([live, line, "", what] + ([] if state == "handoff" else ["", f"<sub>[run]({run})</sub>"])) + "\n"
     if state == "working":
         line = f"{icon(repo, 'running')} {head} · agent working since {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC"
         what = (f"The agent is working; [watch it live]({run}) on GitHub. This card says checking when the agent ends, "
                 "then becomes the run's record.")
-        return "\n".join([LIVE, line, "", what]) + "\n"
+        return "\n".join([live, line, "", what]) + "\n"
     if state == "checking":
         line = f"{icon(repo, 'running')} {head} · checking"
         what = "The agent has ended and code is checking its hand-back. This card becomes the run's record next."
@@ -462,7 +464,7 @@ def live_card(role, stage, state, ahead=None):
         line = f"{icon(repo, 'queued')} {head} · setting up"
         what = ("The machine is setting up: the branch, the starting pack and the tools. This card says working when "
                 "the agent starts, then becomes the run's record.")
-    return "\n".join([LIVE, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
+    return "\n".join([live, line, "", what, "", f"<sub>[run]({run})</sub>"]) + "\n"
 
 
 GOING = {"queued", "in_progress", "waiting", "requested", "pending"}
@@ -512,7 +514,7 @@ def role_icon(repo, role, stage):
     return f"{field_icon(repo, field)} " if field else ""
 
 
-HEADS = {"planner": "The planner", "worker": "The worker", "split": "Code"}
+HEADS = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker", "split": "Code"}
 
 
 def review_name(stage):
@@ -536,82 +538,6 @@ def pairs(d):
     return [f"- {k}: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in d.items()] if isinstance(d, dict) else []
 
 
-def outside_fold(repo, items):
-    """The Outside the plan fold, the same for the worker and a review.
-
-    It holds the worker's changes outside its scope or a review's changes outside the plan; nothing when there are none."""
-    lines = bullets(items, lambda o: f"`{o.get('file', '')}`: {o.get('why', o.get('change', ''))}")
-    return [""] + card.fold(f"{field_icon(repo, 'outside the plan')} Outside the plan", lines) if lines else []
-
-
-def question_lines(repo, questions):
-    """The Questions for you part, the same for the planner and a review.
-
-    Each question with the reading the plan assumed: the planner's questions, or those a review could not confirm;
-    nothing when there are none."""
-    lines = [f"- {escape_line(q.get('question'))}" + (f" Assumed: {escape_line(q['assumption'])}" if filled(q.get("assumption")) else "")
-             if isinstance(q, dict) else f"- {escape_line(str(q))}"
-             for q in (questions if isinstance(questions, list) else [])
-             if filled(q.get("question") if isinstance(q, dict) else q)]
-    return ["", f"{field_icon(repo, 'question')} **Questions for you:**"] + lines if lines else []
-
-
-def plan_number(plan):
-    """The issue number N of the plan's criteria ids N.k, from its tests.
-
-    None when the plan has no tests to read it from."""
-    keys = [k for k in (plan.get("tests") or {}) if re.fullmatch(r"\d+\.\d+", str(k))] if isinstance(plan.get("tests"), dict) else []
-    return keys[0].split(".")[0] if keys else None
-
-
-def plan_rows(plan):
-    """The plan's criteria in order, keyed by their id: acceptance criteria, then non-functional requirements."""
-    rows = [c if isinstance(c, dict) else {"text": c} for k in ("acceptance_criteria", "non_functional")
-            for c in (plan.get(k) if isinstance(plan.get(k), list) else [])]
-    number = plan_number(plan)
-    return {f"{number}.{i}" if number else str(i): c for i, c in enumerate(rows, 1)}
-
-
-def criterion_rows(repo, c, st, under):
-    """One criterion as the issue card draws it: circle, sentence, lines `under` it, Source."""
-    out = [f"- {card.circle(repo, st)} {card.escape(c.get('text'))}"] + under
-    if filled(c.get("source")):
-        out.append(f'  - <a href="{c["source"]}">Source</a>')
-    return out
-
-
-def verified_rows(repo, rec, key):
-    """A Verified by line per test of the criterion, holding its docstring's first line.
-
-    The docstrings are those read when the plan was recorded."""
-    found = rec.get("verified_by") or {}
-    tests = (rec["handback"].get("tests") or {}).get(key) or []
-    return [f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: {card.escape(t["verified_by"])}*'
-            for t in (found.get(x) for x in tests if isinstance(x, str)) if t and t.get("verified_by")]
-
-
-def verified_by(plan):
-    """Each test of the plan with its docstring's first line and a link to it.
-
-    Read from the test files in the folder the record is written in; the link points at the line the test starts on,
-    on the branch checked out."""
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    try:
-        ref = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip() or "HEAD"
-    except OSError:
-        ref = "HEAD"
-    out = {}
-    tests = plan.get("tests") if isinstance(plan.get("tests"), dict) else {}
-    for t in (x for ts in tests.values() if isinstance(ts, list) for x in ts if isinstance(x, str) and "::" in x):
-        path, name = t.split("::", 1)
-        try:
-            source = open(path).read()
-        except OSError:
-            continue
-        out[t] = card.test_entry(repo, ref, path, source, name)
-    return out
-
-
 def files_changed(base):
     """The files changed since `base`: committed, left uncommitted or added. Empty when git cannot say."""
     if not base:
@@ -624,77 +550,77 @@ def files_changed(base):
     return sorted({l.strip() for l in (diff + new).splitlines() if l.strip()})
 
 
+def posted_before_raises(rec):
+    """Whether the record's hand-back holds a field retired by #300.
+
+    Such a record keeps the comment it was posted with (#299)."""
+    h = rec.get("handback")
+    return isinstance(h, dict) and any(f in h for f in OLD_FIELDS)
+
+
+def plan_rows(plan):
+    """The plan's criteria in order, keyed by their id N.k: acceptance criteria, then non-functional requirements.
+
+    N is read from the plan's tests; without them the ids are 1, 2, ..."""
+    tests = plan.get("tests") if isinstance(plan.get("tests"), dict) else {}
+    keys = [k for k in tests if re.fullmatch(r"\d+\.\d+", str(k))]
+    number = keys[0].split(".")[0] if keys else None
+    rows = [c if isinstance(c, dict) else {"text": c} for k in ("acceptance_criteria", "non_functional")
+            for c in (plan.get(k) if isinstance(plan.get(k), list) else [])]
+    return {f"{number}.{i}" if number else str(i): c for i, c in enumerate(rows, 1)}
+
+
+def criterion_of(r, rows):
+    """The id of the plan's criterion a blocker's label names; None for none."""
+    m = re.search(r"\d+\.\d+", str(r.get("label") or ""))
+    return m.group(0) if m and m.group(0) in rows else None
+
+
+def failed_rows(repo, text, under, source):
+    """One failing item, drawn as the issue card draws a criterion.
+
+    The failed circle and its words, the lines `under` it, then its Source when it has one."""
+    return ([f"- {card.circle(repo, 'failed')} {card.escape(escape_line(text))}"] + under
+            + ([f"  - Source: {source}"] if filled(source) else []))
+
+
 def details(rec):
-    """The long parts of a run's record, each in its own fold, drawn by the issue card's fold code."""
-    role, h = rec["role"], rec["handback"]
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    if not isinstance(h, dict):
+    """The long parts of a run's record, each in its own fold, drawn by the issue card's fold code.
+
+    The planner's changes to older tests, with their reasons, and a split's stories in detail; nothing it repeats from
+    the card above it."""
+    h = rec["handback"]
+    if not isinstance(h, dict) or rec["role"] != "planner":
         return []
-    parts = []
-    if role == "planner":
-        # Non-functional requirements show the same rows as the criteria, without Source since they have none.
-        ac = h.get("acceptance_criteria") if isinstance(h.get("acceptance_criteria"), list) else []
-        nfr = list(plan_rows(h).items())[len(ac):]
-        parts += [("Non-functional requirements", [l for k, n in nfr for l in
-                                                   criterion_rows(repo, {"text": n.get("text")}, "not started", verified_rows(repo, rec, k))]),
-                  ("Scope", bullets(h.get("scope"), str)), ("Out of scope", bullets(h.get("out_of_scope"), str)),
-                  ("Tests", pairs(h.get("tests"))),
-                  ("Test changes", pairs(h.get("test_changes"))),
-                  ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
-                  ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
-    elif role == "worker":
-        files = [f for f in rec.get("files_changed") or [] if filled(f)]
-        parts += [("What it built", ([f"{field_icon(repo, 'files changed')} **Files changed:** " + ", ".join(f"`{f}`" for f in files), ""] if files else [])
-                   + pairs(h.get("criteria"))
-                   + ([f"- Its own test run: {escape_line(h['evidence'])}"] if filled(h.get("evidence")) else [])),
-                  None,
-                  ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
-                   + bullets(h.get("replies"), lambda r: f"{r.get('blocker', '')} {r.get('answer', '')}: {r.get('why', '')}"))]
-    prev = h.get("previous_step")
-    if role != "reviewer" and isinstance(prev, dict):
-        parts.append(("What the previous step did", [f"- {field_icon(repo, 'still open') + ' ' if k == 'open' else ''}**{label}:**{x[1:]}"
-                                                     for k, label in (("did", "Did"), ("decided", "Decided"), ("open", "Still open"))
-                                                     for x in bullets(prev.get(k), str)]))
     out = []
-    for part in parts:
-        if part is None:
-            out += outside_fold(repo, h.get("outside_scope"))
-        elif part[1] and part[1] != [""]:
-            out += [""] + card.fold(*part)
+    for title, lines in (("Test changes", pairs(h.get("test_changes"))),
+                         ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))):
+        if lines:
+            out += [""] + card.fold(title, lines)
     return out
 
 
-def review_lines(rec, plan):
+def review_lines(repo, rec, plan):
     """What a review shows under its opening, in the owner's order.
 
-    Each failing criterion with why it fails and its Source, each ask no criterion keeps, its changes outside the plan,
-    the plan's questions whose assumption it could not confirm, and the issues it found. A blocker the plan cannot
-    place still shows why it fails."""
+    An escalation's reason, then each failing criterion of the plan with each of its blockers' words and its Source,
+    then each ask nothing covers. Nothing that passed is listed, and no criterion number shows."""
     h = rec["handback"]
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
     lines = []
     if h.get("verdict") == "escalate" and filled(h.get("summary")):
         lines += ["", escape_line(h["summary"])]
     rows = plan_rows(plan) if isinstance(plan, dict) else {}
-    blockers = [b for b in h.get("blockers") or [] if isinstance(b, dict)]
-    why = lambda b: f"{field_icon(repo, 'blocker')} {card.escape(escape_line(b.get('problem')))}"
-    failing = [l for k, c in rows.items() for l in
-               (criterion_rows(repo, c, "failed", [f"  - {why(b)}" for b in blockers if str(b.get("criterion", "")).strip() == k])
-                if any(str(b.get("criterion", "")).strip() == k for b in blockers) else [])]
-    failing += [f"- {why(b)}" for b in blockers if str(b.get("criterion", "")).strip() not in rows]
-    failing += [l for a in h.get("asks") or [] if isinstance(a, dict) and str(a.get("criterion", "")).strip() == "missing"
-                for l in criterion_rows(repo, {"text": a.get("ask"), "source": a.get("source")}, "failed", ["  - Nothing covers this"])]
-    if failing:
-        lines += [""] + failing
-    lines += outside_fold(repo, h.get("outside_plan"))
-    assumed = {q.get("question"): q.get("assumption") for q in (plan or {}).get("questions") or [] if isinstance(q, dict)}
-    lines += question_lines(repo, [{"question": a.get("question"), "assumption": assumed.get(a.get("question"))}
-                                   for a in h.get("assumptions") or [] if isinstance(a, dict) and a.get("accepted") is not True])
-    found = [f for f in h.get("issues_found") or [] if isinstance(f, dict)]
-    if found:
-        lines += ["", f"{field_icon(repo, 'issue found')} **Issues found outside this one** (proposals until you file them):"]
-        lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(found, 1)]
-    return lines
+    blockers = [r for r in card.raises_of(h) if r["kind"] == "blocker"]
+    failing = []
+    for k, c in rows.items():
+        on = [r for r in blockers if criterion_of(r, rows) == k]
+        if on:
+            why = [f"  - {field_icon(repo, 'blocker')} {card.escape(escape_line(r.get('text')))}" for r in on]
+            failing += failed_rows(repo, c.get("text"), why, c.get("source"))
+    for a in h.get("asks") or []:
+        if isinstance(a, dict) and str(a.get("criterion", "")).strip() == "missing":
+            failing += failed_rows(repo, a.get("ask"), ["  - Nothing covers this"], a.get("source"))
+    return lines + ([""] + failing if failing else [])
 
 
 def opening(rec):
@@ -705,25 +631,15 @@ def opening(rec):
     if not passed:
         return f"{who(role, rec.get('stage'))}'s run ended with its hand-back rejected by code."
     if role == "planner" and h.get("kind") == "feature":
-        n = len(h.get("stories") or [])
-        return f"The planner proposes a split into {n} stories" + (" and asks you questions." if h.get("questions") else ".")
+        return f"The planner proposes a split into {len(h.get('stories') or [])} stories."
     if role == "planner":
-        q = len(h.get("questions") or [])
-        return f"The planner planned this issue and asks you {q} question{'s' if q > 1 else ''}." if q else "The planner planned this issue."
+        return "The planner planned this issue."
     if role == "reviewer":
         name, what = who(role, rec.get("stage")), "the plan" if rec.get("stage") == "plan" else "the work"
-        n = len({b.get("criterion") for b in h.get("blockers") or [] if isinstance(b, dict)})
-<<<<<<< HEAD
-        return {"approve": f"{name} passed {what}.",
-                "block": f"{name} blocked {what} on {n} criteri{'a' if n != 1 else 'on'}.",
-                "escalate": f"{name} escalated {what} to you."}.get(h.get("verdict"), f"{name} judged {what}.")
-=======
         k = sum(1 for r in card.raises_of(h) if r.get("kind") == "blocker")
-        blocked = f"with {k} blocker{'s' if k != 1 else ''}" if k and not n else f"on {n} criteri{'a' if n != 1 else 'on'}"
-        return {"approve": f"The reviewer passed {what}.",
-                "block": f"The reviewer blocked {what} {blocked}.",
-                "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
->>>>>>> origin/main
+        return {"approve": f"{name} passed {what}.",
+                "block": f"{name} blocked {what} with {k} blocker{'s' if k != 1 else ''}." if k else f"{name} blocked {what}.",
+                "escalate": f"{name} escalated {what} to you."}.get(h.get("verdict"), f"{name} judged {what}.")
     if role == "split":
         return f"Code filed the split as {len(h.get('stories') or [])} stories."
     return h["summary"].strip() if filled(h.get("summary")) else ""
@@ -734,44 +650,55 @@ def record_fold(rec):
     return ["", "<details><summary>Full record</summary>", "", "```json", json.dumps(rec, indent=1), "```", "", "</details>"]
 
 
-def raised_lines(repo, rec, earlier):
-    """What a passed run raised, and on a review its answers to earlier raises.
+def answered_lines(repo, rec, earlier):
+    """A passed run's answers to earlier raises, drawn the same for every agent.
 
-    A review's answers go in a Raised earlier section, its own raises in Raised; an answer finds its raise
-    among `earlier` by ID. No ID is ever drawn."""
+    They go in a Raised earlier section; an answer finds its raise among `earlier` by ID. No ID is ever drawn."""
     h = rec["handback"]
-    lines = []
-    if rec["role"] == "reviewer" and card.answers_of(h):
-        found = {}
-        for r in earlier or []:
-            if isinstance(r, dict) and (r.get("check") or {}).get("passed"):
-                found.update({x["id"]: x for x in card.raises_of(r.get("handback")) if x.get("id")})
-        lines += ["", "**Raised earlier:**", ""]
-        for a in card.answers_of(h):
-            r = found.get(a["raise"])
-            lines.append(card.raise_line(repo, r) if r else "- A raise not found in this issue's earlier records")
-            word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
-            lines.append(f"  - {word}: {escape_line(a.get('why'))}")
-            if filled(a.get("words")) and filled(a.get("source")):
-                lines.append(f"  - Your words: {said(a['words'], a['source'])}")
-    raised = card.raises_of(h)
-    if raised:
-        lines += ["", "**Raised:**", ""]
-        for r in raised:
-            lines.append(card.raise_line(repo, r))
-            if filled(r.get("evidence")):
-                lines.append(f"  - Evidence: {card.escape(escape_line(r['evidence']))}")
+    if not card.answers_of(h):
+        return []
+    found = {}
+    for r in earlier or []:
+        if isinstance(r, dict) and (r.get("check") or {}).get("passed"):
+            found.update({x["id"]: x for x in card.raises_of(r.get("handback")) if x.get("id")})
+    lines = ["", "**Raised earlier:**", ""]
+    for a in card.answers_of(h):
+        r = found.get(a["raise"])
+        lines.append(card.raise_line(repo, r) if r else "- A raise not found in this issue's earlier records")
+        word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
+        lines.append(f"  - {word}: {escape_line(a.get('why'))}")
+        if filled(a.get("words")) and filled(a.get("source")):
+            lines.append(f"  - Your words: {said(a['words'], a['source'])}")
+    return lines
+
+
+def raised_lines(repo, rec, placed=()):
+    """What a passed run raised, in a Raised section.
+
+    A review's raises go blockers first, then questions, then issues, leaving out the blockers `placed` under their
+    criterion. No ID is ever drawn."""
+    raised = [r for r in card.raises_of(rec["handback"]) if not any(r is p for p in placed)]
+    if rec["role"] == "reviewer":
+        raised.sort(key=lambda r: ("blocker", "question", "issue").index(r["kind"]))
+    lines = ["", "**Raised:**", ""] if raised else []
+    for r in raised:
+        lines.append(card.raise_line(repo, r))
+        if filled(r.get("evidence")):
+            lines.append(f"  - Evidence: {card.escape(escape_line(r['evidence']))}")
     return lines
 
 
 def render(rec, pr=None, plan=None, earlier=None):
-    """The comment that carries a record: one plain sentence saying what the run did, the short version the owner
-    needs at a glance, the long parts in folds, then the full record as JSON in the last fold. `pr` is the link of the
-    worker's pull request, once it exists; `plan` is the plan a plan review judged, whose assumptions answer its
-    questions; `earlier` is the issue's records before this one, oldest first, where a review's answers find the
-    raises they answer."""
+    """The comment that carries a record, never repeating the card above it.
+
+    One plain sentence saying what the run did, then only what that run changed, decided or raised; the long parts
+    in folds, the Stats fold, then the full record as JSON in the last fold. `pr` is the link of the worker's pull request, once it exists; `plan` is the plan a review
+    judged, whose criteria its blockers fail; `earlier` is the issue's records before this one, oldest first, where
+    answers find the raises they answer. A record holding a field retired by #300 keeps the comment it was posted with."""
     role, h = rec["role"], rec["handback"]
     repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if posted_before_raises(rec):
+        return render_as_posted(rec, pr, plan, earlier)
     if role == "not-started":
         a = rec.get("attempt")
         name = "Filing the split" if a == "split" else who(a, rec.get("stage"))
@@ -790,6 +717,137 @@ def render(rec, pr=None, plan=None, earlier=None):
             lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
     if role == "updater":
+        return render_as_posted(rec, pr, plan, earlier)
+    passed = rec["check"]["passed"]
+    first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
+    if role == "worker" and pr:
+        first += f" {pr}"
+    lines, placed = [MARK, first], []
+    if not passed:
+        lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
+    elif role == "planner" and h.get("kind") == "feature":
+        lines += ["", f"**Feature:** {h.get('feature', '')}", ""]
+        lines += [f"{i}. {st.get('title', '')}" for i, st in enumerate(h.get("stories", []), 1)]
+    elif role == "worker":
+        files = [f for f in rec.get("files_changed") or [] if filled(f)]
+        branch = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/blob/{rec.get('branch') or 'main'}"
+        built = ([f"{field_icon(repo, 'files changed')} **Files changed:** " + ", ".join(f"[{f}]({branch}/{f})" for f in files)]
+                 if files else []) + ([f"- Its own test run: {escape_line(h['evidence'])}"] if filled(h.get("evidence")) else [])
+        # Its raises stay on top; what it built and its answers follow, so the top holds only its sentence otherwise.
+        lines += raised_lines(repo, rec) + ([""] + card.fold("What it built", built) if built else [])
+        lines += answered_lines(repo, rec, earlier)
+    elif role == "reviewer":
+        lines += review_lines(repo, rec, plan)
+        rows = plan_rows(plan) if isinstance(plan, dict) else {}
+        placed = [r for r in card.raises_of(h) if r["kind"] == "blocker" and criterion_of(r, rows)]
+    elif role == "split":
+        num = {f["story"]: f["issue"] for f in h.get("stories", [])}
+        lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
+                         for f in h.get("stories", [])]
+        lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
+    if passed and role != "worker":
+        lines += answered_lines(repo, rec, earlier) + raised_lines(repo, rec, placed)
+    lines += details(rec) + stats_fold(rec) + record_fold(rec)
+    return "\n".join(lines) + "\n"
+
+
+# What a record holding a field retired by #300 was posted with, kept as it was (#299).
+
+
+def details_as_posted(rec):
+    """The long parts of a record kept as posted, each in its own fold.
+
+    Drawn by the issue card's fold code."""
+    role, h = rec["role"], rec["handback"]
+    mark = lambda field: field_icon(os.environ.get("GITHUB_REPOSITORY", ""), field)
+    if not isinstance(h, dict):
+        return []
+    parts = []
+    if role == "planner":
+        parts += [("Non-functional requirements", bullets(h.get("non_functional"), lambda n: f"{n.get('text', '')} "
+                                                           f"({n.get('why', '')}; {n.get('principle', '')})")),
+                  ("Scope", bullets(h.get("scope"), str)), ("Out of scope", bullets(h.get("out_of_scope"), str)),
+                  ("Tests", pairs(h.get("tests"))),
+                  ("Test changes", pairs(h.get("test_changes"))),
+                  ("Concerns", bullets(h.get("concerns"), lambda c: f"{c.get('text', '')} ({c.get('evidence', '')})")),
+                  ("Stories in detail", bullets(h.get("stories"), lambda st: f"{st.get('title', '')}: {st.get('user_story', '')}"))]
+    elif role == "worker":
+        parts += [("What it built", pairs(h.get("criteria"))
+                   + ([f"- Its own test run: {h['evidence']}"] if h.get("evidence") else [])),
+                  ("What it found", bullets(h.get("outside_scope"), lambda o: f"{mark('outside the plan')} Outside the plan: {o.get('file', '')}: {o.get('why', '')}")),
+                  ("What it raised", bullets(h.get("suspect_tests"), lambda t: f"Suspect test {t.get('test', '')}: {t.get('evidence', '')}")
+                   + bullets(h.get("replies"), lambda r: f"{r.get('blocker', '')} {r.get('answer', '')}: {r.get('why', '')}"))]
+    elif role == "reviewer":
+        parts += [("Details", ([f"- {h['summary']}"] if h.get("summary") and h.get("verdict") != "escalate" else [])
+                   + bullets(h.get("blockers"), lambda b: f"{b.get('id')} on {b.get('criterion')}: {b.get('problem', '')} "
+                                                          f"Evidence: {b.get('evidence', '')} Fix: {b.get('fix', '')}")
+                   + bullets(h.get("resolved"), lambda r: f"Resolved: {json.dumps(r)}")),
+                  (f"{mark('note')} Notes", bullets(h.get("notes"), lambda n: f"{n.get('text', '')} ({n.get('evidence', '')})")),
+                  (f"{mark('outside the plan')} Outside the plan", bullets(h.get("outside_plan"), lambda o: f"{o.get('file', '')}: {o.get('change', '')}")),
+                  ("The owner's asks", bullets(h.get("asks"), lambda a: f"{a.get('ask', '')} ({a.get('criterion', '')}, {a.get('source', '')})"))]
+    prev = h.get("previous_step")
+    if isinstance(prev, dict):
+        parts.append(("What the previous step did", [f"- {mark('still open') + ' ' if k == 'open' else ''}**{label}:**{x[1:]}" for k, label in
+                                                     (("did", "Did"), ("decided", "Decided"), ("open", "Still open"))
+                                                     for x in bullets(prev.get(k), str)]))
+    out = []
+    for title, lines in parts:
+        if lines:
+            out += [""] + card.fold(title, lines)
+    return out
+
+
+def opening_as_posted(rec):
+    """The one plain sentence a run comment opens with: what the run did."""
+    role, h, passed = rec["role"], rec["handback"], rec["check"]["passed"]
+    if not passed and role == "worker":
+        return "The worker stopped early with its hand-back rejected by code."
+    if not passed:
+        return f"{HEADS[role]}'s run ended with its hand-back rejected by code."
+    if role == "planner" and h.get("kind") == "feature":
+        n = len(h.get("stories") or [])
+        return f"The planner proposes a split into {n} stories" + (" and asks you questions." if h.get("questions") else ".")
+    if role == "planner":
+        q = len(h.get("questions") or [])
+        return f"The planner planned this issue and asks you {q} question{'s' if q > 1 else ''}." if q else "The planner planned this issue."
+    if role == "reviewer":
+        what = "the plan" if rec.get("stage") == "plan" else "the work"
+        n = len({b.get("criterion") for b in h.get("blockers") or [] if isinstance(b, dict)})
+        k = sum(1 for r in card.raises_of(h) if r.get("kind") == "blocker")
+        blocked = f"with {k} blocker{'s' if k != 1 else ''}" if k and not n else f"on {n} criteri{'a' if n != 1 else 'on'}"
+        return {"approve": f"The reviewer passed {what}.",
+                "block": f"The reviewer blocked {what} {blocked}.",
+                "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
+    if role == "split":
+        return f"Code filed the split as {len(h.get('stories') or [])} stories."
+    return h["summary"].strip() if filled(h.get("summary")) else ""
+
+
+def render_as_posted(rec, pr=None, plan=None, earlier=None):
+    """The comment a record kept as posted, or a clash, is drawn with.
+
+    One plain sentence saying what the run did, the short version the owner needs at a glance, the long parts in
+    folds, then the full record as JSON in the last fold. `pr` is the link of the worker's pull request, once it exists; `plan` is the plan a plan review judged, whose assumptions answer its
+    questions; `earlier` is the issue's records before this one, oldest first, where a review's answers find the
+    raises they answer."""
+    role, h = rec["role"], rec["handback"]
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if role == "not-started":
+        a = rec.get("attempt")
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker",
+               "split": "Filing the split"}.get(a, "The command")
+        lines = [MARK, f"{icon(repo, 'failed')} {role_icon(repo, a, rec.get('stage'))}{who} stopped before any agent started.", ""] + [f"- {p}" for p in rec["check"]["problems"]]
+        lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "cancelled":
+        a = rec.get("attempt")
+        who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker"}.get(a, "The command")
+        what = (f"{who} run was cancelled after its agent started, and nothing it handed back is used." if rec.get("agent_started")
+                else f"{who} run was cancelled before its agent started.")
+        lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
+        lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        return "\n".join(lines) + "\n"
+    if role == "updater":
         # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
         by = f" (#{h['merged_pr']})" if h.get("merged_pr") else ""
         so = {True: "so the planner re-plans against the new main", False: "so the issue needs a re-plan",
@@ -800,7 +858,7 @@ def render(rec, pr=None, plan=None, earlier=None):
         lines += record_fold(rec) + ["", f"<sub>Found by code, no model" + (f" · [run]({rec['run']})" if rec.get("run") else "") + "</sub>"]
         return "\n".join(lines) + "\n"
     passed = rec["check"]["passed"]
-    first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
+    first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening_as_posted(rec))}"
     if role == "worker" and pr:
         first += f" {pr}"
     lines = [MARK, first]
@@ -811,15 +869,10 @@ def render(rec, pr=None, plan=None, earlier=None):
         lines += [f"{i}. {st.get('title', '')}" for i, st in enumerate(h.get("stories", []), 1)]
     elif role == "planner":
         lines += ["", f"**User story:** {h.get('user_story') or h.get('question') or ''}"]
-        ac = h.get("acceptance_criteria") if isinstance(h.get("acceptance_criteria"), list) else []
-        rows = list(plan_rows(h).items())[:len(ac)]
-        if rows:
-            lines += ["", f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria:**", ""]
-            lines += [l for k, c in rows for l in criterion_rows(repo, c, "not started", verified_rows(repo, rec, k))]
+        criteria = [c.get("text", "") if isinstance(c, dict) else c for c in h.get("acceptance_criteria") or []]
+        if criteria:
+            lines += ["", f"{field_icon(repo, 'acceptance criterion')} **Acceptance criteria:**", ""] + [f"{i}. {c}" for i, c in enumerate(criteria, 1)]
     elif role == "reviewer":
-<<<<<<< HEAD
-        lines += review_lines(rec, plan)
-=======
         if h.get("verdict") == "escalate" and h.get("summary"):
             lines += ["", h["summary"]]
         fixes = lambda b: f", the {b['fixer']} fixes it" if b.get("fixer") in FIXERS else ""
@@ -845,7 +898,6 @@ def render(rec, pr=None, plan=None, earlier=None):
         if h.get("issues_found"):
             lines += ["", f"{field_icon(repo, 'issue found')} **Issues found outside this one** (proposals until you file them):"]
             lines += [f"{i}. {f.get('title')}: {f.get('why')}" for i, f in enumerate(h["issues_found"], 1)]
->>>>>>> origin/main
     elif role == "split":
         num = {f["story"]: f["issue"] for f in h.get("stories", [])}
         lines += [""] + [f"{f['story']}. #{f['issue']} {f['title']}" + (f" ({field_icon(repo, 'blocked by')} blocked by {', '.join('#' + str(num[d]) for d in f['blocked_by'])})" if f["blocked_by"] else "")
@@ -854,20 +906,13 @@ def render(rec, pr=None, plan=None, earlier=None):
     related = card.link_lines(repo, h.get("links")) if passed and role == "planner" else []
     if related:
         lines += [""] + related
-<<<<<<< HEAD
-    asked = question_lines(repo, h.get("questions")) if passed and role == "planner" else []
-    if asked:
-        lines += asked + ["", "It planned on the reading each question names; reply with `/plan` and your words, or leave them."]
-    lines += details(rec) + stats_fold(rec) + record_fold(rec)
-=======
     if passed and role == "planner" and h.get("questions"):
         lines += ["", f"{field_icon(repo, 'question')} **Questions for you** (it planned on the reading it names; reply with `/plan` and your words, or leave them):"]
         lines += [f"- {q.get('question', '')} Assumed: {q.get('assumption', '')}" if isinstance(q, dict) else f"- {q}"
                   for q in h["questions"]]
     if passed:
-        lines += raised_lines(repo, rec, earlier)
-    lines += details(rec) + record_fold(rec) + ["", footnote(rec)]
->>>>>>> origin/main
+        lines += (answered_lines(repo, rec, earlier) if role == "reviewer" else []) + raised_lines(repo, rec)
+    lines += details_as_posted(rec) + record_fold(rec) + ["", footnote(rec)]
     return "\n".join(lines) + "\n"
 
 
@@ -944,18 +989,52 @@ def run_report(path):
 
 
 def stats_fold(rec):
-    """The Stats fold at the bottom of every run comment, right above the full record."""
+    """The Stats fold right above the full record of every run comment.
+
+    Every run an agent ran in has one."""
     stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
-    return [""] + card.fold(f"{stats} Stats", [footnote(rec)])
+    return [""] + card.fold(f"{stats} Stats", [stats_line(rec)])
 
 
-def footnote(rec):
-    """The run's stats line: model, time, turns, tokens, cost and its links.
+def short(n):
+    """A token count read short, with no decimals: 950, 12K, 3M.
 
-    The links go to the run's whole conversation and to its run."""
+    As it is under a thousand, then K, then M, rounded to the nearest with halves up."""
+    if n < 1000:
+        return str(n)
+    k = (n + 500) // 1000
+    return f"{k}K" if k < 1000 else f"{(n + 500000) // 1000000}M"
+
+
+def stats_line(rec):
+    """The run's stats: model, time, turns, tokens, cost and its links.
+
+    The links go to its whole conversation and its run."""
     r = rec.get("report") or {}
     if rec.get("role") == "split":
         return f"Filed by code, no model ran · [run]({rec.get('run', '')})"
+    pretty = lambda m: (lambda x: f"{x.group(1).title()} {x.group(2)}.{x.group(3)}" if x else m)(re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m))
+    parts = [", ".join(pretty(m) for m in rec.get("models") or []) or "model unknown"]
+    if r.get("duration_ms"):
+        parts.append(f"{round(r['duration_ms'] / 60000, 1)} min")
+    if r.get("turns"):
+        parts.append(f"{r['turns']} turns")
+    if r.get("tokens_in") or r.get("tokens_out"):
+        parts.append(f"{short(r.get('tokens_in') or 0)} tokens in, {short(r.get('tokens_out') or 0)} out")
+    if r.get("cost_usd") is not None:
+        parts.append(f"${r['cost_usd']:.2f} at API prices")
+    links = " · ".join(x for x in (f"[conversation]({rec['log']})" if rec.get("log") else "", f"[run]({rec['run']})" if rec.get("run") else "") if x)
+    return " · ".join(parts) + (" · " + links if links else "")
+
+
+def footnote(rec):
+    """The stats line under the card of a record kept as posted.
+
+    Model, time, turns, tokens and cost, and the link to the full conversation."""
+    r = rec.get("report") or {}
+    stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
+    if rec.get("role") == "split":
+        return f"<sub>{stats} Filed by code, no model · [run]({rec.get('run', '')})</sub>"
     pretty = lambda m: (lambda x: f"{x.group(1).title()} {x.group(2)}.{x.group(3)}" if x else m)(re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m))
     parts = [", ".join(pretty(m) for m in rec.get("models") or []) or "model unknown"]
     if r.get("duration_ms"):
@@ -967,7 +1046,7 @@ def footnote(rec):
     if r.get("cost_usd") is not None:
         parts.append(f"${r['cost_usd']:.2f} at API prices")
     links = " · ".join(x for x in (f"[conversation]({rec['log']})" if rec.get("log") else "", f"[run]({rec['run']})" if rec.get("run") else "") if x)
-    return " · ".join(parts) + (" · " + links if links else "")
+    return f"<sub>{stats} " + " · ".join(parts) + (" · " + links if links else "") + "</sub>"
 
 
 def models_used(log_dir):
@@ -2172,15 +2251,6 @@ def main(argv):
                 "report": run_report(os.path.join(out, "claude.json")), "log": os.environ.get("LOG_URL"),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
-<<<<<<< HEAD
-        rec = build_record(role, stage, out, text, passed == "true", meta)
-        if role == "planner" and isinstance(rec["handback"], dict):
-            # The first docstring line of each of the plan's tests, read now from the planner's own test files.
-            rec["verified_by"] = verified_by(rec["handback"])
-        if role == "worker":
-            # Kept in the record, so the comment redrawn once its pull request opens still names them.
-            rec["files_changed"] = files_changed(os.environ.get("BASE"))
-=======
         earlier = []
         folder = os.path.join(os.environ.get("PACK", ""), "in")
         for name in sorted(os.listdir(folder)) if os.environ.get("PACK") and os.path.isdir(folder) else []:
@@ -2190,7 +2260,10 @@ def main(argv):
                 print(f"::warning title=Record not read::{name} in the pack could not be read")
         # Code stamps each raise with who raised it and an ID no raise on the issue has yet.
         rec = stamp_record(build_record(role, stage, out, text, passed == "true", meta), earlier)
->>>>>>> origin/main
+        if role == "worker":
+            # Kept in the record, so the comment redrawn once its pull request opens still names them.
+            rec["files_changed"] = files_changed(os.environ.get("BASE"))
+            rec["branch"] = f"try/issue-{os.environ.get('N', '')}"
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         reviewed = os.path.join(os.environ.get("PACK", ""), "plan.json")
         plan = None
