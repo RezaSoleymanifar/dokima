@@ -3,7 +3,7 @@ Slow calls hand back a job id.
 
 **Review** · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/needs-you.svg" width="16" height="16" align="absmiddle" alt="needs you"> Needs you: See why not every check passed
 
-[issue #299](https://github.com/o/r/issues/299) · [PR #5](https://github.com/o/r/pull/5) · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/files-changed.svg" width="16" height="16" align="absmiddle" alt="files changed"> [files changed](https://github.com/o/r/pull/5/files)
+https://github.com/o/r/issues/299 · https://github.com/o/r/pull/5 · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/files-changed.svg" width="16" height="16" align="absmiddle" alt="files changed"> [files changed](https://github.com/o/r/pull/5/files)
 
 <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/related.svg" width="16" height="16" align="absmiddle" alt="related"> **Relates to:** #12
 
@@ -12,7 +12,7 @@ Slow calls hand back a job id.
 <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/acceptance-criterion.svg" width="16" height="16" align="absmiddle" alt="acceptance criterion"> **Acceptance criteria**
 
 - <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/failed.svg" width="16" height="16" align="absmiddle" alt="failed"> **<a href="https://x/check/1">Acceptance criterion</a>:** A slow call returns a job id.
-  - <a href="https://github.com/o/r/issues/299">Source</a>
+  - Source: https://github.com/o/r/issues/299
 
 <details><summary><b>Non-functional requirements</b></summary>
 

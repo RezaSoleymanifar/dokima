@@ -20,8 +20,8 @@ Blockers: a plan that fails any of 1 to 5 goes back to the planner.
 1. Right criteria, exactly. Every behavior the owner asked for is an acceptance criterion, traced to the owner's own words
    (the issue or a specific comment). Nothing dropped, nothing added, nothing reinterpreted, and never a narrower
    thing that is easier to pass. Where the words allow two
-   readings, or an ask cannot be tested, the plan asks the owner in its questions; it never picks one silently and
-   never turns an ask into a concern.
+   readings, or an ask cannot be tested, the plan raises a question for the owner; it never picks one silently and
+   never drops an ask.
 2. Every criterion is observable and precise: a value, a message, a file, an exit code, a state the owner can see. The
    scope lists every file the work needs.
 3. Every criterion has a test, or is marked (manual) with a reason a reviewer accepts. If a criterion promises A, B and C,
@@ -29,7 +29,7 @@ Blockers: a plan that fails any of 1 to 5 goes back to the planner.
 4. Every test passes the one question: any deviation from its criterion, in either direction, turns it red. Prefer tests
    that run the thing over tests that read code.
 5. Today, every new test fails for the right reason: the feature is missing, not a crash, a missing tool or a bad path.
-Notes, never blockers:
+Never blockers:
 6. Every failure the criterion implies is tested: bad input, empty result, two at once. Two cases when it says "every".
 7. A promise like "never collides" or "same output" gets its own test that repeats or breaks something.
 8. Each failing test says which criterion failed and why, in plain words.

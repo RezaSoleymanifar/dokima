@@ -377,14 +377,14 @@ def test_a_split_lists_each_child_with_its_link_and_stage(record_property):
     """A split's card lists every child, in order, each with a link to its issue and its own current stage.
 
     Draws the card of a parent whose split was filed into three children at three different stages, and checks
-    each child has one line with its link, its title and its own stage, in the split's order; the card of a story
+    each child has one line with its link (GitHub draws its title) and its own stage, in the split's order; the card of a story
     that was not split links no other issue."""
     record_property("proves", "181.3")
     text = draw(found_for([FEATURE, PLAN_OK, "/work", SPLIT], children=CHILDREN))
     at = []
     for c in CHILDREN:
         line = child_line(text, c["number"], "181.3")
-        assert c["title"] in line, f"181.3: child #{c['number']}'s line does not show its title: “{line}”"
+        # The title is not written out: GitHub draws it from the child's bare link (#359).
         words = re.findall(r"\b(" + "|".join(STAGES) + r"|unknown)\b", bare(line))
         assert words == [c["stage"]], f"181.3: child #{c['number']} should show {c['stage']}, shows {words}: “{line}”"
         at.append(lines_of(text).index(line))

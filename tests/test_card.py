@@ -71,8 +71,9 @@ def test_title_asks_for_approval_when_all_checks_passed(record_property):
 
 def test_links_row():
     # The field icons code draws in front of a field (issue #234) are not part of the links.
-    assert re.sub(r"<img [^>]*>\s*", "", links(render())) == ("[latest run](https://github.com/o/r/actions/runs/1) · [issue #40](https://github.com/o/r/issues/40)"
-                                        " · [PR #5](https://github.com/o/r/pull/5)"
+    # The issue and the PR are written out bare, so GitHub draws them as references with their icon and title (#359).
+    assert re.sub(r"<img [^>]*>\s*", "", links(render())) == ("[latest run](https://github.com/o/r/actions/runs/1) · https://github.com/o/r/issues/40"
+                                        " · https://github.com/o/r/pull/5"
                                         " · [files changed](https://github.com/o/r/pull/5/files)")
 
 

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import agent  # noqa: E402
 from tests.test_handback_check import REVIEW, STORY as PLAN_9, WORK  # noqa: E402
 from tests.test_plan_check import FEATURE, STORY, check  # noqa: E402,F401
-from tests.test_run_cards import PR, plain, rec, shown  # noqa: E402
+from tests.test_run_cards import PR, names_pr, plain, rec, shown  # noqa: E402
 from tests.test_word_caps import jobs, run as run_planner, words  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -130,7 +130,7 @@ def test_the_worker_card_opens_with_its_one_sentence_summary(record_property, re
     lines = shown(agent.render(rec("worker", handback=dict(WORK, summary=summary)), pr=PR))
     assert len(lines) == 1 and plain(lines[0]).startswith(summary), \
         f"240.2: the worker card does not open with its whole summary, word for word ({summary!r}): {lines!r}"
-    assert f"]({PR})" in lines[0], f"240.2: the worker card's opening line does not link its pull request:\n{lines[0]}"
+    assert names_pr(lines[0]), f"240.2: the worker card's opening line does not name its pull request:\n{lines[0]}"
     prompt = open(os.path.join(ROOT, "dokima", "roles", "worker.md"), encoding="utf-8").read()
     shape = next((l for l in prompt.splitlines() if '"summary"' in l), "")
     assert "two" not in shape.lower() and "one" in shape.lower() and "25 words" in shape, \

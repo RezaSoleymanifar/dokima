@@ -37,7 +37,7 @@ STORY = {"kind": "user_story", "user_story": "u", "acceptance_criteria": [{"text
          "non_functional": [], "scope": ["x.py"], "out_of_scope": [], "tests": {"57.1": ["tests/test_x.py::test_a"]}}
 APPROVE = {"previous_step": {"did": ["Proposed a split into two stories."], "decided": [], "open": []},
            "stage": "plan", "round": 1, "verdict": "approve", "summary": "The split keeps every promise once.",
-           "blockers": [], "notes": [], "outside_plan": [], "resolved": [],
+           "raises": [], "answers": [],
            "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": "S1.1"}]}
 
 FAKE_GH = r'''#!/usr/bin/env python3

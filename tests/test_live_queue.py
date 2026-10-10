@@ -28,9 +28,7 @@ OTHER_RUN = "41"
 OTHER_RUN_URL = f"https://github.com/o/r/actions/runs/{OTHER_RUN}"
 BLOCK = {"previous_step": {"did": ["Planned one criterion."], "decided": [], "open": []},
          "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
-         "blockers": [{"id": "B1", "criterion": f"{N}.1", "test": None, "problem": "No good-case test.",
-                       "evidence": "The plan has one test for the bad case only.", "fix": "Add one.", "fixer": "planner"}],
-         "notes": [], "outside_plan": [], "resolved": [],
+         "raises": [{"kind": "blocker", "to": "planner", "label": "57.1", "text": "No good-case test.", "evidence": "The plan has one test for the bad case only."}],
          "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": f"{N}.1"}]}
 WORK = {"summary": "Made it.", "criteria": {f"{N}.1": "x.py, the change"}, "evidence": "pytest -q: 1 passed"}
 ICON = re.compile(r'<img[^>]*src="https://raw\.githubusercontent\.com/[^/"]+/[^/"]+/main/dokima/icons/([A-Za-z0-9_-]+)\.svg"')

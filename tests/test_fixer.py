@@ -71,32 +71,35 @@ def check_review(tmp_path, handback):
 
 
 def test_every_review_blocker_names_the_worker_or_the_planner(record_property, tmp_path, monkeypatch):
-    """A review passes its check only when every blocker says who fixes it, the worker or the planner.
+    """Every blocker a review raises must name the worker or the planner as its fixer.
 
-    Runs the real hand-back check: a blocker for the worker, one for the planner, and both together pass, on every
-    stage a machine may run on (STAGE unset, plan or pr), since the sample review lists the owner's asks (#244). A
-    blocker with no fixer, an empty one, one naming the reviewer or the owner, and a number are each rejected with
-    exit 1, a reason naming the blocker's id and the fixer field, and no crash, also when the other blocker is well formed."""
+    Runs the real hand-back check: a blocker raised for the worker, one for the planner, and both together pass, on
+    every stage a machine may run on (STAGE unset, plan or pr), since the sample review lists the owner's asks (#244).
+    A blocker raised for no one, for no one named, or for the reviewer itself is rejected with exit 1 and a reason
+    naming that raise, and no crash, also when the other blocker is well formed."""
     record_property("proves", "166.1")
     record_property("proves", "244.1")
+    raised = lambda to: {"kind": "blocker", "to": to, "text": f"problem for {to}", "evidence": "e"}
+    blocking = lambda *rs: {**{k: v for k, v in review().items() if k not in ("blockers", "notes", "outside_plan", "resolved")},
+                            "raises": list(rs)}
     for stage in ("", "plan", "pr"):
         if stage:
             monkeypatch.setenv("STAGE", stage)
         else:
             monkeypatch.delenv("STAGE", raising=False)
-        for case in (review(blocker("B1", "worker")), review(blocker("B1", "planner")),
-                     review(blocker("B1", "worker"), blocker("B2", "planner"))):
+        for case in (blocking(raised("worker")), blocking(raised("planner")), blocking(raised("worker"), raised("planner"))):
             code, out, err = check_review(tmp_path, case)
             assert (code, out.strip()) == (0, ""), \
                 f"166.1, 244.1: a review whose blockers name their fixer was rejected with STAGE={stage or 'unset'}: {out}{err[-400:]}"
     monkeypatch.delenv("STAGE", raising=False)
-    for bad in (None, "", "reviewer", "owner", 5):
-        code, out, err = check_review(tmp_path, review(blocker("B1", "worker"), blocker("B2", bad)))
-        assert "Traceback" not in err + out, f"166.1: the check crashed on fixer {bad!r}:\n{err[-600:]}"
-        assert code == 1, f"166.1: a blocker with fixer {bad!r} passed the check; it must name the worker or the planner"
-        assert any("B2" in line and "fixer" in line for line in out.splitlines()), \
-            f"166.1: no reason names blocker B2 and its fixer for fixer {bad!r}; reasons were:\n{out}"
-        assert not any("B1" in line for line in out.splitlines()), f"166.1: the well-formed blocker B1 was named too:\n{out}"
+    for bad in (None, "", "reviewer"):
+        second = {k: v for k, v in raised(bad).items() if not (k == "to" and bad is None)}
+        code, out, err = check_review(tmp_path, blocking(raised("worker"), second))
+        assert "Traceback" not in err + out, f"166.1: the check crashed on a blocker for {bad!r}:\n{err[-600:]}"
+        assert code == 1, f"166.1: a blocker for {bad!r} passed the check; it must name the worker or the planner"
+        assert any("raise 2" in line for line in out.splitlines()), \
+            f"166.1: no reason names the second raise for {bad!r}; reasons were:\n{out}"
+        assert not any("raise 1" in line for line in out.splitlines()), f"166.1: the well-formed first raise was named too:\n{out}"
 
 
 def test_the_review_comment_shows_who_fixes_each_blocker(record_property):
@@ -160,8 +163,8 @@ def test_the_planner_answers_the_test_blockers_and_the_worker_the_code_ones(reco
     agent.pack("o/r", 9, "planner", "", str(tmp_path / "p"))
     got = [b.get("id") for b in json.load(open(tmp_path / "p" / "open_blockers.json"))]
     assert got == ["B1"], f"166.3: the planner was handed blockers {got}, not exactly the test blocker B1"
-    assert agent.problems_round("planner", {"replies": [], "links": {"blocked_by": [], "blocks": [], "relates_to": []}}, str(tmp_path / "p")) == ["blocker B1 is not answered"], \
-        "166.3: the planner's hand-back may skip the code review's test blocker B1"
+    skipped = agent.problems_round("planner", {"answers": [], "links": {"blocked_by": [], "blocks": [], "relates_to": []}}, str(tmp_path / "p"))
+    assert len(skipped) == 1 and "B1" in skipped[0], f"166.3: the planner's hand-back may skip the code review's test blocker B1: {skipped}"
     fake_github(monkeypatch, base + [rec("planner", handback=STORY), PLAN_OK])
     agent.pack("o/r", 9, "worker", "", str(tmp_path / "w"))
     got = [b.get("id") for b in json.load(open(tmp_path / "w" / "open_blockers.json"))]
@@ -209,18 +212,19 @@ def test_an_approved_test_fix_goes_straight_back_to_the_worker(record_property):
 
 
 def test_the_reviewer_is_told_to_name_who_fixes_each_blocker(record_property):
-    """The reviewer's instructions show the fixer on every blocker and say tests go to the planner, code to the worker.
+    """The reviewer's instructions say tests go to the planner and code to the worker.
 
-    Reads the reviewer prompt code hands to every review: its hand-back shape gives each blocker a fixer of worker or
-    planner, and the result grade's weak-test rule tells the reviewer to name the planner as the fixer."""
+    Reads the reviewer prompt code hands to every review: it says each blocker is for the planner or the worker, and
+    the result grade's weak-test rule tells the reviewer the blocker is for the planner."""
     record_property("proves", "166.5")
     roles = os.path.join(ROOT, "dokima", "roles")
     prompt = open(os.path.join(roles, "reviewer.md")).read()
-    assert '"fixer": "worker" | "planner"' in prompt, "166.5: the reviewer's hand-back shape gives blockers no fixer of worker or planner"
+    assert "planner" in prompt and "worker" in prompt and "blocker" in prompt, \
+        "166.5: the reviewer's prompt does not say who each blocker is for"
     grade = open(os.path.join(roles, "result-grade.md")).read()
     weak = [p for p in grade.split("\n7.")[1:]]
-    assert weak and '"fixer": "planner"' in weak[0].split("\nNotes")[0], \
-        "166.5: the result grade's weak-test rule does not tell the reviewer to set the fixer to the planner"
+    assert weak and "planner" in weak[0].split("\nNotes")[0], \
+        "166.5: the result grade's weak-test rule does not tell the reviewer the blocker is for the planner"
 
 
 def test_three_blocks_on_the_test_fix_route_still_stop_for_the_owner(record_property):

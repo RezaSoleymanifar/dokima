@@ -51,7 +51,7 @@ def replanned_after_test_fix():
     Its criteria are unchanged.
 
     The river starts the worker by itself here, with no `/work` and no Autopilot line (AGENTS.md, step 5)."""
-    to_planner = {**GOOD_REVIEW, "stage": "pr", "blockers": [{**GOOD_REVIEW["blockers"][0], "fixer": "planner"}]}
+    to_planner = {**GOOD_REVIEW, "stage": "pr", "raises": [{**GOOD_REVIEW["raises"][0], "to": "planner"}]}
     return worker_done() + [rec("reviewer", "pr", to_planner)] + tny.plan_approved()
 
 
