@@ -61,9 +61,7 @@ if os.path.exists(os.path.join(os.environ["FAKE_GH_DIR"], "crash")):
 
 BLOCK = {"previous_step": {"did": ["Planned one criterion."], "decided": [], "open": []},
          "stage": "plan", "round": 1, "verdict": "block", "summary": "One test proves nothing.",
-         "blockers": [{"id": "B1", "criterion": "57.1", "test": "tests/test_x.py::test_a", "problem": "It asserts nothing.",
-                       "evidence": "test_a has no assert.", "fix": "Assert the value.", "fixer": "planner"}],
-         "notes": [], "outside_plan": [], "resolved": [],
+         "raises": [{"kind": "blocker", "to": "planner", "label": "57.1", "text": "It asserts nothing.", "evidence": "test_a has no assert."}],
          "asks": [{"ask": "Fix it.", "source": "https://github.com/o/r/issues/57", "criterion": "57.1"}]}
 
 

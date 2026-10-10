@@ -40,9 +40,9 @@ GitHub is the office: issues are the tasks, pull requests are the work, comments
 ## Roles
 
 - **Owner:** decides. Approves plans and results, routes proposals. Only a code owner's commands count.
-- **Planner:** turns a rough issue into a plan: an objective, acceptance criteria, scope, and a test for every criterion written before any code. It judges the ask first and raises a concern only with evidence. It may change or delete an older test when the plan makes it wrong, with a reason the owner sees. It proposes splits; it never writes code.
+- **Planner:** turns a rough issue into a plan: an objective, acceptance criteria, scope, and a test for every criterion written before any code. It judges the ask first and raises a doubt only with evidence, as a question for the owner. It may change or delete an older test when the plan makes it wrong, with a reason the owner sees. It proposes splits; it never writes code.
 - **Worker:** builds what the approved plan says, on a fresh machine, within scope, until its tests pass. It never changes the plan's tests.
-- **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and ends with a list of proposed issues.
+- **Reviewer:** checks the plan, then the result (a real PR review). It blocks only on a promise with no proof or a proof that proves nothing, and raises the issues it finds outside this one.
 - **Code:** everything that must be exact (see the principles).
 
 ## The flow (the river)
@@ -64,13 +64,13 @@ A command is the first word of an owner's comment on the issue or its PR, or of 
 
 - `/plan`: the planner (re)plans. `/work`: the worker builds, or an approved split is filed. `/review`: the reviewer looks again; on an issue it grades the plan, on a PR the work.
 - `/autopilot start` / `/autopilot stop`: put the issue, or the issue a PR was built for, and every sub-issue under it at every level on or off autopilot (the `autopilot` label). It leaves one comment where it was said naming every issue it switched. `/autopilot start` picks up what is waiting: an approved plan of that issue still waiting for `/work` starts the worker, and an approved split not yet filed is filed, as on autopilot; the issue itself, with no sub-issues, no plan and nothing open to wait for, starts its planner with one line `Autopilot: switched on, starting plan` where the owner would have said `/plan`; every issue under it, at every level, with no sub-issues, no plan and nothing open to wait for starts its planner; and every pull request in the tree its code review approved merges as in step 6. A split filed by `/work` on autopilot puts its stories on autopilot and starts the ones with nothing to wait for.
-- `/issue`: file the reviewer's proposed issues (planned).
+- `/issue`: file the issues the agents raised (planned).
 - No command, nothing starts. Bots never start anything. An Approve never starts anything: it only ever means merge.
 - Reviewers never start on the owner's command alone except `/review`; otherwise the river starts them.
 
 ## Questions
 
-Only the planner asks the owner, as a plain list inside its plan, and only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker and the reviewer never ask: the plan is the contract, and disagreements reach the owner by escalation. On autopilot the plan reviewer judges each question's assumption against the owner's words (see the flow).
+The planner, the worker and the reviewer raise and answer only through two fields of their hand-back, raises and answers. A raise is a question, a blocker or an issue, sent only where code's table allows; each agent starts with the open raises sent to it, each with its ID, and code rejects a hand-back that leaves one unanswered. The planner asks the owner by raising a question inside its plan, only where the owner's words allow two readings and no principle or earlier decision settles it. Each question says which reading it planned for, so the owner may skip answering. The worker never asks the owner: the plan is the contract, and disagreements reach the owner by escalation. On autopilot the plan reviewer may answer a planner's question for the owner only with the owner's own words, quoted with where they said them, which code checks are really there (see the flow).
 
 ## Where specs go
 

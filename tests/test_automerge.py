@@ -303,10 +303,9 @@ def review_pr(verdict):
     """A code review's hand-back: an approval, or a block with one blocker for the worker."""
     h = {"previous_step": {"did": ["Built the fix."], "decided": [], "open": []}, "verdict": verdict,
          "summary": "Every criterion's test passes." if verdict == "approve" else "57.1's test fails.",
-         "blockers": [], "notes": [], "outside_plan": [], "resolved": [], "issues_found": []}
+         "raises": [], "answers": []}
     if verdict == "block":
-        h["blockers"] = [{"id": "B1", "criterion": "57.1", "problem": "The test fails.", "evidence": "tests/test_x.py::test_a",
-                          "fix": "Make it pass.", "test": "tests/test_x.py::test_a", "fixer": "worker"}]
+        h["raises"] = [{"kind": "blocker", "to": "worker", "label": "57.1", "text": "The test fails.", "evidence": "tests/test_x.py::test_a"}]
     return h
 
 
@@ -314,7 +313,7 @@ def worker_record():
     """A passed worker record."""
     return {"role": "worker", "stage": None, "run_id": "3", "run": "https://github.com/o/r/actions/runs/3",
             "models": ["claude-opus-5-5"], "handback": {"summary": "Built it.", "criteria": {"57.1": "x.py"},
-                                                        "evidence": "pytest: 1 passed", "outside_scope": []},
+                                                        "evidence": "pytest: 1 passed", "raises": []},
             "check": {"passed": True, "problems": []}}
 
 
