@@ -69,6 +69,22 @@ jobs:
       - name: Copy the runtime from main before touching any branch
         # AGENTS.md comes too: the river checks the owner's words a plan reviewer quotes from it.
         run: mkdir -p /tmp/runtime && cp -r dokima /tmp/runtime/dokima && { cp AGENTS.md /tmp/runtime/ 2>/dev/null || true; }
+      # The app's budget is read as the run starts and again once the agent has finished, into the file the record
+      # reads, each with a key made for that one call and revoked at once.
+      - id: budget-before-key
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: Read the API budget before the run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.budget-before-key.outputs.token }}
+        run: |
+          python3 -m dokima.budget before app "$OUT/budget.jsonl"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the budget's key could not be revoked"
       - name: Only a code owner starts an agent
         env:
           SENDER: ${{ github.actor }}
@@ -273,6 +289,23 @@ jobs:
             echo "::error title=Fence::$(paste -sd' ' /tmp/fence-err.txt)"
           fi
           [ -s "$OUT/dropped.txt" ] && echo "::warning title=Dropped by the fence::$(paste -sd, "$OUT/dropped.txt")" || true
+      # The budget after the run, read before the record is written so the record shows it.
+      - id: budget-after-key
+        if: always()
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: Read the API budget after the run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.budget-after-key.outputs.token }}
+        run: |
+          python3 -m dokima.budget after app "$OUT/budget.jsonl"
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the budget's key could not be revoked"
       - name: Write this run's record
         if: always()
         env:
@@ -430,6 +463,21 @@ jobs:
             -f "client_payload[role]=$2" -f "client_payload[stage]=${3:-plan}" -f "client_payload[issue]=$N" \
             -f "client_payload[card]=$NEXT_CARD"
           echo "Started the $2${3:+ ($3)} for #$N"
+      # The budget after the job's last call to GitHub, kept with the run with every other reading.
+      - name: Read the API budget after the job's last call
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget after app "$OUT/budget.jsonl"
+      - name: Keep the API budget with the run
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-${{ github.job }}
+          path: ${{ env.OUT }}/budget.jsonl
+          if-no-files-found: warn
       - name: Fail closed on a bad hand-back or the wrong model
         if: always()
         run: |

@@ -31,6 +31,11 @@ jobs:
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Read the API budget before the run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget before app /tmp/budget.jsonl
       - name: Close done parents, switch done trees off, start what the close unblocked
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -45,3 +50,17 @@ jobs:
         run: |
           printf 'Autopilot could not finish after #%s closed: %s ([run](%s))\n' "$N" "$(paste -sd' ' /tmp/why.txt 2>/dev/null)" "$RUN" > /tmp/autopilot.md
           gh issue comment "$N" -R "$GITHUB_REPOSITORY" --body-file /tmp/autopilot.md
+      - name: Read the API budget after the run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget after app /tmp/budget.jsonl
+      - name: Keep the API budget with the run
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-${{ github.job }}
+          path: /tmp/budget.jsonl
+          if-no-files-found: warn
