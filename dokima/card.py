@@ -826,11 +826,11 @@ def main():
         sys.exit(1)
 
 
-def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_only=False):
-    """Write the card at the top of the issue and its PR.
+def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_only=True):
+    """Write the card at the top of the issue and its PR, where it changed (#380).
 
-    Returns the blocking links and loop its card showed before and shows now. With `changed_only`, a card that
-    already shows what it would be drawn as is not rewritten.
+    Each is written only when it differs from what it shows. Returns the blocking links and loop its card showed before and shows now. With `changed_only` false, a card that
+    already shows what it would be drawn as is rewritten anyway.
     `plans` gives the links of a plan approved just now, by issue (see their_links). `noted` adds (True) or removes
     (False) issues from the index of those whose approved plans link here. The Blocked by and Blocks lines are
     GitHub's own blocked-by links, read now; `cache` keeps what this run already read.
