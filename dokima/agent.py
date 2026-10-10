@@ -1396,8 +1396,12 @@ def command_of(body):
 
 
 def issue_of_pr(head, body):
-    """The issue a pull request was built for: from its branch (work/issue-N or try/issue-N), else 'Closes #N'."""
-    m = re.match(r"(?:work|try)/issue-(\d+)$", head or "") or re.search(r"(?i)\b(?:closes|fixes|resolves) #(\d+)", body or "")
+    """The issue a pull request was built for: from its branch, else its closing line.
+
+    The branch is work/issue-N or try/issue-N; the closing line is 'Closes' with the issue's full address or the old
+    'Closes #N'."""
+    m = re.match(r"(?:work|try)/issue-(\d+)$", head or "") or re.search(
+        r"(?i)\b(?:closes|fixes|resolves) (?:#|https://github\.com/[\w.-]+/[\w.-]+/issues/)(\d+)\b", body or "")
     return m.group(1) if m else None
 
 
