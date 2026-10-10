@@ -331,22 +331,26 @@ def status_line(repo, stage, todo):
 
 
 def child_row(repo, child):
-    """One child of a split: its link, its title and its stage, or unknown when its stage could not be read."""
+    """One child of a split: its bare link, then its stage, or unknown when unread.
+
+    GitHub draws the child's title from the bare link, so it is not written out."""
     st = child.get("stage") if child.get("stage") in STAGES else "unknown"
     if st == "Merged":
         st = f"{field_icon(repo, 'merged')} {st}"
     n = child["number"]
-    return f"- [#{n}](https://github.com/{repo}/issues/{n}) {escape(child.get('title'))} · {st}"
+    return f"- https://github.com/{repo}/issues/{n} · {st}"
 
 
 def links_row(repo, issue, pr, worker, check_runs):
-    """The links that matter, the issue and its PR both included, so the card reads the same on either page."""
+    """The links that matter, the issue and its PR both included, so the card reads the same on either page.
+
+    The issue and the PR are written out bare, so GitHub draws them as its own references."""
     links = []
     if worker:
         links.append(f"[latest run]({worker['html_url']})")
-    links.append(f"[issue #{issue['number']}]({issue['url']})")
+    links.append(issue["url"])
     if pr:
-        links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
+        links.append(f"https://github.com/{repo}/pull/{pr['number']}")
     if pr:
         links.append(f"{field_icon(repo, 'files changed')} [files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
@@ -356,7 +360,8 @@ def criterion_item(repo, label, c, check, tests):
     """One criterion bullet: its status circle, its label linked to its check, its words plain.
 
     The label links only when there is a check. Under it one italic Verified by line per test with a docstring, only
-    the words Verified by linking to the test, then Source linking to where the owner asked for it, when it has one."""
+    the words Verified by linking to the test, then Source: and the link to where the owner asked for it written out
+    bare, so GitHub draws it as its own reference, when it has one."""
     if check:
         label = f'<a href="{check["html_url"]}">{label}</a>'
     out = [f"- {circle(repo, state(check))} **{label}:** {escape(c.get('text'))}"]
@@ -365,7 +370,7 @@ def criterion_item(repo, label, c, check, tests):
             out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
                        f'{escape(t["verified_by"])}*')
     if c.get("source"):
-        out.append(f'  - <a href="{c["source"]}">Source</a>')
+        out.append(f'  - Source: {c["source"]}')
     return out
 
 
