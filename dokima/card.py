@@ -214,8 +214,75 @@ def fold(title, lines):
     return [f"<details><summary><b>{title}</b></summary>", "", *lines, "", "</details>"]
 
 
-def escape(text):
-    return html.escape(text or "", quote=False)
+FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})([^\n]*)")
+
+
+def code_blocks(text):
+    """`text` split into words and closed code blocks, in order.
+
+    Each part is (False, words) or (True, the block's lines). A fence that never closes is not a block, so what follows it stays words."""
+    lines, out, words = text.split("\n"), [], []
+    i = 0
+    while i < len(lines):
+        m = FENCE.fullmatch(lines[i])
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            mark = m.group(1)
+            end = next((j for j in range(i + 1, len(lines))
+                        if re.fullmatch(rf"[ \t]*{re.escape(mark[0])}{{{len(mark)},}}[ \t]*", lines[j])), None)
+            if end is not None:
+                out += [(False, "\n".join(words))] if words else []
+                out.append((True, [mark + m.group(2)] + lines[i + 1:end] + [mark]))
+                words, i = [], end + 1
+                continue
+        words.append(lines[i])
+        i += 1
+    return out + ([(False, "\n".join(words))] if words else [])
+
+
+def escape_words(line):
+    """One line of an agent's words: code in backticks as written, everything else HTML-escaped.
+
+    Backticks pair as GitHub pairs them: a run opens a code span closed by the next run of the same length, a
+    backslash before a backtick makes it plain, and a run that never closes is plain text."""
+    out, i = [], 0
+    while i < len(line):
+        if line[i] == "\\":
+            out.append(html.escape(line[i:i + 2], quote=False))
+            i += 2
+            continue
+        if line[i] == "`":
+            run = re.match(r"`+", line[i:]).group(0)
+            close = re.compile(rf"(?<!`){run}(?!`)").search(line, i + len(run))
+            if close:
+                out.append(line[i:close.end()])
+                i = close.end()
+            else:
+                out.append(run)
+                i += len(run)
+            continue
+        j = i
+        while j < len(line) and line[j] not in "\\`":
+            j += 1
+        out.append(html.escape(line[i:j], quote=False))
+        i = j
+    return "".join(out)
+
+
+def escape(text, indent=""):
+    """An agent's text, safe to draw: code as written, every other word HTML-escaped.
+
+    So its words never draw HTML. Code is a span in backticks or a fenced code block. The words go on one line; each code block keeps its lines,
+    on lines of its own under `indent`, the indent of the list item it sits in, and the words after it follow on a
+    new line under the same indent."""
+    out = []
+    for block, part in code_blocks(text or ""):
+        if block:
+            # A block starts on a line of its own, even first, never after the words before the text.
+            out += [""] if not out else []
+            out += [indent + line for line in part]
+        elif part.split():
+            out += [(indent if out else "") + escape_words(" ".join(part.split()))]
+    return "\n".join(out)
 
 
 RAISE_ICON = {"question": "question", "blocker": "blocker", "issue": "issue found"}
@@ -237,11 +304,14 @@ def raise_line(repo, r):
     """One raise as a list item: icon, label, words and who it is for.
 
     Its ID is never drawn."""
-    words = lambda s: escape(" ".join(str(s).split()))
+    words = lambda s: escape(str(s))
     label = f"**{words(r['label'])}:** " if isinstance(r.get("label"), str) and r["label"].strip() else ""
     who = ("filed as an issue" if r["kind"] == "issue" else
            "for you" if r.get("to") == "owner" else f"for the {words(r.get('to') or 'no one')}")
-    return f"- {field_icon(repo, RAISE_ICON[r['kind']])} {label}{words(r.get('text') or '')} · {who}"
+    text = str(r.get("text") or "")
+    # After a code block, who it is for goes on a line of its own, so the block still closes.
+    after = "\n  " if code_blocks(text) and code_blocks(text)[-1][0] else " "
+    return f"- {field_icon(repo, RAISE_ICON[r['kind']])} {label}{escape(text, '  ')}{after}· {who}"
 
 
 def waiting_raises(recs):
@@ -371,11 +441,11 @@ def criterion_item(repo, label, c, check, tests):
     bare, so GitHub draws it as its own reference, when it has one."""
     if check:
         label = f'<a href="{check["html_url"]}">{label}</a>'
-    out = [f"- {circle(repo, state(check))} **{label}:** {escape(c.get('text'))}"]
+    out = [f"- {circle(repo, state(check))} **{label}:** {escape(c.get('text'), '  ')}"]
     for t in tests:
         if t and t.get("verified_by"):
             out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
-                       f'{escape(t["verified_by"])}*')
+                       f'{escape(t["verified_by"], "    ")}*')
     if c.get("source"):
         out.append(f'  - Source: {c["source"]}')
     return out
@@ -499,7 +569,7 @@ def render(repo, issue, found, page="issue"):
                                         plan_tests, by_key, tests)) + [""]
         lines += [" ".join(["**Scope:**", ", ".join(f"`{s}`" for s in h.get("scope") or [])]).rstrip(), ""]
         if h.get("out_of_scope"):
-            lines += fold("Out of scope", [f"- {escape(s)}" for s in h["out_of_scope"]]) + [""]
+            lines += fold("Out of scope", [f"- {escape(s, '  ')}" for s in h["out_of_scope"]]) + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
     return "\n".join(lines)
 

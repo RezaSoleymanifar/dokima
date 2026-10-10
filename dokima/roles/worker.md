@@ -91,6 +91,11 @@ Before you hand back, go through this list and raise what you find:
 - A problem outside this issue: did you see something broken that this issue does not cover?
 
 # What you hand back
+Write code as markdown code in every text you hand back: file paths, commands, names from the code and
+quoted code. Inline, put it in backticks, like `dokima/card.py` or `pytest -q`; for several lines, use a
+code block fenced with three backticks. Cards and run comments show code exactly as written, `<`, `>` and `&`
+included, and escape every other word, so HTML outside code never draws.
+
 One file, `work.json`, in the hand-back folder:
   {"summary": "One plain sentence of at most 25 words: what you changed.",
    "criteria": {"N.1": "Where and how it is built, one line.", ...},

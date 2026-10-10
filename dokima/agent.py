@@ -580,7 +580,7 @@ def failed_rows(repo, text, under, source):
     """One failing item, drawn as the issue card draws a criterion.
 
     The failed circle and its words, the lines `under` it, then its Source when it has one."""
-    return ([f"- {card.circle(repo, 'failed')} {card.escape(escape_line(text))}"] + under
+    return ([f"- {card.circle(repo, 'failed')} {card.escape(text, '  ')}"] + under
             + ([f"  - Source: {source}"] if filled(source) else []))
 
 
@@ -615,7 +615,7 @@ def review_lines(repo, rec, plan):
     for k, c in rows.items():
         on = [r for r in blockers if criterion_of(r, rows) == k]
         if on:
-            why = [f"  - {field_icon(repo, 'blocker')} {card.escape(escape_line(r.get('text')))}" for r in on]
+            why = [f"  - {field_icon(repo, 'blocker')} {card.escape(r.get('text'), '    ')}" for r in on]
             failing += failed_rows(repo, c.get("text"), why, c.get("source"))
     for a in h.get("asks") or []:
         if isinstance(a, dict) and str(a.get("criterion", "")).strip() == "missing":
@@ -684,7 +684,7 @@ def raised_lines(repo, rec, placed=()):
     for r in raised:
         lines.append(card.raise_line(repo, r))
         if filled(r.get("evidence")):
-            lines.append(f"  - Evidence: {card.escape(escape_line(r['evidence']))}")
+            lines.append(f"  - Evidence: {card.escape(r['evidence'], '    ')}")
     return lines
 
 
