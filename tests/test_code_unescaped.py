@@ -12,6 +12,10 @@ What these tests pin, so the worker knows the shape:
   run of exactly N backticks, as GitHub reads it) and inside a fenced code block (a line opening with ``` closed by a
   line opening with ```), it changes nothing. Everywhere else it escapes `&`, `<` and `>` as today.
 - A backtick with no closing run opens no code span, so the text after it is still escaped.
+- As on GitHub, a code span never crosses a blank line (a line holding only spaces counts), though it may cross one
+  line break; and a backtick written after a backslash (\\`) is a plain backtick that opens no code span. Inside a
+  code span a backslash is plain text, so `C:\\` is a whole code span, and a backslash that is itself escaped
+  (\\\\`) leaves the backtick after it free to open one.
 - The issue card (`card.render`) and a run comment (`agent.render`) draw agent text through it: a criterion's text,
   an out-of-scope line, a raise's words and its evidence.
 - The planner, worker and reviewer prompts (`dokima/roles/*.md`) each hold one section headed "# Code in text" that
@@ -146,6 +150,55 @@ def test_card_still_escapes_plain_words(record_property):
     ln = line_with(draw(f"Press <kbd>Enter</kbd> to run {CODE}", "Nothing else"), "Press")
     assert f"Press &lt;kbd&gt;Enter&lt;/kbd&gt; to run {CODE}" in ln, \
         f"477.2: the card drew an agent's HTML, or escaped its code: {ln!r}"
+
+
+def test_span_rules_follow_github(record_property):
+    """Code across a line break, or ending in a backslash, keeps its <, >, &.
+
+    GitHub lets a code span cross one line break, reads a backslash inside a span as plain text, and lets a backtick
+    after an escaped backslash open a span. Escapes one text of each kind and checks it comes back as GitHub shows it.
+    Proves 477.1."""
+    record_property("proves", "477.1")
+    cases = {"Run `a\n<b>` now": "Run `a\n<b>` now",
+             "Path `C:\\` & `<b>`": "Path `C:\\` &amp; `<b>`",
+             "Odd \\\\`<b>` & c": "Odd \\\\`<b>` &amp; c"}
+    for text, want in cases.items():
+        got = card.escape(text)
+        assert got == want, f"477.1: {text!r} should show as GitHub reads it, {want!r}, but came back {got!r}"
+
+
+def test_no_span_across_blank_line_or_after_backslash(record_property):
+    """Backticks GitHub does not read as code never stop an agent's HTML being escaped.
+
+    Escapes a pair of backticks with a blank line between them (and one with a line of spaces between them), and a
+    pair written as backslash-backtick, and checks the <img> in each is still escaped exactly as on main. Beside each,
+    the nearest real code (a span across one line break, a span ending in a backslash) keeps its <b> as written, so
+    escaping everything does not pass. Proves 477.2."""
+    record_property("proves", "477.2")
+    cases = {"Run `a\n<b>` now": "Run `a\n<b>` now",
+             "Path `C:\\` & `<b>`": "Path `C:\\` &amp; `<b>`",
+             "Run `a\n\n<img src=x>` now": "Run `a\n\n&lt;img src=x&gt;` now",
+             "Run `a\n  \n<img src=x>` now": "Run `a\n  \n&lt;img src=x&gt;` now",
+             "Run \\`<img src=x>\\` now": "Run \\`&lt;img src=x&gt;\\` now"}
+    for text, want in cases.items():
+        got = card.escape(text)
+        assert got == want, f"477.2: {text!r} should come back {want!r}, escaped outside GitHub's code and as written in it; got {got!r}"
+
+
+def test_card_escapes_html_outside_github_code(record_property):
+    """On the issue card, an <img> outside GitHub's code shows as text.
+
+    Draws the card for a criterion whose <img> sits after backticks split by a blank line, and one whose <img> sits
+    between backslash-backticks, and checks the card never holds the raw tag and shows it escaped. Beside them, a
+    criterion with real code across one line break shows its <b> as written, so escaping everything does not pass.
+    Proves 477.2."""
+    record_property("proves", "477.2")
+    text = draw("Run `a\n<b>` now", "Nothing else")
+    assert "<b>` now" in text, f"477.2: the card escaped real code that crosses one line break:\n{text}"
+    for criterion in ("Run `a\n\n<img src=x>` now", "Run \\`<img src=x>\\` now"):
+        text = draw(criterion, "Nothing else")
+        assert "<img src=x>" not in text, f"477.2: the card draws an agent's <img> from {criterion!r}:\n{text}"
+        assert "&lt;img src=x&gt;" in text, f"477.2: the card lost the agent's <img> from {criterion!r}:\n{text}"
 
 
 @pytest.mark.parametrize("role", ["planner", "worker", "reviewer"])
