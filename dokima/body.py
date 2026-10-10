@@ -1,7 +1,8 @@
 """The issue body: code's card above one marker, the owner's ask folded below, never rewritten.
 
 Every ask, the owner's own or a split's story quoted by code from the parent's approved plan, sits folded under
-Original issue (#373). Bodies saved between #237 and #373 show the ask open: reading still accepts it, and the next
+Original issue (#373). While an issue has no plan, its card's Definition of Done follows the fold, after its own
+marker (#371). Bodies saved between #237 and #373 show the ask open: reading still accepts it, and the next
 redraw folds it.
 
 Every code path that redraws an issue body (the card and the planner) saves it through `save`, which keeps the
@@ -13,10 +14,24 @@ MARKER = "<!-- dokima-ask -->"
 FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
 OPEN_START = "\n\n"
+DONE = "<!-- dokima-done -->"
+TRAILER = "\n\n" + DONE + "\n"
 
 
 class Refused(Exception):
     """A redraw that would change the owner's part; its message says why."""
+
+
+def trailer(below):
+    """`below` split into the owner's fold and the Definition of Done line after it.
+
+    Only the last DONE marker counts, and only when one line follows it and the fold closes right before it, so the
+    owner's own copy of the marker never ends their text early."""
+    i = below.rfind(TRAILER)
+    if i < 0 or "\n" in below[i + len(TRAILER):] or not below[:i].endswith(FOLD_END) or \
+            not below.startswith(FOLD_START) or i < len(FOLD_START) + len(FOLD_END):
+        return below, ""
+    return below[:i], below[i:]
 
 
 def ask(body):
@@ -24,7 +39,7 @@ def ask(body):
     body = body or ""
     if MARKER not in body:
         return body
-    below = body.split(MARKER, 1)[1]
+    below = trailer(body.split(MARKER, 1)[1])[0]
     if below.startswith(FOLD_START) and below.endswith(FOLD_END) and len(below) >= len(FOLD_START) + len(FOLD_END):
         return below[len(FOLD_START):len(below) - len(FOLD_END)]
     if below.startswith(OPEN_START):
@@ -33,12 +48,15 @@ def ask(body):
 
 
 def redraw(body, top):
-    """The new body: `top` above the marker, the owner's part folded below; Refused when it would change."""
+    """The new body: `top` above the marker, the owner's part folded below; Refused when it would change.
+
+    What `top` holds after its DONE marker (a card with no plan's Definition of Done) goes below the fold."""
     body = body or ""
     owner = ask(body)
-    below = FOLD_START + owner + FOLD_END
+    top, done = top.split(DONE, 1) if DONE in top else (top, None)
+    below = FOLD_START + owner + FOLD_END + ("" if done is None else TRAILER + done.strip("\n"))
     new = top.rstrip("\n") + "\n\n" + MARKER + below
-    if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below:
+    if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below or (done is not None and not trailer(below)[1]):
         raise Refused("the owner's part below the marker would change: the new card holds the marker "
                       f"`{MARKER}` itself, so the owner's original ask would no longer read back as written")
     return new
