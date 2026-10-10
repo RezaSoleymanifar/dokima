@@ -117,13 +117,13 @@ def test_every_run_comment_opens_with_one_plain_sentence_saying_what_the_run_did
 
 
 def test_the_long_parts_of_every_run_comment_are_folded(record_property):
-    """Non-functional requirements, test changes, notes and details are folded on every run comment, never on top.
+    """Test changes, notes and details are folded on every run comment, never on top.
 
     Draws a plan, a build and a review full of long parts, and checks each long part's words are absent from the
-    short part on top and present inside a fold other than the full record."""
+    short part on top and present inside a fold other than the full record. The plan's non-functional requirements,
+    scope and out of scope are on the issue card, and its run comment no longer repeats them (#236)."""
     record_property("proves", "182.1")
-    cases = [("plan", rec("planner", handback=PLAN),
-              ["Jobs survive a restart-zq.", "Calls are async now-zq.", "dokima/jobs_zq.py", "Cancelling a job-zq."]),
+    cases = [("plan", rec("planner", handback=PLAN), ["Calls are async now-zq."]),
              ("work", rec("worker", handback=WORK),
               ["submit() returns the id-zq", "A shared helper needed one line-zq.",
                "It waits a real day-zq.", "The id is returned in 0.1 s-zq."]),
@@ -160,16 +160,13 @@ def test_run_comments_fold_with_the_same_code_as_the_issue_card(record_property,
 
 
 def test_the_planner_card_shows_the_plan_or_its_questions_or_the_split_on_top(record_property):
-    """The planner's card shows on top the plan, or its questions beside the plan, or the proposed split.
+    """The planner's card shows on top its questions beside the plan, or the proposed split.
 
-    Draws a plan's comment and checks its user story and both acceptance criteria are in the short part on top. Then
-    draws a plan with a question and checks the question and its assumption share a line on top, beside the plan's
-    criteria; then a split, and checks the feature and both story titles are on top. Last, a rejected plan's card
-    shows why it was rejected."""
+    Draws a plan posted with a question in the field #300 retired, which keeps the comment it was posted with (#299),
+    and checks the question and its assumption share a line on top, beside the plan's criteria; then a split, and
+    checks the feature and both story titles are on top. Last, a rejected plan's card shows why it was rejected. A plan
+    of today's shape no longer repeats the issue card on its run comment (#236)."""
     record_property("proves", "182.2")
-    short = top(agent.render(rec("planner", handback=PLAN)))
-    for text in [PLAN["user_story"]] + [c["text"] for c in PLAN["acceptance_criteria"]]:
-        assert text in short, f"182.2: the planner card does not show {text!r} on top:\n{short}"
     short = top(agent.render(rec("planner", handback=dict(PLAN, questions=QUESTIONS))))
     q = QUESTIONS[0]
     assert any(q["question"] in l and q["assumption"] in l for l in short.splitlines()), \
