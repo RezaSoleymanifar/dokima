@@ -2262,7 +2262,7 @@ def main(argv):
             print("The plan was not approved: the plan check stays as it is.")
         return 0
     if argv[1] == "board":
-        from dokima import board, plan
+        from dokima import board, plan, retry
         spec, repo = os.environ.get("DOKIMA_BOARD", "").strip(), os.environ.get("GITHUB_REPOSITORY", "")
         if not spec:
             print("No board set; nothing to move.")
@@ -2275,7 +2275,8 @@ def main(argv):
         if rec.get("role") == "cancelled" or os.path.exists(os.path.join(argv[3], "board.txt")) and (rec.get("check") or {"passed": True}).get("passed"):
             # A run that decided what follows, or was cancelled, is placed from GitHub's state, never from the run.
             try:
-                placed = board.rebuild(board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2]))
+                placed = retry.once_more("the board step", lambda: board.rebuild(
+                    board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2])))
             except RuntimeError as e:
                 print(f"::error::{e}")
                 return 1
