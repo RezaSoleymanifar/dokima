@@ -11,6 +11,7 @@ The fake GitHub answers:
   - GET .../pulls (any query or fields; an empty page past the first): the open PRs, drafts included;
   - GET .../compare/BASE...HEAD, where HEAD is a PR's head sha, its ref or its "owner:ref" label: behind_by, ahead_by;
   - PUT .../pulls/N/update-branch (expected_head_sha): 202, or GitHub's refusal for that PR, 422 with its message;
+  - GET .../issues/N/comments: no comments yet (#408 looks for its earlier refusal comment);
   - POST .../issues/N/comments (body): a comment on PR N.
 """
 import json
@@ -79,6 +80,8 @@ class FakeGitHub:
                 self.fail(self.refuse[n])
             return {"message": "Updating pull request branch.", "url": f"https://github.com/{REPO}/pull/{n}"}
         m = re.fullmatch(rf"repos/{REPO}/issues/(\d+)/comments", bare)
+        if method == "GET" and m:
+            return []
         if method == "POST" and m:
             return {"id": len(self.calls), "body": fields.get("body", "")}
         raise AssertionError(f"189: unexpected GitHub call {method} {path} {fields}")
@@ -175,6 +178,8 @@ if method == "GET" and m:
             print(json.dumps({{"behind_by": p["_behind"], "ahead_by": p["_ahead"]}})); sys.exit(0)
 if method == "PUT" and re.fullmatch("repos/" + d["repo"] + r"/pulls/\\d+/update-branch", bare):
     print(json.dumps({{"message": "Updating pull request branch."}})); sys.exit(0)
+if method == "GET" and bare.endswith("/comments"):
+    print(json.dumps([])); sys.exit(0)
 if method == "POST" and bare.endswith("/comments"):
     print(json.dumps({{"id": 1}})); sys.exit(0)
 sys.stderr.write("gh: Not Found (HTTP 404)\\n"); sys.exit(1)
