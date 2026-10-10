@@ -2,7 +2,7 @@
 
 GitHub's merge queue tests each pull request on top of the latest main in a temporary commit and sends the
 `merge_group` event, not `pull_request`. These tests prove the two required workflows (full-suite.yml and
-done-whens.yml) run on that event, that `python3 -m dokima.checks matrix` finds the pull request's issue from the
+acceptance-criteria.yml) run on that event, that `python3 -m dokima.checks matrix` finds the pull request's issue from the
 queue's branch (refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>) and lists the same checks as on the pull request, and
 that pull request checks are unchanged.
 
@@ -174,7 +174,7 @@ def run_matrix(tmp_path):
 
 
 def pr_event(n):
-    """The pull_request_target payload done-whens.yml gets for pull request n."""
+    """The pull_request_target payload acceptance-criteria.yml gets for pull request n."""
     p = PRS[n]
     return {"action": "synchronize", "number": n,
             "pull_request": {"number": n, "head": {"ref": p["headRefName"], "sha": PR_SHA}, "body": p["body"],
@@ -237,7 +237,7 @@ def evaluate(expr, event, sha):
 
 def commit_expressions():
     """The `ref:` of the checkout of the pull request's tests and the HEAD_SHA its annotations link to."""
-    lines = workflow("done-whens.yml")
+    lines = workflow("acceptance-criteria.yml")
     refs, heads = [], []
     for i, line in enumerate(lines):
         if re.match(r"^\s+ref:\s", line):
@@ -257,12 +257,12 @@ def suite_refs():
 def test_both_required_workflows_run_in_the_merge_queue_on_the_queued_commit(record_property):
     """Both required workflows run in the merge queue, testing the queued commit.
 
-    Proves 191.1. Reads the `on:` of full-suite.yml and done-whens.yml and checks each lists merge_group; then evaluates the commit
-    the done-whens check checks out and the commit its annotations link to for a merge_group event, and checks both are
+    Proves 191.1. Reads the `on:` of full-suite.yml and acceptance-criteria.yml and checks each lists merge_group; then evaluates the commit
+    the criteria check checks out and the commit its annotations link to for a merge_group event, and checks both are
     the queue's commit (the pull request on top of the latest main), not empty and not main's; and does the same for
     the commit the all tests check checks out."""
     record_property("proves", "191.1")
-    for name in ("full-suite.yml", "done-whens.yml"):
+    for name in ("full-suite.yml", "acceptance-criteria.yml"):
         assert "merge_group" in triggers(workflow(name)), \
             f"191.1: {name} does not run on the merge queue's merge_group event; its `on:` is {sorted(triggers(workflow(name)))}"
     for expr in suite_refs():
@@ -270,19 +270,19 @@ def test_both_required_workflows_run_in_the_merge_queue_on_the_queued_commit(rec
         assert got == QUEUE_SHA, \
             f"191.1: in the merge queue the all tests checkout `{expr}` gives {got!r}, not the queued commit {QUEUE_SHA}"
     refs, heads = commit_expressions()
-    assert refs and heads, "191.1: done-whens.yml has no `ref:` on the checkout with `path: pr` or no HEAD_SHA"
+    assert refs and heads, "191.1: acceptance-criteria.yml has no `ref:` on the checkout with `path: pr` or no HEAD_SHA"
     for what, exprs in (("checkout ref", refs), ("HEAD_SHA", heads)):
         for expr in exprs:
             got = evaluate(expr, queue_event(12), QUEUE_SHA)
-            assert got is not None, f"191.1: done-whens.yml {what} `{expr}` is not `${{{{ a || b }}}}` of github.sha / github.event paths"
+            assert got is not None, f"191.1: acceptance-criteria.yml {what} `{expr}` is not `${{{{ a || b }}}}` of github.sha / github.event paths"
             assert got == QUEUE_SHA, \
-                f"191.1: in the merge queue the done-whens {what} `{expr}` gives {got!r}, not the queued commit {QUEUE_SHA}"
+                f"191.1: in the merge queue the Acceptance criteria {what} `{expr}` gives {got!r}, not the queued commit {QUEUE_SHA}"
 
 
 @pytest.mark.parametrize("pr, issue", [(12, 191), (34, 77), (56, 88)],
                          ids=["linked-by-branch", "linked-by-closes-in-body", "linked-by-github-closing-reference"])
 def test_queued_pr_gets_the_same_checks_as_on_the_pr(record_property, run_matrix, pr, issue):
-    """In the queue, the done-whens find the PR's issue and list its same checks.
+    """In the queue, the criteria checks find the PR's issue and list its same checks.
 
     Proves 191.2. Runs `dokima.checks matrix` for a merge_group event whose branch names the pull request, for three pull requests
     linked to three different issues (by try/issue-N branch, by 'Closes #N' in the body, and by GitHub's closing
@@ -314,7 +314,7 @@ def test_queued_pr_with_no_linked_issue_fails_the_gate_with_the_same_reason(reco
 
     Proves 191.3. Runs `dokima.checks matrix` for a pull request with no issue link (no try/issue-N branch, no 'Closes #N', no
     closing reference), on the PR and in the queue, and checks both give the one failing check 'No approved plan found:
-    no issue linked' with no tests; then checks done-whens.yml still fails a check with no tests and makes the gate
+    no issue linked' with no tests; then checks acceptance-criteria.yml still fails a check with no tests and makes the gate
     need every check to pass."""
     record_property("proves", "191.3")
     reason = [{"id": "none", "name": "No approved plan found: no issue linked", "tests": ""}]
@@ -324,9 +324,9 @@ def test_queued_pr_with_no_linked_issue_fails_the_gate_with_the_same_reason(reco
     assert code == 0, f"191.3: in the merge queue (pull request #90), `dokima.checks matrix` failed:\n{err}"
     assert on_pr == reason, f"191.3: an unlinked pull request should list {reason}, got {on_pr}"
     assert in_queue == reason, f"191.3: an unlinked queued pull request should list {reason}, got {in_queue}"
-    text = "\n".join(workflow("done-whens.yml"))
+    text = "\n".join(workflow("acceptance-criteria.yml"))
     assert re.search(r'if \[ -z "\$TESTS" \]; then .*exit 1; fi', text), \
-        "191.3: done-whens.yml no longer fails a check that has no tests"
+        "191.3: acceptance-criteria.yml no longer fails a check that has no tests"
     assert "name: all done-whens passed" in text and 'test "$RESULT" = "success"' in text, \
         "191.3: the 'all done-whens passed' gate no longer needs every check to pass"
 
@@ -335,25 +335,25 @@ def test_pull_request_checks_behave_exactly_as_before(record_property, run_matri
     """Pull request checks are unchanged: same triggers, names, list and commit.
 
     Proves 191.4. Checks the triggers are exactly main's plus merge_group (full-suite.yml: pull_request_target, push to main,
-    merge_group, as #263 left it; done-whens.yml: pull_request_target, merge_group), so nothing was dropped, swapped or
+    merge_group, as #263 left it; acceptance-criteria.yml: pull_request_target, merge_group), so nothing was dropped, swapped or
     added beyond the queue; that the required check names 'all tests' and 'all done-whens passed' are unchanged; that
-    `dokima.checks matrix` on a pull request lists its issue's plan exactly; that on a pull request the done-whens
+    `dokima.checks matrix` on a pull request lists its issue's plan exactly; that on a pull request the criteria
     check out and annotate the pull request's head commit, not main's; and that the all tests check still checks out
     the pull request's head on a pull request and main's commit on a push to main."""
     record_property("proves", "191.4")
-    suite, dw = workflow("full-suite.yml"), workflow("done-whens.yml")
+    suite, dw = workflow("full-suite.yml"), workflow("acceptance-criteria.yml")
     assert triggers(suite) == {"pull_request_target", "push", "merge_group"}, \
         f"191.4: full-suite.yml should run on pull_request_target, push and merge_group only, but runs on {sorted(triggers(suite))}"
     assert "branches: [main]" in [x.strip() for x in suite], "191.4: full-suite.yml no longer runs on pushes to main"
     assert triggers(dw) == {"pull_request_target", "merge_group"}, \
-        f"191.4: done-whens.yml should run on pull_request_target and merge_group only, but runs on {sorted(triggers(dw))}"
+        f"191.4: acceptance-criteria.yml should run on pull_request_target and merge_group only, but runs on {sorted(triggers(dw))}"
     assert "name: all tests" in [x.strip() for x in suite], "191.4: the 'all tests' check was renamed"
     assert "name: all done-whens passed" in [x.strip() for x in dw], "191.4: the 'all done-whens passed' check was renamed"
     code, rows, err = run_matrix(pr_event(12))
     assert code == 0, f"191.4: on pull request #12, `dokima.checks matrix` failed:\n{err}"
     assert rows == expected(191), f"191.4: pull request #12 should list issue #191's checks, got {rows}"
     refs, heads = commit_expressions()
-    assert refs and heads, "191.4: done-whens.yml has no `ref:` on the checkout with `path: pr` or no HEAD_SHA"
+    assert refs and heads, "191.4: acceptance-criteria.yml has no `ref:` on the checkout with `path: pr` or no HEAD_SHA"
     for expr in refs + heads:
         got = evaluate(expr, pr_event(12), BASE_SHA)
         assert got == PR_SHA, f"191.4: on a pull request `{expr}` gives {got!r}, not the pull request's head {PR_SHA}"
