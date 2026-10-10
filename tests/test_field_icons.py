@@ -286,9 +286,9 @@ def test_the_issue_and_pr_card_show_each_fields_icon_in_front_of_it(record_prope
                                          {"story": 2, "issue": 42, "title": "B", "blocked_by": []}])]
     text = draw(found_for(split, children=[{"number": 41, "title": "A", "stage": "Merged"},
                                            {"number": 42, "title": "B", "stage": "Plan"}]))
-    row = next((l for l in text.splitlines() if "/issues/41)" in l), "")
+    row = next((l for l in text.splitlines() if re.search(r"/issues/41(?!\d)", l)), "")
     shows(row, "merged", "Merged", "234.2", "a merged child's row")
-    other = next((l for l in text.splitlines() if "/issues/42)" in l), "")
+    other = next((l for l in text.splitlines() if re.search(r"/issues/42(?!\d)", l)), "")
     assert img("merged") not in other, f"234.2: a child still in Plan shows the merged icon: {other}"
 
 

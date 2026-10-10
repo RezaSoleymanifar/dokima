@@ -10,7 +10,8 @@ tests read, with markdown links `[text](url)` and HTML links `<a href="url">text
       - *Verified by: <the test's docstring first line>*      one line per test with a docstring; only the words
                                                               Verified by link, to that test (the Verified by field
                                                               icon may sit in front of the words, inside the link)
-      - Source                                                the word Source links to where the owner asked
+      - Source: <link>                                        the link to where the owner asked, written out bare so
+                                                              GitHub draws it as a reference (#359)
 
 The status icon is an <img> whose alt is its state (not started, running, passed, failed), never inside a link. A
 criterion's lines are its bullet and the indented lines under it, up to the next line that is not indented.
@@ -311,9 +312,9 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
     assert on_pr, f"235.4: the card was not written on the {pr['state']} PR, so it keeps an older card than the issue"
     a, b = block(on_issue), block(on_pr)
     assert a == b, f"235.4: the issue and PR cards differ:\n{a}\n---\n{b}"
-    html = links_as_html(a)
-    assert f'<a href="{ISSUE["url"]}">issue #40</a>' in html, "235.4: the card does not link back to issue #40"
-    assert '<a href="https://github.com/o/r/pull/5">PR #5</a>' in html, "235.4: the card does not link back to PR #5"
+    # The issue and the PR are written out bare, so GitHub draws them as references with their icon and title (#359).
+    assert re.search(r"(^|[\s·])" + re.escape(ISSUE["url"]) + r"($|[\s·])", a, re.M), "235.4: the card does not link back to issue #40"
+    assert re.search(r"(^|[\s·])https://github\.com/o/r/pull/5($|[\s·])", a, re.M), "235.4: the card does not link back to PR #5"
     assert code_review(a) == code_review(b) == "passed", "235.4: a code review that passed does not show passed on both"
     assert "Closes #40" in on_pr, "235.4: the PR lost its line closing the issue"
 
@@ -323,15 +324,14 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
 def source(under):
     """The link on the Source line among a criterion's lines, or None.
 
-    Fails if the line says more than the word Source."""
+    Fails unless the line reads Source: and the link written out bare, which GitHub draws as a reference (#359)."""
     found = [l for l in under if re.match(r"\s+- ", l) and "Source" in plain(l) and "Verified by" not in l]
     if not found:
         return None
     assert len(found) == 1, f"more than one Source line: {found}"
-    links = re.findall(r'<a href="([^"]+)">(.*?)</a>', found[0])
-    assert len(links) == 1 and plain(links[0][1]) == "Source" and plain(re.sub(r"^\s+- ", "", found[0])) == "Source", \
-        f"the Source line is not the one word Source linking to the ask: {found[0]}"
-    return links[0][0]
+    m = re.fullmatch(r"Source: (https://\S+)", plain(re.sub(r"^\s+- ", "", found[0])))
+    assert m and "<a " not in found[0], f"the Source line is not Source: and the bare link to the ask: {found[0]}"
+    return m.group(1)
 
 
 def test_each_criterion_has_a_source_line_after_verified_by(record_property):
