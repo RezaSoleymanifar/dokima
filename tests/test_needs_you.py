@@ -1,6 +1,6 @@
 """Needs you shows only while the river waits on the owner; Autopilot otherwise (#297).
 
-Before this, the board put Needs you where nothing waited on the owner: every time the done-whens checks finished on a
+Before this, the board put Needs you where nothing waited on the owner: every time the criteria checks finished on a
 pull request (even one already merged), on closed issues a run stopped on after the owner had merged, and on parent
 issues left with the pill from before their split was filed. A Needs you the river did set was wiped by the next new
 commit, yet stayed for the whole run after the owner answered with a command. Nothing ever cleared old wrong pills.
@@ -217,7 +217,7 @@ def pr_event(action, number, issue, merged=False):
 
 
 def checks_done(*prs):
-    """The done-whens checks finished on these pull requests."""
+    """The criteria checks finished on these pull requests."""
     return {"action": "completed", "workflow_run": {"pull_requests": [{"number": n} for n in prs]}}
 
 
@@ -254,7 +254,7 @@ def pills(w, *items):
 def test_a_check_finishing_never_marks_a_pull_request_for_the_owner(record_property, make):
     """Finished checks never put Needs you on a pull request.
 
-    Proves 297.1. The done-whens checks finish on PR #60 (for #57 on autopilot, whose plan review sent it back to the
+    Proves 297.1. The criteria checks finish on PR #60 (for #57 on autopilot, whose plan review sent it back to the
     planner by itself), PR #61 (for #58, nothing waits) and PR #62 (for #59, whose approving code review waits for the
     owner to merge, showing Needs you). Afterwards #60 shows Autopilot, #61 nothing and #62 still Needs you."""
     record_property("proves", "297.1")

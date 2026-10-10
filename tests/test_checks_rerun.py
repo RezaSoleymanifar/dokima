@@ -262,8 +262,8 @@ def run(rid, name, path, sha=HEAD, event="pull_request_target", status="complete
 
 
 def plan_check(rid, **kw):
-    """A run of the plan check (done-whens.yml)."""
-    return run(rid, "done-whens", "done-whens.yml", **kw)
+    """A run of the plan check (acceptance-criteria.yml)."""
+    return run(rid, "Acceptance criteria", "acceptance-criteria.yml", **kw)
 
 
 def all_tests(rid, **kw):
