@@ -1,4 +1,4 @@
-name: done-whens
+name: Acceptance criteria
 # One GitHub check per criterion of the PR's approved plan, plus one gate check.
 # Runs main's copy of this workflow and of Dokima's code; only the tests, and the code they judge, come from the PR.
 # In the merge queue they come from the queued commit: the PR on top of the latest main.
@@ -44,14 +44,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q pytest
-      - name: Run this done-when's tests
+      - name: Run this criterion's tests
         working-directory: pr
         env:
           TESTS: ${{ matrix.tests }}
           ID: ${{ matrix.id }}
         run: |
           if [ "$ID" = "text-only" ] && [ -z "$TESTS" ]; then echo "::notice title=Text only::Only text files changed: no plan or tests needed."; exit 0; fi
-          if [ -z "$TESTS" ]; then echo "::error title=$ID has no test::No test verifies this done-when yet."; exit 1; fi
+          if [ -z "$TESTS" ]; then echo "::error title=$ID has no test::No test verifies this criterion yet."; exit 1; fi
           pytest -rA -p no:cacheprovider -o junit_family=xunit1 --junitxml=r.xml $TESTS
       - name: Annotate the tests that ran
         if: always() && matrix.tests != ''
@@ -71,7 +71,7 @@ jobs:
           RESULT: ${{ needs.check.result }}
         run: |
           if [ -z "$MATRIX" ] || [ "$MATRIX" = "[]" ]; then
-            echo "::error title=No done-whens::Link an issue with done-whens (Closes #N) to this pull request."
+            echo "::error title=No criteria::Link an issue with acceptance criteria (Closes #N) to this pull request."
             exit 1
           fi
           test "$RESULT" = "success"

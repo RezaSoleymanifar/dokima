@@ -1393,7 +1393,7 @@ def record_links(repo, number, items):
     return " ".join(failed) + after if failed else None
 
 
-PLAN_CHECK = "done-whens.yml"
+PLAN_CHECK = "acceptance-criteria.yml"
 
 
 def rerun_plan_check(repo, number):
