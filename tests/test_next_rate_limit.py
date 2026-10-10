@@ -22,11 +22,14 @@ through `time.time()` and `time.sleep()`.
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
 
-from dokima import agent
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from dokima import agent  # noqa: E402
 
 N = "57"
 OWNER = "owner-person"
