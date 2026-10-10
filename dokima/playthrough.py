@@ -24,6 +24,8 @@ import sys
 import tempfile
 import time
 
+from dokima import body
+
 SANDBOX = "dokima-dev/card-gallery"
 STEPS = ("issue opened", "plan posted", "plan approved", "build started", "pull request opened",
          "code review started", "code review record posted", "merged")
@@ -51,11 +53,14 @@ def card_of(text):
 def shown(text):
     """What a card shows: its stage, its /work ask and Code review's state.
 
-    Code review's state is read from its Definition of Done."""
+    Code review's state is read from its Definition of Done: the card's own, else a planned issue's below its
+    Original issue fold, the body's last line (#454), never a line quoted in the owner's ask."""
     c = card_of(text)
     line = next((l for l in c.splitlines() if STAGE.match(l.strip())), "")
     stage = STAGE.match(line.strip()).group(1) if line else None
     done = next((l for l in c.splitlines() if "**Definition of Done:**" in l), "")
+    if not done and body.MARKER in (text or ""):
+        done = body.trailer(text.split(body.MARKER, 1)[1].rstrip())[1].rpartition("\n")[2]
     part = next((p for p in done.split(" · ") if re.sub(r"<[^>]*>", "", p).strip().endswith("Code review")), "")
     alts = re.findall(r'alt="([^"]*)"', part)
     return {"stage": stage, "work": "/work" in line, "review": alts[0] if alts else None}

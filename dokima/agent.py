@@ -2537,8 +2537,10 @@ def main(argv):
             at = text.find(fold)
             at = len(text.rstrip("\n")) if at < 0 else at
             open(os.path.join(out, "comment.md"), "w").write(text[:at] + "\n".join(filed) + "\n" + text[at:])
-        text = open(os.path.join(out, "comment.md")).read()
-        open(os.path.join(out, "comment.md"), "w").write(with_next(text, next_line(step, owners)))
+        # A run with no comment written yet gets one that is just its Next line.
+        path = os.path.join(out, "comment.md")
+        text = open(path).read() if os.path.exists(path) else ""
+        open(path, "w").write(with_next(text, next_line(step, owners)))
         if step[3:] == ("autopilot",):
             # The line the owner would have typed `/work` in place of; the workflow posts it on the issue.
             open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")
