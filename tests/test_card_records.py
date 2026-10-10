@@ -22,7 +22,8 @@ The plan is the newest planner record whose check passed. Criterion k is <issue>
 then the non-functional requirements, and its check is the check run named "<issue>.k · ...".
 
 Layout, as the tests read it (issue #235): each criterion is one bullet line "- " opening with its verdict circle (an
-<img> whose alt is its state, never inside a link), then its words, linked to its check when one exists; under it,
+<img> whose alt is its state, never inside a link), then its label, linked to its check when one exists (#354),
+then its words; under it,
 indented, one "Verified by" line per test with a docstring, where the words Verified by link to the test and the
 docstring's first line follows. Markdown links and HTML links read alike. The non-functional requirements sit inside
 a <details> fold. The Definition of Done is one line, the last with a circle
@@ -153,13 +154,19 @@ def alts(html):
 
 
 def circle(text, words, k):
-    """The state on a criterion's circle, and the link on its words or None."""
+    """The state on a criterion's circle, and the link on its label or None.
+
+    Since #354 the only link on the bullet sits on its label (Acceptance criterion or Non-functional requirement),
+    never on the criterion's words."""
     first, second = row_of(text, words, k)
     assert len(alts(first)) == 1, f"{k}: the bullet of “{words}” does not hold exactly one circle"
     assert first.index("<img") < first.index(words) and not alts(second), f"{k}: the circle of “{words}” is not its bullet"
     assert not re.search(r'<a href="[^"]+"[^>]*>\s*<img', first), f"{k}: the circle of “{words}” sits inside a link"
-    link = re.search(r'<a href="([^"]+)"[^>]*>' + re.escape(words) + "</a>", first)
-    return alts(first)[0], link.group(1) if link else None
+    links = re.findall(r'<a href="([^"]+)"[^>]*>(.*?)</a>', first)
+    assert len(links) <= 1, f"{k}: the bullet of “{words}” holds more than one link: {first}"
+    assert not links or links[0][1] in ("Acceptance criterion", "Non-functional requirement"), \
+        f"{k}: the link on the bullet of “{words}” is on “{links[0][1]}”, not on its label: {first}"
+    return alts(first)[0], links[0][0] if links else None
 
 
 def dod(text, k):
@@ -406,11 +413,11 @@ def test_the_user_story_comes_first_then_the_criteria(record_property):
     assert 0 <= text.find(PLAN["user_story"]) < first < second, "180.2: the user story and criteria are not in order"
 
 
-def test_each_criterion_has_its_circle_as_its_bullet_and_its_words_link_its_check(record_property):
-    """Each criterion's verdict circle opens its bullet, and the criterion's words link to its check.
+def test_each_criterion_has_its_circle_as_its_bullet_and_its_label_links_its_check(record_property):
+    """Each criterion's verdict circle opens its bullet, and its label links to its check.
 
     Draws the card with one criterion passed and one failed, and checks each criterion's circle opens its own bullet
-    outside any link, shows that criterion's own verdict, and its words link to that criterion's own check."""
+    outside any link, shows that criterion's own verdict, and its label links to that criterion's own check."""
     record_property("proves", "180.2")
     checks_ = [run("40.1 · First thing works", n=1), run("40.2 · Second thing works", conclusion="failure", n=2)]
     text = draw(check_runs=checks_)
