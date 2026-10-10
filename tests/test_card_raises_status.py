@@ -19,7 +19,7 @@ What the code these tests run must do, as the plan pins it:
 
 How the tests read a card: the status line is the line inside the card that opens with the stage in bold, icons
 allowed in front. A link is markdown `[words](url)` or HTML `<a href="url">words</a>`. GitHub's rendering comes from
-tests/github_render.py: the answers of GitHub's markdown API recorded in tests/github_render/455.json for the exact
+tests/github_render.py: the answers of GitHub's markdown API recorded in docs/rendered/455.json for the exact
 card text, refreshed with `DOKIMA_RECORD_RENDER=1 python3 -m pytest tests/test_card_raises_status.py`.
 """
 import html as htmllib

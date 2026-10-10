@@ -2,8 +2,10 @@
 
 The owner asked that anything about how GitHub displays text is checked against GitHub's real rendering, not only
 against the raw text the code writes. Tests run in CI with no network and no secrets, so each answer of GitHub's
-markdown API (POST https://api.github.com/markdown, mode gfm) is recorded once in tests/github_render/<name>.json,
-keyed by the exact markdown and the repo it was rendered for. A test asks `rendered(markdown, name)`:
+markdown API (POST https://api.github.com/markdown, mode gfm) is recorded once in docs/rendered/<name>.json,
+keyed by the exact markdown and the repo it was rendered for. The recordings live outside tests/ because they record
+what the built code writes: the worker records them after building, and code drops every change a worker makes under
+tests/ (dokima/fence.py), so a recording there would never reach the pull request. A test asks `rendered(markdown, name)`:
 
 - the recorded HTML comes back only for exactly the same markdown and repo; markdown that differs by one character,
   or that was never recorded, fails the test with the command that records it, so a stale answer never passes;
@@ -17,7 +19,7 @@ import urllib.request
 
 import pytest
 
-HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_render")
+HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "rendered")
 
 
 def path_of(name):
@@ -62,6 +64,6 @@ def rendered(markdown, name, repo="o/r"):
     for a in answers:
         if a.get("markdown") == markdown and a.get("repo") == repo:
             return a["html"]
-    pytest.fail(f"GitHub's rendering of this exact text is not recorded in tests/github_render/{name}.json, so it "
+    pytest.fail(f"GitHub's rendering of this exact text is not recorded in docs/rendered/{name}.json, so it "
                 f"cannot be checked; record it with DOKIMA_RECORD_RENDER=1 python3 -m pytest on this test. The text:\n"
                 f"{markdown}")
