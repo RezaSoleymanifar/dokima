@@ -13,7 +13,7 @@ name: card
 # on beside it.
 on:
   workflow_run:
-    workflows: [done-whens, full suite, worker]
+    workflows: [Acceptance criteria, full suite, worker]
     types: [in_progress, completed]
   issues:
   issue_comment:
