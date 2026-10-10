@@ -69,8 +69,9 @@ def test_the_criteria_workflow_is_named_acceptance_criteria_in_its_own_file(reco
     Proves 291.1. Reads .github/workflows/acceptance-criteria.yml: its workflow is named Acceptance criteria with no number, it runs on
     pull_request_target and in the merge queue, one job gives each criterion its own check named from the plan, and the
     gate waits on that job and passes only when it succeeded. done-whens.yml is gone, and no other workflow is named
-    Acceptance criteria or done-whens. Each criterion's check is still named by its number and words, and the plan
-    check an approval reruns (agent.PLAN_CHECK) is this file."""
+    Acceptance criteria or done-whens. Each criterion's check is still named by its number and words, and the code that
+    reruns the checks once a plan is approved never looks for the workflow under its old name: either it reruns every
+    check on the head, or the one workflow file it reruns (agent.PLAN_CHECK) is this file."""
     record_property("proves", "291.1")
     flow = criteria_workflow("291.1")
     assert flow.get("name") == CRITERIA, f"291.1: acceptance-criteria.yml's workflow is named {flow.get('name')!r}, not {CRITERIA!r}"
@@ -93,9 +94,12 @@ def test_the_criteria_workflow_is_named_acceptance_criteria_in_its_own_file(reco
     rows = checks.build_matrix(40, tcr.RECS)
     assert [r["name"] for r in rows] == ["40.1 · First thing works", "40.2 · Second thing works", "40.3 · Nothing leaks out"], \
         f"291.1: each criterion's check is no longer named by its number and words: {[r['name'] for r in rows]}"
-    rerun = getattr(agent, "PLAN_CHECK", None)
+    rerun = getattr(agent, "PLAN_CHECK", "acceptance-criteria.yml")
     assert rerun == "acceptance-criteria.yml", \
         f"291.1: approving a plan reruns the workflow file {rerun!r}, not acceptance-criteria.yml"
+    source = open(os.path.join(ROOT, "dokima", "agent.py")).read()
+    assert "done-whens.yml" not in source and '"done-whens"' not in source, \
+        "291.1: dokima/agent.py still looks for the criteria workflow under its old name, so an approval would not rerun it"
 
 
 def test_the_card_and_the_board_update_when_the_acceptance_criteria_workflow_finishes(record_property):
