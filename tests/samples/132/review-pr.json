@@ -1,11 +1,11 @@
 {
  "previous_step": {
   "did": [
-   "Placed a failed run's card in its stage's column with Needs you.",
-   "With no record, took the stage from the run and still exited 0."
+   "Made the board step place the card when the run never wrote down what follows: the card goes to the run's own stage column with Needs you.",
+   "When the run left no record either, the board step takes the stage from the run it was started as, marks Needs you, and still exits 0."
   ],
   "decided": [
-   "A missing decision counts as the river stopping for the owner."
+   "Treats a missing or unreadable decision as the river stopping for the owner, so a run that handed on keeps the pill cleared."
   ],
   "open": []
  },

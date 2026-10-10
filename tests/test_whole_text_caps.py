@@ -8,18 +8,18 @@ rules from #239 and #240.
 The caps live as named numbers in dokima/words.py, so the shared style file (#484) can quote them:
 
     CRITERION_CAP 12      each acceptance criterion and each non-functional requirement's text
-    USER_STORY_CAP 20     the user story, a split's feature and each story's user story
+    USER_STORY_CAP 20     the user story and each story's user story
     TITLE_CAP 10          each story's title
     WHY_CAP 15            each non-functional requirement's why
     OUT_OF_SCOPE_CAP 15   each out of scope line
-    TEST_CHANGE_CAP 20    each reason in test_changes
     LABEL_CAP 5           each raise's label
     RAISE_TEXT_CAP 30     each raise's text
     EVIDENCE_CAP 30       each raise's evidence
     ANSWER_CAP 25         each answer's why
-    PREVIOUS_STEP_CAP 15  each did, decided and open line of a review's previous_step
-    BUILT_CAP 15          each line of a work hand-back's criteria
-    TEST_RUN_CAP 20       a work hand-back's evidence (its own test run)
+
+Only the fields the owner listed are capped (the owner: "Keep to my words; smallest change."). A plan's test_changes
+reasons, a split's feature, a work hand-back's criteria lines and evidence, and a review's did, decided and open lines
+stay uncapped: every hand-back built below holds them at UNLISTED words, and still passes at its caps.
 
 A rejection names the field the way FIELDS below writes it, then "N words" and "cap of C". The fields of a split's
 story carry the prefix "story S: ". words.handback_caps(handback) returns (listed, rejected): the word-cap messages of
@@ -44,8 +44,8 @@ from tests.test_summary_caps import repo  # noqa: E402,F401
 from tests.test_word_caps import jobs, run as run_planner  # noqa: E402
 
 CAPS = {"CRITERION_CAP": 12, "USER_STORY_CAP": 20, "TITLE_CAP": 10, "WHY_CAP": 15, "OUT_OF_SCOPE_CAP": 15,
-        "TEST_CHANGE_CAP": 20, "LABEL_CAP": 5, "RAISE_TEXT_CAP": 30, "EVIDENCE_CAP": 30, "ANSWER_CAP": 25,
-        "PREVIOUS_STEP_CAP": 15, "BUILT_CAP": 15, "TEST_RUN_CAP": 20}
+        "LABEL_CAP": 5, "RAISE_TEXT_CAP": 30, "EVIDENCE_CAP": 30, "ANSWER_CAP": 25}
+UNLISTED = 60  # words in every field the owner did not list, which no cap may reject
 OLD_TEST = "tests/test_old.py::test_old"
 
 
@@ -58,9 +58,9 @@ def text(n):
 
 
 def story(n):
-    """A planner story whose every owner-read field holds its cap plus n words.
+    """A planner story whose every listed field holds its cap plus n words.
 
-    With n = 0 every field sits exactly at its cap.
+    With n = 0 every field sits exactly at its cap. Its test_changes reason, not listed, holds UNLISTED words.
     """
     c = lambda name: text(CAPS[name] + n)
     s = copy.deepcopy(STORY)
@@ -69,7 +69,7 @@ def story(n):
     s["non_functional"][0]["text"] = c("CRITERION_CAP")
     s["non_functional"][0]["why"] = c("WHY_CAP")
     s["out_of_scope"] = [c("OUT_OF_SCOPE_CAP")]
-    s["test_changes"] = {OLD_TEST: c("TEST_CHANGE_CAP")}
+    s["test_changes"] = {OLD_TEST: text(UNLISTED)}
     s["raises"] = [{"kind": "question", "to": "owner", "label": c("LABEL_CAP"), "text": c("RAISE_TEXT_CAP"),
                     "evidence": c("EVIDENCE_CAP")}]
     s["answers"] = [{"raise": "R1", "answer": "done", "why": c("ANSWER_CAP")}]
@@ -78,16 +78,18 @@ def story(n):
 
 STORY_FIELDS = [("user story", "USER_STORY_CAP"), ("acceptance criterion 1", "CRITERION_CAP"),
                 ("non-functional requirement 1", "CRITERION_CAP"), ("non-functional requirement 1 why", "WHY_CAP"),
-                ("out of scope 1", "OUT_OF_SCOPE_CAP"), (f"test change {OLD_TEST}", "TEST_CHANGE_CAP"),
-                ("raise 1 label", "LABEL_CAP"), ("raise 1 text", "RAISE_TEXT_CAP"),
+                ("out of scope 1", "OUT_OF_SCOPE_CAP"), ("raise 1 label", "LABEL_CAP"), ("raise 1 text", "RAISE_TEXT_CAP"),
                 ("raise 1 evidence", "EVIDENCE_CAP"), ("answer 1 why", "ANSWER_CAP")]
 
 
 def feature(n):
-    """A planner split whose every owner-read field holds its cap plus n words."""
+    """A planner split whose every listed field holds its cap plus n words.
+
+    Its feature, not listed, holds UNLISTED words.
+    """
     c = lambda name: text(CAPS[name] + n)
     f = copy.deepcopy(FEATURE)
-    f["feature"] = c("USER_STORY_CAP")
+    f["feature"] = text(UNLISTED)
     st = f["stories"][0]
     st["title"] = c("TITLE_CAP")
     st["user_story"] = c("USER_STORY_CAP")
@@ -96,41 +98,45 @@ def feature(n):
     return f
 
 
-FEATURE_FIELDS = [("feature", "USER_STORY_CAP"), ("story 1: title", "TITLE_CAP"),
+FEATURE_FIELDS = [("story 1: title", "TITLE_CAP"),
                   ("story 1: user story", "USER_STORY_CAP"), ("story 1: acceptance criterion 1", "CRITERION_CAP"),
                   ("story 1: non-functional requirement 1", "CRITERION_CAP"),
                   ("story 1: non-functional requirement 1 why", "WHY_CAP")]
 
 
 def work(n):
-    """A work hand-back whose owner-read fields, but its summary, hold their cap plus n words."""
+    """A work hand-back whose listed fields, but its summary, hold their cap plus n words.
+
+    Its criteria line and evidence, not listed, hold UNLISTED words.
+    """
     c = lambda name: text(CAPS[name] + n)
     w = copy.deepcopy(WORK)
-    w["criteria"]["9.2"] = c("BUILT_CAP")
-    w["evidence"] = c("TEST_RUN_CAP")
+    w["criteria"]["9.2"] = text(UNLISTED)
+    w["evidence"] = text(UNLISTED)
     w["raises"] = [{"kind": "blocker", "to": "planner", "label": c("LABEL_CAP"), "text": c("RAISE_TEXT_CAP"),
                     "evidence": c("EVIDENCE_CAP")}]
     w["answers"][0]["why"] = c("ANSWER_CAP")
     return w
 
 
-WORK_FIELDS = [("criteria line for 9.2", "BUILT_CAP"), ("evidence", "TEST_RUN_CAP"), ("raise 1 label", "LABEL_CAP"),
+WORK_FIELDS = [("raise 1 label", "LABEL_CAP"),
                ("raise 1 text", "RAISE_TEXT_CAP"), ("raise 1 evidence", "EVIDENCE_CAP"), ("answer 1 why", "ANSWER_CAP")]
 
 
 def review(n):
-    """A review whose owner-read fields, but its summary, hold their cap plus n words."""
+    """A review whose listed fields, but its summary, hold their cap plus n words.
+
+    Its did, decided and open lines, not listed, hold UNLISTED words.
+    """
     c = lambda name: text(CAPS[name] + n)
     r = copy.deepcopy(REVIEW)
-    r["previous_step"] = {"did": [c("PREVIOUS_STEP_CAP")], "decided": [c("PREVIOUS_STEP_CAP")],
-                          "open": [c("PREVIOUS_STEP_CAP")]}
+    r["previous_step"] = {"did": [text(UNLISTED)], "decided": [text(UNLISTED)], "open": [text(UNLISTED)]}
     r["raises"][0].update(label=c("LABEL_CAP"), text=c("RAISE_TEXT_CAP"), evidence=c("EVIDENCE_CAP"))
     r["answers"][0]["why"] = c("ANSWER_CAP")
     return r
 
 
-REVIEW_FIELDS = [("did line 1", "PREVIOUS_STEP_CAP"), ("decided line 1", "PREVIOUS_STEP_CAP"),
-                 ("open line 1", "PREVIOUS_STEP_CAP"), ("raise 1 label", "LABEL_CAP"),
+REVIEW_FIELDS = [("raise 1 label", "LABEL_CAP"),
                  ("raise 1 text", "RAISE_TEXT_CAP"), ("raise 1 evidence", "EVIDENCE_CAP"),
                  ("answer 1 why", "ANSWER_CAP")]
 
@@ -273,7 +279,7 @@ def test_a_work_or_review_rejection_names_the_field_its_word_count_and_its_cap(r
     """A work or review rejection names the field, its word count and its cap.
 
     Proves 482.4. A worker's 26-word and 41-word answer why are named with their count and the cap of 25; a review's
-    16-word did line with its count and the cap of 15.
+    6-word raise label with its count and the cap of 5.
     """
     record_property("proves", "482.4")
     for n in (26, 41):
@@ -283,23 +289,25 @@ def test_a_work_or_review_rejection_names_the_field_its_word_count_and_its_cap(r
         assert rc == 1 and names(out, "answer 1 why", n, 25), \
             f"482.4: the rejection of a {n}-word answer does not say 'answer 1 why', '{n} words' and 'cap of 25':\n{out}"
     r = copy.deepcopy(REVIEW)
-    r["previous_step"]["did"] = [text(16)]
+    r["raises"][0]["label"] = text(6)
     rc, out = repo("review", r)
-    assert rc == 1 and names(out, "did line 1", 16, 15), \
-        f"482.4: the rejection of a 16-word did line does not say 'did line 1', '16 words' and 'cap of 15':\n{out}"
+    assert rc == 1 and names(out, "raise 1 label", 6, 5), \
+        f"482.4: the rejection of a 6-word raise label does not say 'raise 1 label', '6 words' and 'cap of 5':\n{out}"
 
 
 def test_a_plan_with_every_text_at_its_cap_still_passes(record_property, check, capsys):
     """A story and a split with every text exactly at its cap pass unlisted.
 
-    Proves 482.5. The planner's check exits 0 on both, saves no reason and names no field as over its cap; beside
+    Proves 482.5. Fields the owner did not list (a test change's reason, the split's feature) hold 60 words each,
+    so a cap past the owner's list fails it. The planner's check exits 0 on both, saves no reason and names no field as over its cap; beside
     them, the same story with its user story one word longer is rejected, so the pass is the cap's and not a check
     that caps nothing.
     """
     record_property("proves", "482.5")
     for plan in (story(0), feature(0)):
         rc, why, printed = run_planner(check, capsys, plan, jobs(), "482.5")
-        assert rc == 0 and not why, f"482.5: a {plan['kind']} with every text at its cap was rejected: {why!r}"
+        assert rc == 0 and not why, \
+            f"482.5: a {plan['kind']} with every listed text at its cap, and unlisted ones long, was rejected: {why!r}"
         assert "cap of" not in printed, f"482.5: a text at its cap was listed as over it: {printed!r}"
     rc, why, _ = run_planner(check, capsys, dict(story(0), user_story=text(21)), jobs(), "482.5")
     assert rc == 1, "482.5: a story whose user story is one word over its cap of 20 passed, so the check caps nothing"
@@ -308,13 +316,16 @@ def test_a_plan_with_every_text_at_its_cap_still_passes(record_property, check, 
 def test_a_work_or_review_with_every_text_at_its_cap_still_passes(record_property, repo):
     """A work hand-back and a review with every text at its cap pass unlisted.
 
-    Proves 482.5. The worker's and reviewer's checks exit 0 and name no field as over its cap; beside them, each
+    Proves 482.5. Fields the owner did not list (a work's criteria lines and evidence, a review's did, decided and
+    open lines) hold 60 words each, so a cap past the owner's list fails it. The worker's and reviewer's checks exit 0
+    and name no field as over its cap; beside them, each
     with its answer's why one word longer is rejected, so the pass is the cap's and not a check that caps nothing.
     """
     record_property("proves", "482.5")
     for kind, h in (("work", work(0)), ("review", review(0))):
         rc, out = repo(kind, h)
-        assert rc == 0, f"482.5: a {kind} hand-back with every text at its cap was rejected:\n{out}"
+        assert rc == 0, \
+            f"482.5: a {kind} hand-back with every listed text at its cap, and unlisted ones long, was rejected:\n{out}"
         assert "cap of" not in out, f"482.5: a {kind} text at its cap was named as over it:\n{out}"
         h["answers"][0]["why"] = text(26)
         rc, out = repo(kind, h)
