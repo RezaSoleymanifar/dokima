@@ -2328,9 +2328,11 @@ def main(argv):
         # The run failed, so the river stopped: its own stage's column with Needs you, at once.
         column = board_place(rec, ("stop",))[0]
         print(f"board: #{argv[2]} and its open pull request -> {column} · Needs you")
+        errors = (subprocess.CalledProcessError, KeyError, ValueError)
         try:
-            board.stopped(board.Board(spec, repo), repo, argv[2], column)
-        except (subprocess.CalledProcessError, KeyError, ValueError) as e:
+            retry.once_more("the board step", lambda: board.stopped(board.Board(spec, repo), repo, argv[2], column),
+                            errors=errors)
+        except errors as e:
             print(f"::warning::GitHub could not be read, so the board may not show it: {gh_reason(e) if hasattr(e, 'stderr') else e}")
         return 0
     if argv[1] == "autopilot":
