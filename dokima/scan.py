@@ -41,7 +41,8 @@ def card_now(repo, kind, number):
     """The card Dokima writes on this issue or PR when redrawing its issue now."""
     if kind == "issue":
         return drawn(repo, number, card.issue_pr(repo, number))[2]
-    return drawn(repo, board.issue_of(repo, number), number)[2]
+    issue, found, _ = drawn(repo, board.issue_of(repo, number), number)
+    return card.render(repo, issue, found, page="pr")
 
 
 def why(e):
@@ -71,8 +72,10 @@ def check(b, repo, owners, c, places):
     if kind == "issue":
         stale = not card.shows(got["current_body"] or "", top)
     else:
+        # The PR's card also links its issue, and closes it by the issue's full address (#452).
         current = (found["pr"] or {}).get("body") or ""
-        stale = card.pr_body(top, current, body.ask(got["current_body"])) != current
+        top = card.render(repo, got, found, page="pr")
+        stale = card.pr_body(top, current, body.ask(got["current_body"]), issue_url=got["url"]) != current
     if stale:
         out.append(f"{label(kind, n)} does not show the card Dokima draws for it now.")
     return out
