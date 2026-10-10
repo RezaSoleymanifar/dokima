@@ -308,7 +308,9 @@ def test_each_starting_pack_lists_exactly_the_open_raises_for_that_agent(record_
     rejected worker hand-back raising another, and a code review answering the worker and blocking for the worker,
     the planner and the owner. At each point every agent's list must be exactly what is open for it: the planner's
     blocker after the plan review and none once answered; the worker's raise for the planner on the reviewer's list,
-    not the planner's; after the code review, the worker's and the planner's blockers on their lists.
+    not the planner's; after the code review, the worker's and the planner's blockers on their lists, and on the
+    planner's also the worker's raise the review answered done, passed on as the reviewer's blocker (#301: a review's
+    own blocker for the planner never hides a raise it confirmed). Lists are compared in any order.
 
     Proves 300.2."""
     record_property("proves", "300.2")
@@ -324,15 +326,31 @@ def test_each_starting_pack_lists_exactly_the_open_raises_for_that_agent(record_
         ([plan, block], {"planner": [R1], "worker": [], "reviewer": []}),
         ([plan, block, replan, ok], {"planner": [], "worker": [], "reviewer": []}),
         ([plan, block, replan, ok, work, rejected], {"planner": [], "worker": [], "reviewer": [W1]}),
-        ([plan, block, replan, ok, work, rejected, code_review], {"planner": [R3], "worker": [R2], "reviewer": []}),
+        ([plan, block, replan, ok, work, rejected, code_review], {"planner": [R3, CONFIRMED], "worker": [R2],
+                                                                 "reviewer": []}),
     ]
     for recs, want in expect:
         for role, raised in want.items():
             stage = "pr" if role == "reviewer" else ""
             got = listed(monkeypatch, tmp_path, recs, role, stage)
-            assert got == raised, (f"300.2: after {[r['role'] + ('-' + r['stage'] if r['stage'] else '') for r in recs]}"
-                                   f" the {role}'s pack lists {[g.get('id') for g in got if isinstance(g, dict)]}, "
-                                   f"not exactly {[r['id'] for r in raised]}:\n{json.dumps(got)[:600]}")
+            if CONFIRMED in raised:
+                passed_on = [g for g in got if isinstance(g, dict) and confirmed_w1(g)]
+                assert len(passed_on) == 1, (f"300.2: after the code review answered W1 done, the planner's pack should "
+                                             f"list it once as the reviewer's blocker, lists:\n{json.dumps(got)[:600]}")
+                got = [g for g in got if g is not passed_on[0]] + [CONFIRMED]
+            assert sorted(got, key=json.dumps) == sorted(raised, key=json.dumps), (
+                f"300.2: after {[r['role'] + ('-' + r['stage'] if r['stage'] else '') for r in recs]}"
+                f" the {role}'s pack lists {[g.get('id', g.get('confirmed')) for g in got if isinstance(g, dict)]}, "
+                f"not exactly {[r.get('id', r.get('confirmed')) for r in raised]}:\n{json.dumps(got)[:600]}")
+
+
+CONFIRMED = {"confirmed": "W1"}
+
+
+def confirmed_w1(g):
+    """Whether this raise is W1 passed on as the reviewer's blocker for the planner."""
+    return (g.get("kind") == "blocker" and g.get("to") == "planner" and g.get("raised_by") == "reviewer"
+            and W1["text"] in str(g.get("text") or "") and bool(g.get("id")) and g.get("id") != "W1")
 
 
 def round_pack(tmp_path, items, earlier=()):
