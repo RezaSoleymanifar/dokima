@@ -1118,6 +1118,20 @@ def pack_parent(*dirs):
     return None
 
 
+def owner_words(repo, number, d, items, owners):
+    """Where the owner said things, as {link: text}: the issue's own ask, each code owner's comment, and the same on
+    its parent issue. Every criterion of a plan must quote words found at its source link (#416)."""
+    from dokima.body import ask
+    mine = lambda c: (c.get("author") or {}).get("login") in owners and c.get("url")
+    out = {issue_url(number): ask(d.get("body") or "")}
+    out.update({c["url"]: c.get("body") or "" for c in items if mine(c)})
+    up = parent_words(repo, number)
+    if up:
+        out[issue_url(up["number"])] = ask(up["body"])
+        out.update({c["url"]: c.get("body") or "" for c in up["comments"] if mine(c)})
+    return out
+
+
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
     the open raises this role must answer (open_blockers.json), the newest passed plan, the issue's parent on GitHub (parent.json, naming none when it has none or GitHub cannot
@@ -1129,6 +1143,8 @@ def pack(repo, number, role, stage, dest):
     json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
+        owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+        json.dump(owner_words(repo, number, d, items, owners), open(os.path.join(dest, "owner_words.json"), "w"), indent=1)
     # The open raises this agent must answer; the file keeps the name the workflows give it.
     json.dump(raises_for(recs, role), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))

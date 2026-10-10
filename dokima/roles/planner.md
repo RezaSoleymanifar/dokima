@@ -167,7 +167,7 @@ Exactly one kind: user_story or feature.
   {"kind": "user_story",
    "summary": "...",
    "user_story": "...",
-   "acceptance_criteria": [{"text": "...", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
+   "acceptance_criteria": [{"text": "...", "words": "the owner's exact words this delivers", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
    "non_functional": [{"text": "...", "why": "...", "principle": "..."}, ...],
    "scope": ["path", ...],
    "out_of_scope": ["...", ...],
@@ -193,3 +193,7 @@ reviewer can check; otherwise fix it.
 Only the user_story kind is built on today; a feature is shown to the owner as handed back.
 
 Write code, file paths, commands and quoted code as markdown code: backticks inline, a code block for several lines.
+
+Every acceptance criterion and non-functional requirement quotes, in `words`, the owner's exact words it delivers,
+copied from its `source`. Code checks the words are there. No words of the owner's behind it, no criterion: add
+nothing they did not ask for, and no non-functional requirement unless they wrote one.

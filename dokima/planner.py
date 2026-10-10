@@ -69,7 +69,36 @@ def read_output(out, number=None):
     if number is None:
         return from_kind(p)
     parent = pack_parent(os.environ.get("PACK"))
-    return from_kind(p, (issue_link(number), issue_link(parent)) if parent else issue_link(number))
+    return from_kind(p, (issue_link(number), issue_link(parent)) if parent else issue_link(number),
+                     pack_words(os.environ.get("PACK")))
+
+
+def pack_words(pack_dir):
+    """The owner's words by link (owner_words.json in the pack), or None when the pack has none."""
+    path = os.path.join(pack_dir or "", "owner_words.json")
+    if not pack_dir or not os.path.exists(path):
+        return None
+    try:
+        v = json.load(open(path))
+    except (OSError, ValueError):
+        return None
+    return v if isinstance(v, dict) else None
+
+
+def check_words(where, c, said):
+    """Garbled unless the criterion quotes, in `words`, the owner's own words found at its source.
+
+    A criterion must deliver something the owner asked for; one with no words of theirs behind it is not a criterion.
+    With no record of the owner's words (said is None), nothing is checked."""
+    if said is None:
+        return
+    flat = lambda t: " ".join(str(t or "").split())
+    words = flat(c.get("words"))
+    if not words:
+        raise Garbled(f"{where} has no words: quote the owner's exact words it delivers, copied from its source")
+    if words not in flat(said.get((c.get("source") or "").strip())):
+        raise Garbled(f"{where} quotes \"{words}\", which the owner did not write at {c.get('source')}: "
+                      "quote their exact words from that issue or comment, or drop the criterion")
 
 
 def strings(v):
@@ -91,7 +120,7 @@ def check_source(where, source, issue):
                   "or a comment on either")
 
 
-def check_stories(stories, issue=None):
+def check_stories(stories, issue=None, said=None):
     """Garbled unless every story of a split is complete, its criteria cite this issue, and its dependencies point at
     the split's own stories with no loop. Stories are named counting from 1, as the split's card numbers them;
     depends_on counts from 0."""
@@ -111,6 +140,7 @@ def check_stories(stories, issue=None):
                 if not isinstance(c.get(key), str) or not c[key].strip():
                     raise Garbled(f"story {n}: acceptance criterion {k} has no {key}")
             check_source(f"story {n}: acceptance criterion {k}", c["source"], issue)
+            check_words(f"story {n}: acceptance criterion {k}", c, said)
         nfr = s.get("non_functional", [])
         if not isinstance(nfr, list):
             raise Garbled(f"story {n} needs non_functional as a list (empty for none)")
@@ -147,7 +177,7 @@ def check_stories(stories, issue=None):
             visit(i, [i])
 
 
-def from_kind(p, issue=None):
+def from_kind(p, issue=None, said=None):
     """Read a plan.json written in the agreed shape (user_story or feature) into what the rest of the code uses.
 
     A story becomes a plan: its acceptance criteria come first, then its non-functional requirements, numbered N.1,
@@ -164,7 +194,7 @@ def from_kind(p, issue=None):
         stories = p.get("stories")
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
-        check_stories(stories, issue)
+        check_stories(stories, issue, said)
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
         raise Garbled(f"plan.json kind is {kind!r}: {ALWAYS}")
@@ -181,6 +211,7 @@ def from_kind(p, issue=None):
                 raise Garbled(f"acceptance criterion {k} has no {'source link' if key == 'source' else key}: "
                               f"its {key} must be non-empty text")
         check_source(f"acceptance criterion {k}", c["source"], issue)
+        check_words(f"acceptance criterion {k}", c, said)
     if not isinstance(nfr, list):
         raise Garbled("a story needs non_functional as a list (empty for none)")
     for k, c in enumerate(nfr, 1):
@@ -190,6 +221,7 @@ def from_kind(p, issue=None):
             if not isinstance(c.get(key), str) or not c[key].strip():
                 raise Garbled(f"non-functional requirement {k} needs its text and why as non-empty text, "
                               f"and its {key} is not")
+        check_words(f"non-functional requirement {k}", c, said)
     if not strings(p.get("scope")) or not p["scope"]:
         raise Garbled("a story needs scope as a non-empty list of files")
     if not strings(p.get("out_of_scope", [])):
