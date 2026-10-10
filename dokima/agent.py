@@ -151,9 +151,11 @@ def old_blocker(b, stage):
 def open_raises(recs):
     """Every raise on the issue still open, oldest first, each as code stamped it.
 
-    A raise is open from the passed record that raised it until a passed record answers its ID. A record posted before
-    #300 still counts: the blockers of the newest review at each stage, unless it approved, are listed under their old
-    IDs, and an old reply by ID answers one."""
+    A raise is open from the passed record that raised it until a passed record answers its ID. An issue the planner or
+    the worker raised is listed for the reviewer to confirm (raises.for_review), only until the reviewer's next run.
+    A reviewer's answer to a raise sent through it opens the raise it passes on (raises.passes_on); a confirmed one is
+    left out when the review sends the planner blockers of its own. A record posted before #300 still counts: the blockers of the newest review at each stage, unless it
+    approved, are listed under their old IDs, and an old reply by ID answers one."""
     passed = [r for r in recs if r.get("role") in HANDBACK and (r.get("check") or {}).get("passed")
               and isinstance(r.get("handback"), dict)]
     answered = set()
@@ -164,10 +166,25 @@ def open_raises(recs):
     for i, r in enumerate(passed):
         if r["role"] == "reviewer":
             newest[r.get("stage") or ""] = i
-    out = []
+    out, by_id = [], {}
     for i, r in enumerate(passed):
         h = r["handback"]
-        out += [x for x in card.raises_of(h) if x.get("id") and x["id"] not in answered]
+        reviewed = any(p["role"] == "reviewer" for p in passed[i + 1:])
+        for x in card.raises_of(h):
+            if not x.get("id") or x["id"] in answered:
+                continue
+            confirm = raises.for_review(x)
+            if confirm is None:
+                out.append(x)
+            elif not reviewed:
+                out.append(confirm)
+        if r["role"] == "reviewer":
+            for a in card.answers_of(h):
+                x = by_id.get(a["raise"]) if isinstance(a["raise"], str) else None
+                on = raises.passes_on(x, a) if x else None
+                if on and on["id"] not in answered and not (a.get("answer") == "done" and for_planner(h)):
+                    out.append(on)
+        by_id.update({x["id"]: x for x in card.raises_of(h) if isinstance(x.get("id"), str)})
         stage = r.get("stage") or ""
         old = h.get("blockers") if isinstance(h.get("blockers"), list) else []
         if r["role"] == "reviewer" and newest.get(stage) == i and h.get("verdict") != "approve":
@@ -179,6 +196,16 @@ def open_raises(recs):
 def raises_for(recs, role):
     """The open raises this role must answer by ID, oldest first."""
     return [r for r in open_raises(recs) if raises.sent_to(r) == role]
+
+
+def settled(recs, h):
+    """The raises sent through the reviewer that a review answers, as (raise, answer) pairs.
+
+    `recs` are the records before the review."""
+    through = {x["id"]: x for x in open_raises(recs) if x.get("kind") != "issue"
+               and raises.THROUGH.get((x.get("raised_by"), x.get("to"))) == "reviewer"}
+    return [(through[a["raise"]], a.get("answer")) for a in card.answers_of(h)
+            if isinstance(a["raise"], str) and a["raise"] in through]
 
 
 def taken_ids(recs):
@@ -1262,6 +1289,44 @@ def gh_reason(e):
     return " ".join((e.stderr or str(e)).split())
 
 
+def first_sentence(text):
+    """A raise's first sentence, on one line, as a filed issue's title."""
+    text = escape_line(text)
+    m = re.match(r"(.+?[.!?])(\s|$)", text)
+    return (m.group(1) if m else text)[:250]
+
+
+def file_issues(repo, number, rec, recs):
+    """File every issue raise a passed review confirms as its own GitHub issue.
+
+    It confirms its own, and each the planner or the worker raised that it answers done; `recs` are the records
+    before it. Returns the record's lines naming each filed issue, or the finding and GitHub's reason when GitHub
+    refuses it; a refusal never stops the run."""
+    h = rec.get("handback") or {}
+    if rec.get("role") != "reviewer" or not (rec.get("check") or {}).get("passed"):
+        return []
+    found = [x for x in card.raises_of(h) if x.get("kind") == "issue"]
+    theirs = {x["id"]: x for x in open_raises(recs) if x.get("kind") == "issue" and raises.sent_to(x) == raises.CONFIRMS}
+    found += [theirs[a["raise"]] for a in card.answers_of(h)
+              if a.get("answer") == "done" and isinstance(a["raise"], str) and a["raise"] in theirs]
+    lines = []
+    for x in found:
+        title = first_sentence(x.get("text") or x.get("label") or "An issue found")
+        by = x.get("raised_by") or "reviewer"
+        who = "The reviewer found it" if by == "reviewer" else f"The {by} raised it and the reviewer confirmed it"
+        body = [x.get("text") or ""] + (["", f"**Evidence:** {x['evidence']}"] if filled(x.get("evidence")) else [])
+        body += ["", f"{who} on #{number}."]
+        try:
+            url = gh("issue", "create", "-R", repo, "--title", title, "--body", "\n".join(body)).strip()
+        except subprocess.CalledProcessError as e:
+            lines.append(f"- Not filed: {card.escape(title)} GitHub refused it: {card.escape(gh_reason(e))}")
+            continue
+        n = url.rstrip("/").rsplit("/", 1)[-1]
+        lines.append(f"- #{n} {card.escape(title)} · the reviewer confirmed it")
+    return ["", f"{field_icon(os.environ.get('GITHUB_REPOSITORY', ''), 'issue found')} **Filed as issues:**", ""] + lines \
+        if lines else []
+
+
 def record_links(repo, number, items):
     """Record the just approved plan's links on GitHub, then redraw the cards they touch.
 
@@ -1568,8 +1633,9 @@ def approves_work(rec):
 
 def work_approved(recs):
     """True when the issue's newest planner, worker or reviewer record is a code review approving the pull request."""
-    newest = next((r for r in reversed(recs) if r.get("role") in HANDBACK), None)
-    return bool(newest) and approves_work(newest)
+    at = next((i for i in range(len(recs) - 1, -1, -1) if recs[i].get("role") in HANDBACK), None)
+    # A review that settled a worker's raise sends the work on to an agent, so it merges nothing.
+    return at is not None and approves_work(recs[at]) and not settled(recs[:at], recs[at].get("handback") or {})
 
 
 def pages(text):
@@ -1790,6 +1856,11 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     mine = owner_raises(h)
     if mine:
         return ("stop", "The reviewer raised for you: " + quoted(mine) + " Answer with `/plan`, `/work` or `/review` and your words.")
+    # A worker's raise for the planner the code review settled goes on by itself, whatever the verdict on the code:
+    # confirmed, to the planner; disagreed, back to the worker with the reviewer's why.
+    words_ = {w for _, w in settled(records(items), h)} if stage == "pr" and verdict in ("approve", "block") else set()
+    if verdict == "approve" and words_:
+        return ("start", "planner" if "done" in words_ else "worker", "")
     if verdict == "approve" and stage == "plan" and test_fix(items, owners):
         return ("start", "worker", "")
     if verdict == "approve" and stage == "plan":
@@ -1809,7 +1880,7 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     blocks = sum(1 for r in later if (r.get("handback") or {}).get("verdict") == "block") + 1
     if blocks >= rounds:
         return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
-    return ("start", "planner" if stage == "plan" or for_planner(h) else "worker", "")
+    return ("start", "planner" if stage == "plan" or for_planner(h) or "done" in words_ else "worker", "")
 
 
 def waiting(items, owners, body, number):
@@ -1866,7 +1937,8 @@ def test_fix(items, owners):
         return False
     r = records([items[review]])[0]
     h = r.get("handback") or {}
-    if not r.get("check", {}).get("passed") or h.get("verdict") != "block" or not for_planner(h):
+    confirmed = any(w == "done" for _, w in settled(records(items[:review]), h))
+    if not r.get("check", {}).get("passed") or h.get("verdict") != "block" or not (for_planner(h) or confirmed):
         return False
     replan = latest(records(items[review + 1:]), "planner")
     agreed = latest(records(items[:works[-1]]), "planner")
@@ -2063,7 +2135,7 @@ def main(argv):
                 ups.append(parent_words(repo, number))
             return ups[0]
         step = next_step(items, rec, owners, autopilot=autopilot, body=d.get("body") or "", number=number, parent=parent)
-        if approves_work(rec):
+        if approves_work(rec) and step[0] != "start":
             # On autopilot the code review's approval stands in for the owner's: the pull request merges by itself.
             on = autopilot()
             if on is None:
@@ -2100,6 +2172,14 @@ def main(argv):
             if pr.isdigit():
                 url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/pull/{pr}"
                 open(os.path.join(out, "comment.md"), "w").write(render(rec, url))
+        filed = file_issues(repo, number, rec, records(items))
+        if filed:
+            # The issues filed in this run go on its record, above the full record, whatever GitHub answered.
+            text = open(os.path.join(out, "comment.md")).read()
+            fold = "\n<details><summary>Full record</summary>"
+            at = text.find(fold)
+            at = len(text.rstrip("\n")) if at < 0 else at
+            open(os.path.join(out, "comment.md"), "w").write(text[:at] + "\n".join(filed) + "\n" + text[at:])
         with open(os.path.join(out, "comment.md"), "a") as f:
             f.write("\n" + next_line(step, owners) + "\n")
         if step[3:] == ("autopilot",):
