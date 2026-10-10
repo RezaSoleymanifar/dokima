@@ -41,6 +41,8 @@ FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-re
                "outside the plan": "outside-the-plan", "issue found": "issue-found", "related": "related",
                "blocked by": "blocked-by", "blocks": "blocks", "stats": "stats"}
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
+# A `#` right after a closing keyword, as GitHub reads one (fixes #99, Closes: #12, resolved o/r#7).
+KEYWORD_HASH = re.compile(r"(\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:[\w.-]+/[\w.-]+)?)#(?=\d)", re.I)
 
 
 def icon(repo, name, alt=None):
@@ -329,41 +331,46 @@ def status_line(repo, stage, todo):
 
 
 def child_row(repo, child):
-    """One child of a split: its link, its title and its stage, or unknown when its stage could not be read."""
+    """One child of a split: its bare link, then its stage, or unknown when unread.
+
+    GitHub draws the child's title from the bare link, so it is not written out."""
     st = child.get("stage") if child.get("stage") in STAGES else "unknown"
     if st == "Merged":
         st = f"{field_icon(repo, 'merged')} {st}"
     n = child["number"]
-    return f"- [#{n}](https://github.com/{repo}/issues/{n}) {escape(child.get('title'))} · {st}"
+    return f"- https://github.com/{repo}/issues/{n} · {st}"
 
 
 def links_row(repo, issue, pr, worker, check_runs):
-    """The links that matter, the issue and its PR both included, so the card reads the same on either page."""
+    """The links that matter, the issue and its PR both included, so the card reads the same on either page.
+
+    The issue and the PR are written out bare, so GitHub draws them as its own references."""
     links = []
     if worker:
         links.append(f"[latest run]({worker['html_url']})")
-    links.append(f"[issue #{issue['number']}]({issue['url']})")
+    links.append(issue["url"])
     if pr:
-        links.append(f"[PR #{pr['number']}](https://github.com/{repo}/pull/{pr['number']})")
+        links.append(f"https://github.com/{repo}/pull/{pr['number']}")
     if pr:
         links.append(f"{field_icon(repo, 'files changed')} [files changed](https://github.com/{repo}/pull/{pr['number']}/files)")
     return " · ".join(links)
 
 
 def criterion_item(repo, label, c, check, tests):
-    """One criterion as a bullet: its status circle, its label and its words, linked to its check when there is one;
-    under it one italic Verified by line per test with a docstring, only the words Verified by linking to the test,
-    then Source linking to where the owner asked for it, when it has one."""
-    words = escape(c.get("text"))
+    """One criterion bullet: its status circle, its label linked to its check, its words plain.
+
+    The label links only when there is a check. Under it one italic Verified by line per test with a docstring, only
+    the words Verified by linking to the test, then Source: and the link to where the owner asked for it written out
+    bare, so GitHub draws it as its own reference, when it has one."""
     if check:
-        words = f'<a href="{check["html_url"]}">{words}</a>'
-    out = [f"- {circle(repo, state(check))} **{label}:** {words}"]
+        label = f'<a href="{check["html_url"]}">{label}</a>'
+    out = [f"- {circle(repo, state(check))} **{label}:** {escape(c.get('text'))}"]
     for t in tests:
         if t and t.get("verified_by"):
             out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
                        f'{escape(t["verified_by"])}*')
     if c.get("source"):
-        out.append(f'  - <a href="{c["source"]}">Source</a>')
+        out.append(f'  - Source: {c["source"]}')
     return out
 
 
@@ -384,6 +391,22 @@ def code_review(recs):
     return reviews[-1] if reviews else None
 
 
+def review_running(items):
+    """True while the bot's code review run card since the newest build awaits its record."""
+    from dokima import agent
+    running = False
+    for c in items or []:
+        rs = agent.records([c])
+        if rs:
+            if rs[0].get("role") == "worker" or (rs[0].get("role") == "reviewer" and rs[0].get("stage") == "pr"):
+                running = False
+            continue
+        if (c.get("author") or {}).get("login") in (agent.BOT, f"{agent.BOT}[bot]") and \
+                re.match(re.escape(agent.LIVE) + r"[^*]*\*\*Reviewer \(pr\)\*\*", (c.get("body") or "").strip()):
+            running = True
+    return running
+
+
 def owner_review(reviews, owners):
     """The newest Approve or Request changes on the PR by a code owner; None when there is none."""
     found = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
@@ -401,7 +424,8 @@ def done_row(repo, found, all_tests):
     """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof.
     A code owner's merge is their approval, with or without an Approve review."""
     review = code_review(found["recs"])
-    review_st = "not started" if not review else "passed" if review["handback"].get("verdict") == "approve" else "failed"
+    review_st = ("running" if review_running(found.get("items")) else "not started" if not review else
+                 "passed" if review["handback"].get("verdict") == "approve" else "failed")
     merge = owner_merge(found["pr"], found["owners"])
     approval = {"state": "APPROVED", "html_url": merge.get("html_url")} if merge else owner_review(found["reviews"], found["owners"])
     approval_st = "not started" if not approval else "passed" if approval["state"] == "APPROVED" else "failed"
@@ -453,7 +477,8 @@ def render(repo, issue, found, page="issue"):
     if related:
         lines += related + [""]
     if not h:
-        lines += ["This issue has no plan yet.", ""]
+        # With no plan, the Definition of Done goes below the owner's text (#371): body.redraw puts it after the fold.
+        return "\n".join(lines + [plan.CARD_END, "", body.DONE, done_row(repo, found, all_tests)])
     else:
         criteria, nfr = h.get("acceptance_criteria") or [], h.get("non_functional") or []
         tests, plan_tests = found["tests"], h.get("tests") or {}
@@ -465,8 +490,9 @@ def render(repo, issue, found, page="issue"):
             lines += fold("Non-functional requirements",
                           criteria_list(repo, issue["number"], len(criteria) + 1, "Non-functional requirement", nfr,
                                         plan_tests, by_key, tests)) + [""]
-        lines += ["**Scope:**", ""] + [f"- {escape(s)}" for s in h.get("scope") or []] + [""]
-        lines += ["**Out of scope:**", ""] + [f"- {escape(s)}" for s in h.get("out_of_scope") or []] + [""]
+        lines += [" ".join(["**Scope:**", ", ".join(f"`{s}`" for s in h.get("scope") or [])]).rstrip(), ""]
+        if h.get("out_of_scope"):
+            lines += fold("Out of scope", [f"- {escape(s)}" for s in h["out_of_scope"]]) + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
     return "\n".join(lines)
 
@@ -476,10 +502,15 @@ def issue_body(card, notes):
     return card + ("\n\n" + notes if notes else "")
 
 
-def pr_body(card, body):
-    """The PR's description: the card, then the line linking the issue, and nothing else."""
-    found = CLOSES.search(body or "")
-    return card + ("\n\n" + found.group(0) if found else "")
+def pr_body(card, text, ask):
+    """The PR's description: the card, the owner's Original issue fold, then the Closes line.
+
+    In the PR's copy a `#` after a closing keyword is written `&#35;`, which shows the same, so the owner's words never
+    close or name another issue: the PR's own Closes line stays the only closing reference (#373)."""
+    found = CLOSES.search(text or "")
+    shown = KEYWORD_HASH.sub(r"\1&#35;", ask or "")
+    return (card.rstrip("\n") + "\n\n" + body.MARKER + body.FOLD_START + shown + body.FOLD_END
+            + ("\n\n" + found.group(0) if found else ""))
 
 
 def shows(current, top):
@@ -506,6 +537,10 @@ def issue_pr(repo, n):
 
 def find_work(repo):
     """The issue and open PR this event is about, as (issue number, PR number or None)."""
+    if os.environ.get("ON_PR"):
+        # A comment on a pull request carries the pull request's number as the issue's.
+        pr = int(os.environ["ON_PR"])
+        return plan.pr_issue_number(repo, pr), pr
     if os.environ.get("ISSUE_NUMBER"):
         n = int(os.environ["ISSUE_NUMBER"])
         return n, issue_pr(repo, n)
@@ -821,9 +856,10 @@ def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_on
     if now.get("loop") and now["loop"] != before.get("loop"):
         stop_for_loop(repo, number, now["loop"], found.get("owners"))
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
-    if pr and not (changed_only and pr_body(top, pr.get("body")) == (pr.get("body") or "")):
+    ask = body.ask(current)
+    if pr and not (changed_only and pr_body(top, pr.get("body"), ask) == (pr.get("body") or "")):
         with open("pr.md", "w") as f:
-            f.write(pr_body(top, pr.get("body")))
+            f.write(pr_body(top, pr.get("body"), ask))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
     return before, now

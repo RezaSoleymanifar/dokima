@@ -5,11 +5,13 @@ Issue #235, story 2 of #230.
 The card is drawn by `dokima/card.py` (render, from `found`; main writes it on the issue and its PR). The layout these
 tests read, with markdown links `[text](url)` and HTML links `<a href="url">text</a>` treated alike:
 
-    - <status icon> **Acceptance criterion:** <the criterion's sentence, linked to its check when it has one>
+    - <status icon> **Acceptance criterion:** <the criterion's sentence>   the words Acceptance criterion link to
+                                                                          its check when it has one (#354)
       - *Verified by: <the test's docstring first line>*      one line per test with a docstring; only the words
                                                               Verified by link, to that test (the Verified by field
                                                               icon may sit in front of the words, inside the link)
-      - Source                                                the word Source links to where the owner asked
+      - Source: <link>                                        the link to where the owner asked, written out bare so
+                                                              GitHub draws it as a reference (#359)
 
 The status icon is an <img> whose alt is its state (not started, running, passed, failed), never inside a link. A
 criterion's lines are its bullet and the indented lines under it, up to the next line that is not indented.
@@ -118,22 +120,24 @@ def item(text, words, k):
 
 
 def head(text, words, k):
-    """The state on a criterion's status icon, and the link on its sentence or None.
+    """The state on a criterion's status icon, and the link on its label, or None.
 
     Fails naming criterion k unless the bullet is the status icon, then **Acceptance criterion:**, then the sentence,
-    with the status icon outside any link."""
+    with the status icon outside any link and at most one link, on the words Acceptance criterion only (#354)."""
     line, _ = item(text, words, k)
-    m = re.fullmatch(r'- (<img [^>]*alt="([^"]*)"[^>]*>)\s*\*\*Acceptance criterion:\*\*\s+(.*)', line)
-    assert m, f"{k}: the bullet of “{words}” is not the status icon, then **Acceptance criterion:**, then its sentence: {line}"
+    m = re.fullmatch(r'- (<img [^>]*alt="([^"]*)"[^>]*>)\s*(.*)', line)
+    assert m, f"{k}: the bullet of “{words}” does not open with its status icon: {line}"
     icon, st, rest = m.groups()
     assert st in STATES, f"{k}: the bullet of “{words}” opens with “{st}”, not a status icon"
     assert f"/icons/{ICON_FILE[st]}.svg" in icon, f"{k}: the {st} status icon of “{words}” is not {ICON_FILE[st]}.svg"
-    linked = re.fullmatch(r'<a href="([^"]+)">(.*)</a>', rest.strip())
-    if linked:
-        assert linked.group(2) == words, f"{k}: the link on “{words}” holds more than its sentence: {rest}"
-        return st, linked.group(1)
-    assert rest.strip() == words, f"{k}: the bullet of “{words}” holds more than its sentence: {rest}"
-    return st, None
+    assert plain(rest) == f"Acceptance criterion: {words}", \
+        f"{k}: the bullet of “{words}” is not the status icon, then **Acceptance criterion:**, then its sentence: {line}"
+    links = re.findall(r'<a href="([^"]+)">(.*?)</a>', rest)
+    if not links:
+        return st, None
+    assert len(links) == 1 and plain(links[0][1]).rstrip(":").strip() == "Acceptance criterion", \
+        f"{k}: the bullet of “{words}” links more than the words Acceptance criterion: {line}"
+    return st, links[0][0]
 
 
 def verified(line):
@@ -195,7 +199,7 @@ def test_verified_by_is_left_out_for_a_test_with_no_docstring(record_property):
     assert len([l for l in under if verified(l)]) == 2, f"235.1: criterion 1 lost a Verified by line: {under}"
 
 
-# 235.2: the status icon shows empty, running, passed or failed; the sentence, not the icon, links to the check
+# 235.2: the status icon shows empty, running, passed or failed; the label, not the icon, links to the check (#354)
 
 @pytest.mark.parametrize("check, want", [
     (None, "not started"),
@@ -204,22 +208,22 @@ def test_verified_by_is_left_out_for_a_test_with_no_docstring(record_property):
     (run("40.1 · First thing works", n=1), "passed"),
     (run("40.1 · First thing works", conclusion="failure", n=1), "failed"),
 ])
-def test_the_status_icon_follows_the_check_and_the_sentence_links_to_it(record_property, check, want):
-    """The status icon follows the check, and the sentence links to the check.
+def test_the_status_icon_follows_the_check_and_the_label_links_to_it(record_property, check, want):
+    """The status icon follows the check, and the words Acceptance criterion link to the check.
 
     Draws the card with criterion 1's check missing, queued, in progress, passed and failed, and checks its status
-    icon shows that state, never sits inside a link, and the criterion's sentence links to its check whenever the
-    check exists (and to nothing when it does not). Proves 235.2."""
+    icon shows that state, never sits inside a link, and the words Acceptance criterion link to its check whenever
+    the check exists (and to nothing when it does not). Proves 235.2."""
     record_property("proves", "235.2")
     st, link = head(draw(check_runs=[check] if check else []), "First thing works", "235.2")
     assert st == want, f"235.2: a check {check and (check['status'], check['conclusion'])} shows {st}, not {want}"
-    assert link == (job(1) if check else None), f"235.2: the sentence links to {link}, not {job(1) if check else 'nothing'}"
+    assert link == (job(1) if check else None), f"235.2: the label links to {link}, not {job(1) if check else 'nothing'}"
 
 
-def test_each_sentence_links_to_its_own_check(record_property):
-    """Each criterion's sentence links to its own check, not a neighbour's.
+def test_each_label_links_to_its_own_check(record_property):
+    """Each criterion's label links to its own check, not a neighbour's.
 
-    Draws the card with both criteria's checks and checks each sentence links to its own check run. Proves 235.2."""
+    Draws the card with both criteria's checks and checks each label links to its own check run. Proves 235.2."""
     record_property("proves", "235.2")
     text = draw()
     assert head(text, "First thing works", "235.2") == ("passed", job(1)), "235.2: criterion 1 does not link its own check"
@@ -308,9 +312,9 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
     assert on_pr, f"235.4: the card was not written on the {pr['state']} PR, so it keeps an older card than the issue"
     a, b = block(on_issue), block(on_pr)
     assert a == b, f"235.4: the issue and PR cards differ:\n{a}\n---\n{b}"
-    html = links_as_html(a)
-    assert f'<a href="{ISSUE["url"]}">issue #40</a>' in html, "235.4: the card does not link back to issue #40"
-    assert '<a href="https://github.com/o/r/pull/5">PR #5</a>' in html, "235.4: the card does not link back to PR #5"
+    # The issue and the PR are written out bare, so GitHub draws them as references with their icon and title (#359).
+    assert re.search(r"(^|[\s·])" + re.escape(ISSUE["url"]) + r"($|[\s·])", a, re.M), "235.4: the card does not link back to issue #40"
+    assert re.search(r"(^|[\s·])https://github\.com/o/r/pull/5($|[\s·])", a, re.M), "235.4: the card does not link back to PR #5"
     assert code_review(a) == code_review(b) == "passed", "235.4: a code review that passed does not show passed on both"
     assert "Closes #40" in on_pr, "235.4: the PR lost its line closing the issue"
 
@@ -320,15 +324,14 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
 def source(under):
     """The link on the Source line among a criterion's lines, or None.
 
-    Fails if the line says more than the word Source."""
+    Fails unless the line reads Source: and the link written out bare, which GitHub draws as a reference (#359)."""
     found = [l for l in under if re.match(r"\s+- ", l) and "Source" in plain(l) and "Verified by" not in l]
     if not found:
         return None
     assert len(found) == 1, f"more than one Source line: {found}"
-    links = re.findall(r'<a href="([^"]+)">(.*?)</a>', found[0])
-    assert len(links) == 1 and plain(links[0][1]) == "Source" and plain(re.sub(r"^\s+- ", "", found[0])) == "Source", \
-        f"the Source line is not the one word Source linking to the ask: {found[0]}"
-    return links[0][0]
+    m = re.fullmatch(r"Source: (https://\S+)", plain(re.sub(r"^\s+- ", "", found[0])))
+    assert m and "<a " not in found[0], f"the Source line is not Source: and the bare link to the ask: {found[0]}"
+    return m.group(1)
 
 
 def test_each_criterion_has_a_source_line_after_verified_by(record_property):

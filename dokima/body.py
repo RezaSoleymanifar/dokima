@@ -1,7 +1,9 @@
-"""The issue body: code's card above one fixed marker, the owner's ask open below it, never rewritten.
+"""The issue body: code's card above one marker, the owner's ask below, never rewritten.
 
-A split's story, quoted by code from the parent's approved plan, stays folded under Original issue. Bodies saved
-before #237 carry the fold around every ask: reading still accepts it, and the next redraw opens an owner's ask.
+Once planned, every ask sits folded under Original issue (#373). While an issue has no plan, the owner's own ask
+shows open, with the card's Definition of Done after it, after its own marker (#371, #407); a split's story, quoted by
+code from the parent's approved plan, stays folded with the Definition of Done after the fold (#237). Reading accepts
+every layout, and the next redraw moves the ask to the one its card calls for.
 
 Every code path that redraws an issue body (the card and the planner) saves it through `save`, which keeps the
 owner's part byte for byte or refuses, leaves the body as it was and says why in a comment on the issue.
@@ -13,12 +15,28 @@ MARKER = "<!-- dokima-ask -->"
 FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
 OPEN_START = "\n\n"
-# A split's story as dokima/agent.py story_body draws it: quoted from the parent's plan, so it stays folded.
-QUOTED = re.compile(r"<!-- dokima-card -->\n<!-- /dokima-card -->\n\n<details open><summary>From the approved plan of #\d+, ")
+DONE = "<!-- dokima-done -->"
+TRAILER = "\n\n" + DONE + "\n"
+# The head of a split's story, as agent.story_body quotes it from the parent's approved plan.
+STORY = re.compile(r"<!-- dokima-card -->\n<!-- /dokima-card -->\n\n<details open><summary>From the approved plan of #\d+, ")
 
 
 class Refused(Exception):
     """A redraw that would change the owner's part; its message says why."""
+
+
+def trailer(below):
+    """`below` split into the owner's fold and the Definition of Done line after it.
+
+    Only the last DONE marker counts, and only when one line follows it and the fold closes right before it, so the
+    owner's own copy of the marker never ends their text early. The owner's part is folded, or open (#407)."""
+    i = below.rfind(TRAILER)
+    if i < 0 or "\n" in below[i + len(TRAILER):]:
+        return below, ""
+    folded = below[:i].endswith(FOLD_END) and below.startswith(FOLD_START) and i >= len(FOLD_START) + len(FOLD_END)
+    if not folded and not below.startswith(OPEN_START):
+        return below, ""
+    return below[:i], below[i:]
 
 
 def ask(body):
@@ -26,7 +44,7 @@ def ask(body):
     body = body or ""
     if MARKER not in body:
         return body
-    below = body.split(MARKER, 1)[1]
+    below = trailer(body.split(MARKER, 1)[1])[0]
     if below.startswith(FOLD_START) and below.endswith(FOLD_END) and len(below) >= len(FOLD_START) + len(FOLD_END):
         return below[len(FOLD_START):len(below) - len(FOLD_END)]
     if below.startswith(OPEN_START):
@@ -34,18 +52,18 @@ def ask(body):
     return below
 
 
-def quoted(text):
-    """Whether the owner's part is a split's story quoted by code, not words the owner wrote."""
-    return bool(QUOTED.match(text))
-
-
 def redraw(body, top):
-    """The new body: `top` above the marker and the owner's part below it, kept exactly; Refused when it would change."""
+    """The new body: `top` above the marker, the owner's part below; Refused if it changes.
+
+    What `top` holds after its DONE marker (a card with no plan's Definition of Done) goes below the owner's part,
+    which then shows open unless it is a split's story (#407); with a plan, the owner's part is folded."""
     body = body or ""
     owner = ask(body)
-    below = FOLD_START + owner + FOLD_END if quoted(owner) else OPEN_START + owner
+    top, done = top.split(DONE, 1) if DONE in top else (top, None)
+    shown = OPEN_START + owner if done is not None and not STORY.match(owner) else FOLD_START + owner + FOLD_END
+    below = shown + ("" if done is None else TRAILER + done.strip("\n"))
     new = top.rstrip("\n") + "\n\n" + MARKER + below
-    if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below:
+    if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below or (done is not None and not trailer(below)[1]):
         raise Refused("the owner's part below the marker would change: the new card holds the marker "
                       f"`{MARKER}` itself, so the owner's original ask would no longer read back as written")
     return new

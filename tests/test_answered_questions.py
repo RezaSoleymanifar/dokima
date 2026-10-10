@@ -14,8 +14,9 @@ What the comment must hold, pinned here:
                     after the heading up to the first non-empty line that is neither a list item ("- " or "1. ") nor
                     indented under one
     each answer     inside the section, the question on one line, the answer on a later line and the evidence on a
-                    later line still; the evidence is a markdown link whose text holds the matched words and whose
-                    target is the source: the issue or comment link as given, or for "AGENTS.md" the file on the
+                    later line still; the evidence holds the matched words in quotes and then the issue or comment
+                    link as given, written out bare so GitHub draws it as its own reference (#359); for "AGENTS.md"
+                    it is a markdown link whose text holds the matched words and whose target is the file on the
                     repo's main branch, https://github.com/o/r/blob/main/AGENTS.md
     no blank heading  a line that is only a bold heading ending in a colon (an icon may lead it) is always followed,
                     past blank lines, by a list item
@@ -122,8 +123,15 @@ def line_of(body, needle):
 
 
 def link(matched, source):
-    """A markdown link whose text holds the matched words and whose target is the source."""
-    return re.compile(r"\[[^\]]*" + re.escape(matched) + r"[^\]]*\]\(" + re.escape(source) + r"\)")
+    """The owner's matched words, then where they said them.
+
+    For AGENTS.md, a markdown link whose text holds the matched words and whose target is the file. For an issue or
+    comment, the words in quotes, not inside any link, then the link written out bare, so GitHub draws it as its own
+    reference (#359)."""
+    if source == AGENTS:
+        return re.compile(r"\[[^\]]*" + re.escape(matched) + r"[^\]]*\]\(" + re.escape(source) + r"\)")
+    return re.compile(r"^(?!.*\]\()(?!.*<a ).*\"" + re.escape(matched) + r"\".*?(?<![\w/\"=\[<])"
+                      + re.escape(source) + r"(?![\w/#-])")
 
 
 def check_answered(body, q, a, matched, target, crit):
@@ -132,8 +140,8 @@ def check_answered(body, q, a, matched, target, crit):
     ie = next((i for i, l in enumerate(body) if link(matched, target).search(l)), -1)
     assert iq >= 0, f"{crit}: the answered section does not show the question \"{q}\":\n" + "\n".join(body)
     assert ia >= 0, f"{crit}: the answered section does not show the answer \"{a}\" (the plan's assumption):\n" + "\n".join(body)
-    assert ie >= 0, (f"{crit}: the answered section has no link [..\"{matched}\"..]({target}) giving the owner's "
-                     "words and where they said them:\n" + "\n".join(body))
+    assert ie >= 0, (f"{crit}: the answered section does not give the owner's words \"{matched}\" and where they "
+                     f"said them ({target}):\n" + "\n".join(body))
     assert iq < ia < ie, (f"{crit}: the section must show the question, then the answer below it, then the evidence "
                           f"below that; got lines {iq}, {ia}, {ie}:\n" + "\n".join(body))
 

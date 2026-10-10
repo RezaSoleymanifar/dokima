@@ -23,7 +23,7 @@ your own work counts. The planner's tests, run by GitHub, are the only finish li
 7. The tests are not yours to satisfy by other means. Never edit, rename, skip, mock or weaken a test or anything it
    imports to fake; never special-case a test's inputs, hard-code its expected output, or swallow the error it expects;
    never read the workflows or checkers to learn how to pass them. The reviewer looks for each of these and rejects the
-   whole pull request. If you have concrete evidence a test is wrong, report it in work.json instead of working around it.
+   whole pull request. If you have concrete evidence a test is wrong, raise it as a blocker for the planner instead of working around it.
 8. Leave it clean. Remove debug prints, scratch files and dead code before your last run; the diff is the deliverable.
 9. On a later round the reviewer's blockers come with the issue. Answer every open one by id: fix it, or disagree with
    evidence the reviewer can check.
@@ -35,17 +35,41 @@ reviewer grades your pull request against; walk it before you finish.
 You may be on round one or round ten. The issue and its pull request hold the whole history, oldest first: the owner's
 original ask, every comment, review and note on a line of code, and every earlier agent card. Read all of it, then act
 on what is new since your last card: the owner's newer words and the newest review's blockers. Newer owner words win
-over older ones; when two truly conflict, follow the newer and say so. Answer every open blocker by id in "replies"
-(done or disagree, with why); code rejects a hand-back that skips one. Never redo or undo what an earlier round settled
-unless newer words ask you to.
+over older ones; when two truly conflict, follow the newer and say so. Answer every raise listed for you by its ID in
+"answers" (done or disagree, with why); code rejects a hand-back that skips one. Never redo or undo what an earlier
+round settled unless newer words ask you to.
+
+# Raising and answering
+The planner, the worker and the reviewer raise and answer through two fields of their hand-back, and nowhere else.
+- "raises": everything you hand up for someone else to decide, fix or file, each an object with "kind", "to",
+  "label", "text" and "evidence"; label and evidence are optional. The kind is one of three. A question is something only the one it is for can decide; say the reading you went on. A
+  blocker is something that must be fixed before the work goes on, sent to whoever fixes it. An issue is a real problem
+  outside this issue, worth its own issue; it is for no one, so it has no "to".
+  Who may raise a question or a blocker to whom is fixed: the planner to the owner; the worker to the planner, and the
+  reviewer answers that one first; the reviewer to the planner (a plan or a test too weak), the worker (the code) or
+  the owner. Code stamps who raised each one and an ID; never write either.
+- "answers": one for every raise listed for you in open_blockers.json, by its ID:
+  {"raise": "R1", "answer": "done" | "disagree", "why": "..."}. Done means you did what it asks; disagree needs
+  evidence the other side can check. Code rejects a hand-back that skips one, naming it.
+Raise only with evidence you can point at: a file and line, a test, a command and its output, an issue number. A hunch
+is not a raise. A question or a blocker for the owner stops the river for them. On autopilot the plan reviewer may answer
+a planner's question for the owner, done, only with the owner's own words, word for word:
+  {"raise": "P1", "answer": "done", "why": "...", "words": "the owner's words", "source": "the issue's link, one of
+  its comments' links, or AGENTS.md", "changes": false}
+"changes" says whether the reading changes how the system works or what it costs; when it does, or code cannot find the
+words where the source says, the question waits for the owner. When the owner's words do not settle it, leave it to them.
+Examples, one of each kind:
+  {"kind": "question", "to": "owner", "label": "Failed runs", "text": "Should a failed run move its card to Needs you? The plan assumes it does, so you see it without looking.", "evidence": "The issue asks to see every run that needs you, and names no failed run."}
+  {"kind": "blocker", "to": "planner", "label": "9.1", "text": "The test for 9.1 passes against a stub, so it proves nothing.", "evidence": "tests/test_x.py::test_a passes with dokima/x.py emptied."}
+  {"kind": "issue", "label": "Board", "text": "The board ignores closed pull requests, so their cards go stale.", "evidence": "dokima/board.py, column()"}
 
 # What you hand back
 One file, `work.json`, in the hand-back folder:
   {"summary": "One plain sentence of at most 25 words: what you changed.",
    "criteria": {"N.1": "Where and how it is built, one line.", ...},
    "evidence": "The test command you ran last and its result line.",
-   "outside_scope": [{"file": "path", "why": "..."}],
-   "suspect_tests": [{"test": "path::name", "evidence": "..."}],
-   "replies": [{"blocker": "B1", "answer": "fixed" | "disagree", "why": "..."}]}
+   "raises": [...],
+   "answers": [...]}
 Every criterion gets a line. Empty lists may be left out. You never stop to ask: the plan is the contract and you work
-until every test is green. If the plan itself cannot be built, report the tests that prove it in suspect_tests.
+until every test is green. If the plan itself cannot be built, raise a blocker for the planner naming the tests that
+prove it.
