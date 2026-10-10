@@ -250,6 +250,11 @@ def test_a_run_comment_shows_every_raise_in_one_raised_section(record_property, 
     assert len(items) == len(raises), \
         f"299.1: {who} raised {len(raises)} things but its Raised section has {len(items)} lines:\n{body}"
     for r in raises:
+        if record is NEW_REVIEW and r.get("to") == "owner":
+            # Since #485 a review draws a raise for the owner as its name and its take, pinned in test_owner_items.py.
+            assert any(f"**{r['label']}**; {r['text']}" in "\n".join(i) for i in items), \
+                f"299.1: {who} does not show its raise for you {r['text']!r}:\n{body}"
+            continue
         check_raise_line(item_with(items, r["text"]), r, "299.1", who)
 
 
@@ -315,7 +320,10 @@ def test_a_review_card_shows_earlier_raises_with_its_answers_apart_from_its_own(
     assert earlier is not None, f"299.3: the review's comment has no Raised earlier section:\n{body}"
     assert len(headings(body, "Raised earlier:")) == 1, f"299.3: the review shows Raised earlier more than once:\n{body}"
     assert len(earlier) == 2, f"299.3: the review answered 2 earlier raises but Raised earlier has {len(earlier)}:\n{body}"
-    for r, a, word, not_word in ((P_QUESTION, A_FOR_OWNER, "Done", "Disagree"), (W_BLOCKER, A_DISAGREE, "Disagree", "Done")):
+    # Since #485 the answer to a question for the owner reads its label, then the reviewer's why (test_owner_items.py).
+    mine = item_with(earlier, f"**{P_QUESTION['label']}**")
+    assert A_FOR_OWNER["why"] in mine, f"299.3: the earlier question for you does not show the review's why:\n{mine}"
+    for r, a, word, not_word in ((W_BLOCKER, A_DISAGREE, "Disagree", "Done"),):
         item = item_with(earlier, r["text"])
         check_raise_line(item, r, "299.3", "Raised earlier")
         assert word in item and not_word not in item, \
@@ -342,7 +350,7 @@ def test_an_answer_given_for_you_on_autopilot_quotes_your_words_and_links_them(r
     # Since #359 the words are quoted as plain text and the comment follows as a bare link GitHub draws as a reference.
     linked = re.compile(r"^(?!.*\]\()(?!.*<a ).*\"" + re.escape(A_FOR_OWNER["words"]) + r"\".*?(?<![\w/\"=\[<])"
                         + re.escape(SAID) + r"(?![\w/#-])", re.M)
-    item = item_with(earlier, P_QUESTION["text"])
+    item = item_with(earlier, f"**{P_QUESTION['label']}**")
     assert linked.search(item), (f"299.3: the answer given for you does not quote your words "
                                  f"{A_FOR_OWNER['words']!r} followed by where you said them, {SAID}:\n{item}")
     other = item_with(earlier, W_BLOCKER["text"])
@@ -369,7 +377,7 @@ def test_the_record_step_draws_earlier_raises_from_the_pack(record_property, tmp
 
     Runs the workflow's record step for a code review whose hand-back answers two raises by ID, with the planner's
     and worker's records in the starting pack, and checks the comment's Raised earlier section shows both raises'
-    words with their answers, and neither ID.
+    label or words with their answers, and neither ID.
 
     Proves 299.3."""
     record_property("proves", "299.3")
@@ -378,8 +386,8 @@ def test_the_record_step_draws_earlier_raises_from_the_pack(record_property, tmp
     earlier = section(body, "Raised earlier:")
     assert earlier is not None and len(earlier) == 2, \
         f"299.3: the posted review does not show the 2 raises it answered, found in the pack:\n{body}"
-    for r, a in ((P_QUESTION, A_FOR_OWNER), (W_BLOCKER, A_DISAGREE)):
-        item = item_with(earlier, r["text"])
+    for r, a, find in ((P_QUESTION, A_FOR_OWNER, f"**{P_QUESTION['label']}**"), (W_BLOCKER, A_DISAGREE, W_BLOCKER["text"])):
+        item = item_with(earlier, find)
         assert a["why"] in item, f"299.3: the posted review does not show why for {r['text']!r}:\n{item}"
         assert not re.search(r"\b" + r["id"] + r"\b", item), f"299.3: the posted review shows the ID {r['id']}:\n{item}"
 

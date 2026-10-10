@@ -533,14 +533,15 @@ def test_the_reviewers_answer_for_you_must_quote_your_words_and_where(record_pro
     """The reviewer's answer for you must quote your words and say where.
 
     Runs the round check of a plan review whose pack holds the plan with two questions for the owner: answering both
-    with the owner's words, their source and changes passes, as does answering neither. An answer with no words, no
-    source, a source on another issue, or no changes is rejected.
+    with the owner's words, their source and changes passes; answering neither is rejected since #485, which asks the
+    reviewer's take on every question. An answer with no words, no source, a source on another issue, or no changes
+    is rejected.
 
     Proves 300.4."""
     record_property("proves", "300.4")
     pack = round_pack(tmp_path, [], earlier=[Q_PLAN])
     base = review("approve")
-    for answers in ([GOOD_1, GOOD_2], []):
+    for answers in ([GOOD_1, GOOD_2],):
         code, out = round_check(tmp_path, "reviewer", {**base, "answers": answers}, pack)
         assert code == 0, f"300.4: a plan review answering {len(answers)} questions with the owner's words was rejected:\n{out}"
     bad = (("no words", {k: v for k, v in GOOD_2.items() if k != "words"}),
@@ -557,7 +558,7 @@ def test_on_autopilot_only_your_real_words_let_a_question_go_on_and_off_autopilo
 
     Asks the river what follows an approving plan review of a plan with two questions. On autopilot, both answered
     done with words really in the issue's text and in a code owner's comment, and changing nothing, the worker starts.
-    Every other case stops and names the question left, not the other: one not answered, answered disagree, words not
+    Every other case stops, quoting neither question since #485: one not answered, answered disagree, words not
     in the comment, a comment by someone who is not a code owner, and a reading that changes how the system works or
     what it costs. Off autopilot the plan with questions stops right after the planner, and on autopilot it goes to
     the plan reviewer.
@@ -580,8 +581,8 @@ def test_on_autopilot_only_your_real_words_let_a_question_go_on_and_off_autopilo
     for case, answers in bad:
         step = decide(answers)
         assert step[0] == "stop", f"300.4 ({case}): the question went on without the owner: {step}"
-        assert P2["text"] in step[1] and P1["text"] not in step[1], \
-            f"300.4 ({case}): the stop does not name only the question left ({P2['text']!r}): {step[1]!r}"
+        assert P2["text"] not in step[1] and P1["text"] not in step[1] and "`/plan`" in step[1], \
+            f"300.4 ({case}): the stop must say to answer with `/plan`, quoting no question: {step[1]!r}"
     on = agent.next_step(items[:2], Q_PLAN, [OWNER], autopilot=lambda: True)
     off = agent.next_step(items[:2], Q_PLAN, [OWNER], autopilot=lambda: False)
     assert on == ("start", "reviewer", "plan"), f"300.4: on autopilot a plan with questions did not go to the plan reviewer: {on}"

@@ -400,7 +400,7 @@ def test_when_github_cannot_say_the_parent_only_the_own_issue_counts(record_prop
     Builds #331's pack while every parent lookup fails as GitHub does (HTTP 502): parent.json must name no parent,
     while the same pack built with GitHub answering names #330. Then decides what follows an approving plan review
     of #57 on autopilot whose assumption cites words in the parent #56: with the lookup failing the river must stop
-    for the owner naming that question, and with GitHub answering the worker starts. Proves 334.4."""
+    for the owner (quoting no question since #485), and with GitHub answering the worker starts. Proves 334.4."""
     record_property("proves", "334.4")
     number, err = build_pack(tmp_path / "pack-ok", "planner", "", {STORY_N: PARENT_N})
     assert number == PARENT_N, f"334.4: setup: with GitHub answering, the pack does not name #330: {number!r}\n{err[-800:]}"
@@ -411,5 +411,5 @@ def test_when_github_cannot_say_the_parent_only_the_own_issue_counts(record_prop
     assert out == "start worker", f"334.4: setup: with GitHub answering, the parent's words did not count: {out!r}\n{err[-800:]}"
     out, card, board, err = decide(tmp_path / "river-fail", review, tr.STORY_Q_PLANNED, tr.ON, fail_parent=True)
     nxt = tr.next_of(card)
-    assert out == "stop" and tr.QUESTIONS[1]["question"] in nxt and board == "Plan needs", \
+    assert out == "stop" and tr.QUESTIONS[1]["question"] not in nxt and "`/plan`" in nxt and board == "Plan needs", \
         f"334.4: with GitHub failing to say the parent, the river went on on the parent's words: {out!r} {nxt!r} {board!r}"
