@@ -2,10 +2,12 @@
 
 On the merge queue's event GitHub hands done-whens.yml the queued commit: the pull request on top of the latest main.
 A checkout with no `ref:` then copies that commit, so a pull request that edits dokima/checks.py would make its own
-check list in the queue. These tests play GitHub's part. They build three tiny trees: main, the pull request's head,
-and the queued commit. Each holds a stand-in dokima/checks.py that notes whose copy ran; main's lists the plan's one
-check, while the pull request's and the queued commit's are "edited" to list one always-passing Text only check.
-Each tree also holds app.py and the test that checks it, its code working or broken.
+check list in the queue. These tests play GitHub's part. They build four tiny trees: main, the pull request's head,
+the queued commit, and another pull request queued ahead of it. In the queue the event's base_sha is the commit just
+ahead (here that other pull request's queued commit), never main, so only a checkout of main itself finds main's code.
+Each tree holds a stand-in dokima/checks.py that notes whose copy ran; main's lists the plan's one check, while the
+other three are "edited" to list one always-passing Text only check. Each tree also holds app.py and the test that
+checks it, its code working or broken.
 
 Every job of the real done-whens.yml (list, check once per row of the list's matrix, gate) then runs step by step:
 `actions/checkout` copies the tree its `ref` names on that event (the queued commit by default on merge_group, main
@@ -25,6 +27,7 @@ WORKFLOW = os.path.join(ROOT, ".github", "workflows", "done-whens.yml")
 MAIN_SHA = "3" * 40
 PR_SHA = "1" * 40
 QUEUE_SHA = "2" * 40
+AHEAD_SHA = "4" * 40
 N = 7
 
 APP_GOOD = "def value():\n    return 1\n"
@@ -68,17 +71,18 @@ def tree(where, who, app, rows, log):
 def context(event, needs=None, matrix=None):
     """The `${{ }}` contexts GitHub gives done-whens.yml on this event."""
     if event == "merge_group":
+        # Another pull request is queued ahead: the queued commit is built on its queued commit, not on main.
         ev = {"action": "checks_requested", "merge_group": {
-            "head_sha": QUEUE_SHA, "head_ref": f"refs/heads/gh-readonly-queue/main/pr-{N}-{MAIN_SHA}",
-            "base_sha": MAIN_SHA, "base_ref": "refs/heads/main"}}
-        sha, ref = QUEUE_SHA, f"refs/heads/gh-readonly-queue/main/pr-{N}-{MAIN_SHA}"
+            "head_sha": QUEUE_SHA, "head_ref": f"refs/heads/gh-readonly-queue/main/pr-{N}-{AHEAD_SHA}",
+            "base_sha": AHEAD_SHA, "base_ref": "refs/heads/main"}}
+        sha, ref, base_ref = QUEUE_SHA, f"refs/heads/gh-readonly-queue/main/pr-{N}-{AHEAD_SHA}", ""
     else:
         ev = {"action": "synchronize", "number": N, "pull_request": {
             "number": N, "head": {"sha": PR_SHA, "ref": "work/issue-1"}, "base": {"sha": MAIN_SHA, "ref": "main"}}}
-        sha, ref = MAIN_SHA, "refs/heads/main"
+        sha, ref, base_ref = MAIN_SHA, "refs/heads/main", "main"
     return ts.Ctx({k: ts.Ctx(v) for k, v in {
         "github": {"event_name": event, "repository": "o/r", "token": "ghs_x", "sha": sha, "ref": ref,
-                   "base_ref": "main", "event": ev},
+                   "base_ref": base_ref, "event": ev},
         "secrets": {}, "vars": {}, "env": {}, "steps": {}, "needs": needs or {}, "matrix": matrix or {},
         "inputs": {}}.items()})
 
@@ -89,8 +93,10 @@ def tree_for(ref, event, trees):
         return trees["queued"] if event == "merge_group" else trees["main"]
     if ref in (MAIN_SHA, "main", "refs/heads/main"):
         return trees["main"]
-    if ref in (QUEUE_SHA, f"refs/heads/gh-readonly-queue/main/pr-{N}-{MAIN_SHA}"):
+    if ref in (QUEUE_SHA, f"refs/heads/gh-readonly-queue/main/pr-{N}-{AHEAD_SHA}"):
         return trees["queued"]
+    if ref in (AHEAD_SHA, f"refs/heads/gh-readonly-queue/main/pr-{N - 1}-{MAIN_SHA}"):
+        return trees["ahead"]
     if ref in (PR_SHA, "work/issue-1", f"refs/pull/{N}/head"):
         return trees["pr"]
     raise AssertionError(f"the tests do not know which tree the checkout ref {ref!r} names on {event}")
@@ -141,10 +147,11 @@ def queue(tmp_path, event, app):
     tmp_path = str(tmp_path)
     log_file = os.path.join(tmp_path, "who-ran.log")
     trees = {"main": os.path.join(tmp_path, "main"), "pr": os.path.join(tmp_path, "pr"),
-             "queued": os.path.join(tmp_path, "queued")}
+             "queued": os.path.join(tmp_path, "queued"), "ahead": os.path.join(tmp_path, "ahead")}
     tree(trees["main"], "main", APP_GOOD, PLAN_ROWS, log_file)
     tree(trees["pr"], "pull-request", app, EDITED_ROWS, log_file)
     tree(trees["queued"], "queued", app, EDITED_ROWS, log_file)
+    tree(trees["ahead"], "queued-ahead", APP_GOOD, EDITED_ROWS, log_file)
     bin_dir = os.path.join(tmp_path, "bin")
     os.makedirs(bin_dir)
     open(os.path.join(bin_dir, "pip"), "w").write("#!/bin/sh\nexit 0\n")
@@ -177,17 +184,18 @@ def queue(tmp_path, event, app):
 
 
 def test_the_queue_makes_its_check_list_with_mains_copy_of_dokimas_code(record_property, tmp_path):
-    """In the merge queue, main's copy of Dokima's code lists the checks and annotates the tests.
+    """In the merge queue, main's copy of Dokima's code lists and annotates the checks.
 
     Proves 388.1. Queues a pull request whose dokima/checks.py was edited, runs every job of done-whens.yml on the merge queue's
-    event, and checks that main's copy listed the checks and annotated the tests while the queued commit's copy never
-    ran at all. Then opens the same pull request (pull_request_target) and checks the same holds there, as before."""
+    event with another pull request queued ahead whose dokima/checks.py was edited too, and checks that main's copy
+    listed the checks and annotated the tests while neither the queued commit's copy nor the one queued ahead ever
+    ran. Then opens the same pull request (pull_request_target) and checks the same holds there, as before."""
     record_property("proves", "388.1")
     for event in ("merge_group", "pull_request_target"):
         _, ran, logs = queue(tmp_path / event, event, APP_GOOD)
         theirs = [r for r in ran if not r.startswith("main ")]
-        assert not theirs, (f"388.1: on {event} the pull request's own copy of dokima/checks.py ran "
-                            f"({', '.join(theirs)}), so it judges itself:\n{logs}")
+        assert not theirs, (f"388.1: on {event} a copy of dokima/checks.py other than main's ran "
+                            f"({', '.join(theirs)}), so a pull request's edit judges it:\n{logs}")
         assert "main matrix" in ran, f"388.1: on {event} main's copy of Dokima's code never made the check list:\n{logs}"
         assert "main annotate" in ran, \
             f"388.1: on {event} main's copy of Dokima's code never annotated the tests that ran:\n{logs}"
