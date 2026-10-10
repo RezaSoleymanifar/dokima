@@ -351,13 +351,13 @@ def links_row(repo, issue, pr, worker, check_runs):
 
 
 def criterion_item(repo, label, c, check, tests):
-    """One criterion as a bullet: its status circle, its label and its words, linked to its check when there is one;
-    under it one italic Verified by line per test with a docstring, only the words Verified by linking to the test,
-    then Source linking to where the owner asked for it, when it has one."""
-    words = escape(c.get("text"))
+    """One criterion bullet: its status circle, its label linked to its check, its words plain.
+
+    The label links only when there is a check. Under it one italic Verified by line per test with a docstring, only
+    the words Verified by linking to the test, then Source linking to where the owner asked for it, when it has one."""
     if check:
-        words = f'<a href="{check["html_url"]}">{words}</a>'
-    out = [f"- {circle(repo, state(check))} **{label}:** {words}"]
+        label = f'<a href="{check["html_url"]}">{label}</a>'
+    out = [f"- {circle(repo, state(check))} **{label}:** {escape(c.get('text'))}"]
     for t in tests:
         if t and t.get("verified_by"):
             out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
