@@ -2604,7 +2604,7 @@ def main(argv):
             print("The plan was not approved: the checks stay as they are.")
         return 0
     if argv[1] == "board":
-        from dokima import board, plan
+        from dokima import board, plan, retry
         spec, repo = os.environ.get("DOKIMA_BOARD", "").strip(), os.environ.get("GITHUB_REPOSITORY", "")
         if not spec:
             print("No board set; nothing to move.")
@@ -2618,7 +2618,8 @@ def main(argv):
                 and not os.path.exists(os.path.join(argv[3], "undecided")):
             # A run that decided what follows, or was cancelled, is placed from GitHub's state, never from the run.
             try:
-                placed = board.rebuild(board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2]))
+                placed = retry.once_more("the board step", lambda: board.rebuild(
+                    board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2])))
             except RuntimeError as e:
                 print(f"::error::{e}")
                 return 1
@@ -2628,9 +2629,11 @@ def main(argv):
         # The run failed, or deciding what follows did, so the river stopped: its own stage's column with Needs you, at once.
         column = board_place(rec, ("stop",))[0]
         print(f"board: #{argv[2]} and its open pull request -> {column} · Needs you")
+        errors = (subprocess.CalledProcessError, KeyError, ValueError)
         try:
-            board.stopped(board.Board(spec, repo), repo, argv[2], column)
-        except (subprocess.CalledProcessError, KeyError, ValueError) as e:
+            retry.once_more("the board step", lambda: board.stopped(board.Board(spec, repo), repo, argv[2], column),
+                            errors=errors)
+        except errors as e:
             print(f"::warning::GitHub could not be read, so the board may not show it: {gh_reason(e) if hasattr(e, 'stderr') else e}")
         return 0
     if argv[1] == "autopilot":
