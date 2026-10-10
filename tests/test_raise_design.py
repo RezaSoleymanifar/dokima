@@ -24,10 +24,12 @@ What these tests pin, so the worker knows the exact shape:
 import json
 import os
 import re
+import sys
 
 import pytest
 
-from dokima import raises
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from dokima import raises  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ROLE_FILES = ("planner", "worker", "reviewer")
