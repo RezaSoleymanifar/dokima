@@ -300,23 +300,26 @@ def code_review(text):
 
 @pytest.mark.parametrize("pr", [PR, merged("boss"), dict(PR, state="closed")], ids=["open", "merged", "closed"])
 def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_property, monkeypatch, tmp_path, pr):
-    """The issue and PR cards are identical, each linking to the issue and the PR.
+    """The issue and PR cards match but for the issue's link; both link the PR.
 
     Runs the card for an issue whose code review passed, with its PR open, merged and closed, and checks the card
-    is written on both pages, the two are identical, both link to issue #40 and PR #5, and both show the code review
-    passed. Proves 235.4."""
+    is written on both pages, the two are the same but for the PR card's link to issue #40 in its top row (the issue's
+    own card leaves out the link to itself, #452), both link to PR #5, and both show the code review passed.
+    Proves 235.4."""
     record_property("proves", "235.4")
     record_property("proves", "344.1")
     on_issue, on_pr = write_main(monkeypatch, tmp_path, dict(FOUND, pr=pr))
     assert on_issue, "235.4: the card was not written on the issue"
     assert on_pr, f"235.4: the card was not written on the {pr['state']} PR, so it keeps an older card than the issue"
     a, b = block(on_issue), block(on_pr)
-    assert a == b, f"235.4: the issue and PR cards differ:\n{a}\n---\n{b}"
+    # Since #452 only the PR's top row links the issue; take that one link out and the two cards are the same.
+    assert a == b.replace(" · " + ISSUE["url"] + " · ", " · ", 1), f"235.4: the issue and PR cards differ:\n{a}\n---\n{b}"
     # The issue and the PR are written out bare, so GitHub draws them as references with their icon and title (#359).
-    assert re.search(r"(^|[\s·])" + re.escape(ISSUE["url"]) + r"($|[\s·])", a, re.M), "235.4: the card does not link back to issue #40"
-    assert re.search(r"(^|[\s·])https://github\.com/o/r/pull/5($|[\s·])", a, re.M), "235.4: the card does not link back to PR #5"
+    assert re.search(r"(^|[\s·])" + re.escape(ISSUE["url"]) + r"($|[\s·])", b, re.M), "235.4: the PR card does not link back to issue #40"
+    for c in (a, b):
+        assert re.search(r"(^|[\s·])https://github\.com/o/r/pull/5($|[\s·])", c, re.M), "235.4: the card does not link back to PR #5"
     assert code_review(a) == code_review(b) == "passed", "235.4: a code review that passed does not show passed on both"
-    assert "Closes #40" in on_pr, "235.4: the PR lost its line closing the issue"
+    assert on_pr.rstrip().endswith("Closes " + ISSUE["url"]), "235.4: the PR lost its line closing the issue"
 
 
 # 235.5: under each criterion, Source links to where the owner asked for it, the most recent time

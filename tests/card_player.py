@@ -438,6 +438,14 @@ def card_of(text):
     return m.group(0) if m else None
 
 
+def without_issue_link(text, n):
+    """The PR's card with its link back to issue n taken out of its top row.
+
+    That is the card the issue itself shows since #452."""
+    url = re.escape(f"https://github.com/o/r/issues/{n}")
+    return re.sub(rf"^{url} · | · {url}(?= · |$)", "", text or "", count=1, flags=re.M)
+
+
 def stage_of(text):
     """The stage a card's status line shows (Backlog, Plan, Work, Review or Merged), or None."""
     for line in (card_of(text) or "").splitlines():

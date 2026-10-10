@@ -443,6 +443,14 @@ def card_of(text):
     return m.group(0) if m else None
 
 
+def without_issue_link(text, n):
+    """The PR's card with its link back to issue n taken out of its top row.
+
+    That is the card the issue itself shows since #452."""
+    url = re.escape(f"https://github.com/o/r/issues/{n}")
+    return re.sub(rf"^{url} · | · {url}(?= · |$)", "", text or "", count=1, flags=re.M)
+
+
 def stage_of(text):
     """The stage a card's status line shows (Backlog, Plan, Work, Review or Merged), or None."""
     for line in (card_of(text) or "").splitlines():
@@ -932,8 +940,8 @@ def test_merging_a_pr_redraws_its_card_and_its_issues_card(tmp_path, record_prop
 
     PR #246 is merged and #239 closed on GitHub while both cards still show an old Review card. The merge event alone,
     sent by Dokima's bot (autopilot) and, on a fresh GitHub, by the owner, starts card.yml, which runs dokima/card.py
-    and passes. Afterwards #239's card and PR #246's card are the same card, saying Merged, and the PR keeps its
-    closing line. Proves 345.1."""
+    and passes. Afterwards #239's card and PR #246's card are the same card, saying Merged, but for the PR's link back
+    to #239 (#452), and the PR keeps its closing line, by the issue's full address. Proves 345.1."""
     record_property("proves", "345.1")
     for what, who, event in merge_events(239, 246):
         hub = Hub(tmp_path / who)
@@ -944,8 +952,9 @@ def test_merging_a_pr_redraws_its_card_and_its_issues_card(tmp_path, record_prop
             f"345.1: after {what}, issue #239's card does not say Merged: {issue_card!r}"
         assert stage_of(hub.pr_body(246)) == "Merged", \
             f"345.1: after {what}, PR #246's card does not say Merged: {pr_card!r}"
-        assert issue_card == pr_card, f"345.1: after {what}, issue #239 and PR #246 show different cards"
-        assert hub.pr_body(246).rstrip().endswith("Closes #239"), \
+        assert issue_card == without_issue_link(pr_card, 239) and pr_card != issue_card, \
+            f"345.1: after {what}, issue #239 and PR #246 show different cards, besides the PR's link to #239"
+        assert hub.pr_body(246).rstrip().endswith("Closes https://github.com/o/r/issues/239"), \
             f"345.1: after {what}, PR #246 lost its closing line: {hub.pr_body(246)[-200:]!r}"
 
 

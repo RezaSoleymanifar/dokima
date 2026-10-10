@@ -166,32 +166,31 @@ def test_the_issue_and_pr_at_the_top_show_as_github_references(record_property):
     """The issue and its PR at the top show as GitHub references.
 
     Draws the card of an issue with an open pull request on the issue and on the pull request, and checks the links
-    row names issue #40 and PR #5 as GitHub references, never as words like “issue #40” or “PR #5” linked to the
-    page, while the latest run and the files changed stay links. Proves 359.2."""
+    row names PR #5, and on the pull request issue #40 too, as GitHub references, never as words like “issue #40” or
+    “PR #5” linked to the page, while the latest run and the files changed stay links. Since #452 the issue's own
+    card leaves out its link to itself. Proves 359.2."""
     record_property("proves", "359.2")
-    rows = []
-    for page in ("issue", "pr"):
+    for page, want in (("issue", [5]), ("pr", [5, 40])):
         row = links_row(draw(page=page))
-        rows.append(row)
         assert not wrapped(row), f"359.2: the {page} card links the issue or PR with words of its own: {wrapped(row)}"
         got = refs(row)
-        assert sorted(got) == [5, 40], f"359.2: the {page} card's top row should name #40 and #5 as references once each, names {got}: {row}"
+        assert sorted(got) == want, f"359.2: the {page} card's top row should name {want} as references once each, names {got}: {row}"
         assert "issue #40" not in plain(row) and "PR #5" not in plain(row), \
             f"359.2: the {page} card's top row still writes the words issue #40 or PR #5: {plain(row)}"
         assert any("latest run" in plain(m.group(0)) for m in LINKS.finditer(row)), "359.2: latest run is no longer a link"
         assert any("files changed" in plain(m.group(0)) and "/pull/5/files" in m.group(0) for m in LINKS.finditer(row)), \
             "359.2: files changed is no longer a link to the PR's files"
-    assert rows[0] == rows[1], f"359.2: the top row differs between the issue and the PR: {rows}"
 
 
 def test_with_no_pr_the_top_row_names_only_the_issue(record_property):
-    """With no pull request, the top row names only the issue, as a reference.
+    """With no pull request, the issue's top row names no issue or pull request.
 
-    Draws the card of an issue with no pull request and checks the row names #40 alone, unwrapped. Proves 359.2."""
+    Draws the card of an issue with no pull request and checks the row names nothing, unwrapped: since #452 the
+    issue's own card leaves out its link to itself. Proves 359.2."""
     record_property("proves", "359.2")
     row = links_row(draw(pr=None))
     assert not wrapped(row), f"359.2: the issue is linked with words of its own: {wrapped(row)}"
-    assert refs(row) == [40], f"359.2: with no PR the top row should name only #40, it names {refs(row)}: {row}"
+    assert refs(row) == [], f"359.2: with no PR the issue's top row should name nothing, it names {refs(row)}: {row}"
 
 
 # 359.3: each story of a split shows as a GitHub reference, then its stage
@@ -226,7 +225,8 @@ def test_no_issue_or_pr_on_a_card_is_a_link_with_words_of_its_own(record_propert
     Draws a full card (sources, top row, Blocked by, Blocks, Relates to, Out of scope), a split's card with its
     stories, and a card whose issues block each other in a loop, on the issue and on the pull request, and checks
     no line links an issue, pull request or comment under words of its own, and every issue and pull request the
-    card names shows as a GitHub reference. Proves 359.4."""
+    card names shows as a GitHub reference; the issue's own card need not name #40, since #452 leaves out its link
+    to itself. Proves 359.4."""
     record_property("proves", "359.4")
     cases = [(dict(), {40, 5, 30, 50, 51, 52, 300}),
              (dict(recs=SPLIT_RECS, children=CHILDREN), {40, 5, 41, 42, 43}),
@@ -237,7 +237,8 @@ def test_no_issue_or_pr_on_a_card_is_a_link_with_words_of_its_own(record_propert
             bad = [w for l in text.splitlines() for w in wrapped(l)]
             assert not bad, f"359.4: the {page} card links issues or PRs under words of their own: {bad}"
             named = {n for l in text.splitlines() for n in refs(l)}
-            assert want <= named, f"359.4: the {page} card does not show {sorted(want - named)} as GitHub references"
+            need = want - {40} if page == "issue" else want
+            assert need <= named, f"359.4: the {page} card does not show {sorted(need - named)} as GitHub references"
 
 
 def test_a_merged_pr_card_still_names_both_as_references(record_property):
