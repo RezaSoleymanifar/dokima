@@ -1399,9 +1399,10 @@ NO_PERMISSION = "Resource not accessible by integration"
 
 def installations_link(repo):
     """Where the repo's owner accepts the app's new permissions: the organization's or the account's page."""
-    kind = gh("api", f"repos/{repo}", "-q", ".owner.type").strip()
+    owner = repo.split("/")[0]
+    kind = gh("api", f"users/{owner}", "-q", ".type").strip()
     if kind == "Organization":
-        return f"https://github.com/organizations/{repo.split('/')[0]}/settings/installations"
+        return f"https://github.com/organizations/{owner}/settings/installations"
     return "https://github.com/settings/installations"
 
 
