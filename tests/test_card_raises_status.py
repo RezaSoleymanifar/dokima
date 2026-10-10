@@ -19,8 +19,8 @@ What the code these tests run must do, as the plan pins it:
 
 How the tests read a card: the status line is the line inside the card that opens with the stage in bold, icons
 allowed in front. A link is markdown `[words](url)` or HTML `<a href="url">words</a>`. GitHub's rendering comes from
-tests/github_render.py: the answers of GitHub's markdown API recorded in docs/rendered/455.json for the exact
-card text, refreshed with `DOKIMA_RECORD_RENDER=1 python3 -m pytest tests/test_card_raises_status.py`.
+tests/github_rendering.json: the answers of GitHub's markdown API for the exact card text, as #452 records them,
+refreshed with `python3 tests/record_rendering.py`.
 """
 import html as htmllib
 import json
@@ -34,7 +34,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 from dokima import agent, card  # noqa: E402
-import github_render  # noqa: E402
 
 REPO = "o/r"
 OWNER = "boss"
@@ -367,29 +366,57 @@ def read(html):
     return p
 
 
-@pytest.mark.parametrize("case, steps, words, at, shown", [
-    ("a plan with two questions for you", (planner(Q1, Q2, PI),), "answer 2 questions", 0, (Q1, Q2, PI)),
-    ("a code review with a question and a blocker for you",
-     (planner(PI), PLAN_OK, "/work", BUILT, review(RQ, RB, RW, RI)), "answer 1 question and 1 blocker", 4,
-     (PI, RQ, RB, RW, RI)),
-], ids=["plan", "code-review"])
-def test_as_github_renders_the_card_no_raise_shows_and_the_words_link_to_their_comment(record_property, case, steps,
-                                                                                        words, at, shown):
+RENDER_CASES = {
+    "plan": ("a plan with two questions for you", (planner(Q1, Q2, PI),), "answer 2 questions", 0, (Q1, Q2, PI)),
+    "code-review": ("a code review with a question and a blocker for you",
+                    (planner(PI), PLAN_OK, "/work", BUILT, review(RQ, RB, RW, RI)), "answer 1 question and 1 blocker",
+                    4, (PI, RQ, RB, RW, RI)),
+}
+RECORDED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_rendering.json")
+
+
+def texts():
+    """The cards whose GitHub rendering 455.5 checks, drawn by the code as it is now.
+
+    Returns {name: text}; tests/record_rendering.py records GitHub's answer for each of these into
+    tests/github_rendering.json, beside the texts of tests/test_card_self_link.py."""
+    return {f"455 {key} card": draw(found_for(*steps)) for key, (_, steps, _, _, _) in RENDER_CASES.items()}
+
+
+def rendered(name, text):
+    """GitHub's HTML recorded in tests/github_rendering.json for exactly `text`; fails when none was recorded for it."""
+    try:
+        with open(RECORDED, encoding="utf-8") as f:
+            answers = json.load(f)
+    except FileNotFoundError:
+        pytest.fail(f"455.5: no GitHub rendering is recorded ({RECORDED} is missing); run python3 tests/record_rendering.py")
+    hit = [a["html"] for a in answers if isinstance(a, dict) and a.get("text") == text]
+    if not hit:
+        pytest.fail(f"455.5: GitHub's rendering of the {name} was never recorded for this exact text, so it proves "
+                    f"nothing; run python3 tests/record_rendering.py. The text:\n{text}")
+    return hit[0]
+
+
+@pytest.mark.parametrize("key", list(RENDER_CASES), ids=list(RENDER_CASES))
+def test_as_github_renders_the_card_no_raise_shows_and_the_words_link_to_their_comment(record_property, key):
     """As GitHub renders the card, no raise shows and the to-do links its comment.
 
     Draws the issue card of a plan with two questions for the owner, and of a code review raising a question and a
     blocker for the owner beside raises for others, and checks the raw text first (no Raised section, the link
-    there). Then reads GitHub's own HTML for exactly that text, recorded from its markdown API, and checks no raise's
-    words or label show anywhere, and one paragraph says Needs you with a link whose words are “answer …” and whose
-    target is the comment that raised them. Last, checks a recording made for other text never stands in: the card
-    with one character changed has no answer.
+    there). Then reads GitHub's own HTML for exactly that text, recorded from its markdown API in
+    tests/github_rendering.json by tests/record_rendering.py, and checks no raise's words or label show anywhere, and
+    one paragraph says Needs you with a link whose words are “answer …” and whose target is the comment that raised
+    them. Last, checks a recording made for other text never stands in: the card with one character changed has no
+    answer.
 
     Proves 455.5."""
     record_property("proves", "455.5")
+    case, steps, words, at, shown = RENDER_CASES[key]
     text = draw(found_for(*steps))
+    assert text == texts()[f"455 {key} card"], f"455.5: {case}: the card is not drawn the same twice"
     assert not RAISED_HEADING.search(text), f"455.5: {case}: the card's text still has a Raised section:\n{text}"
     check_to_do(text, words, url(at), "455.5", f"{case}, in the card's text")
-    page = read(github_render.rendered(text, "455"))
+    page = read(rendered(f"{case} card", text))
     visible = " ".join("".join(page.words).split())
     for r in shown:
         assert r["text"] not in visible, f"455.5: {case}: as GitHub renders the card, “{r['text']}” still shows"
@@ -401,6 +428,5 @@ def test_as_github_renders_the_card_no_raise_shows_and_the_words_link_to_their_c
     para = asked[0][0]["words"]
     assert "Needs you" in para and para.index("Needs you") < para.index(words), \
         f"455.5: {case}: as GitHub renders the card, “{words}” is not on the Needs you line: “{para}”"
-    if os.environ.get("DOKIMA_RECORD_RENDER") != "1":
-        with pytest.raises(pytest.fail.Exception):
-            github_render.rendered(text + " ", "455")
+    with pytest.raises(pytest.fail.Exception):
+        rendered(f"{case} card", text + " ")
