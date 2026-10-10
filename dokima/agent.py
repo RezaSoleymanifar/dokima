@@ -153,9 +153,9 @@ def open_raises(recs):
 
     A raise is open from the passed record that raised it until a passed record answers its ID. An issue the planner or
     the worker raised is listed for the reviewer to confirm (raises.for_review), only until the reviewer's next run.
-    A reviewer's answer to a raise sent through it opens the raise it passes on (raises.passes_on); a confirmed one is
-    left out when the review sends the planner blockers of its own. A record posted before #300 still counts: the blockers of the newest review at each stage, unless it
-    approved, are listed under their old IDs, and an old reply by ID answers one."""
+    A reviewer's answer to a raise sent through it opens the raise it passes on (raises.passes_on), even when the
+    review also sends the planner blockers of its own. A record posted before #300 still counts: the blockers of the
+    newest review at each stage, unless it approved, are listed under their old IDs, and an old reply by ID answers one."""
     passed = [r for r in recs if r.get("role") in HANDBACK and (r.get("check") or {}).get("passed")
               and isinstance(r.get("handback"), dict)]
     answered = set()
@@ -182,7 +182,7 @@ def open_raises(recs):
             for a in card.answers_of(h):
                 x = by_id.get(a["raise"]) if isinstance(a["raise"], str) else None
                 on = raises.passes_on(x, a) if x else None
-                if on and on["id"] not in answered and not (a.get("answer") == "done" and for_planner(h)):
+                if on and on["id"] not in answered:
                     out.append(on)
         by_id.update({x["id"]: x for x in card.raises_of(h) if isinstance(x.get("id"), str)})
         stage = r.get("stage") or ""
