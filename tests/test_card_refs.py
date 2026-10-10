@@ -4,17 +4,19 @@ Issue #359. GitHub draws a reference to an issue, a pull request or a comment on
 and its number, but only when the markdown leaves the reference bare: `#N`, or the page's own link written out on
 its own (`https://github.com/o/r/issues/N`, `.../pull/N`, `.../issues/N#issuecomment-M`). A reference wrapped in a
 link of its own, `[issue #40](...)` or `<a href="...">Source</a>`, shows only the wrapped words, with no icon and no
-title. These tests draw cards with `dokima/card.py` and read the markdown: every issue or pull request the card
-names must be a bare reference, and none may sit inside a link with words of its own. A link around an image only
-(a verdict circle linked to its proof) names nothing and is left alone, as are links to other pages: the latest
-run, the files changed, a test.
+title. These tests draw cards with `dokima/card.py`, and the agents' run comments with `dokima/agent.py`, and read
+the markdown: every issue or pull request a card or run comment names must be a bare reference, and none may sit
+inside a link with words of its own. A link around an image only (a verdict circle linked to its proof) names
+nothing and is left alone, as are links to other pages: the latest run, the files changed, a test, AGENTS.md.
 """
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from dokima import card, plan  # noqa: E402
+import pytest
+
+from dokima import agent, card, plan  # noqa: E402
 
 REPO = "o/r"
 ISSUE = {"number": 40, "url": "https://github.com/o/r/issues/40"}
@@ -98,14 +100,14 @@ def refs(line):
     text = re.sub(r"`[^`]*`", " ", LINKS.sub(" ", line))
     text = re.sub(r"<[^>]+>", " ", text)
     found = [int(n) for n in re.findall(r"(?<![\w&/#\[\"=])#(\d+)\b", text)]
-    found += [int(n) for n in re.findall(r"(?<![\w/\"(=\[<])" + REF_URL, text)]
+    found += [int(n) for n in re.findall(r"(?<![\w/\"=\[<])" + REF_URL, text)]
     return found
 
 
 def bare_urls(line):
     """The links to issues, PRs or comments written out bare on the line."""
     text = LINKS.sub(" ", line)
-    return [m.group(0) for m in re.finditer(r"(?<![\w/\"(=\[<])" + REF_URL, text)]
+    return [m.group(0) for m in re.finditer(r"(?<![\w/\"=\[<])" + REF_URL, text)]
 
 
 def under(text, words):
@@ -251,3 +253,122 @@ def test_a_merged_pr_card_still_names_both_as_references(record_property):
         assert not bad, f"359.4: the merged {page} card links issues or PRs under words of their own: {bad}"
         named = {n for l in text.splitlines() for n in refs(l)}
         assert {40, 5} <= named, f"359.4: the merged {page} card does not show {sorted({40, 5} - named)} as references"
+
+
+# 359.5: the agents' run comments name every issue, pull request and comment as a GitHub reference too
+
+AGENTS_MD = "https://github.com/o/r/blob/main/AGENTS.md"
+META = {"run_id": "7", "run": "https://github.com/o/r/actions/runs/7", "log": "https://x/log", "models": ["claude-opus-5-5"],
+        "report": {"duration_ms": 60000, "turns": 3, "cost_usd": 0.5, "tokens_in": 100, "tokens_out": 20}}
+QUESTION = {"kind": "question", "to": "owner", "label": "Board column", "text": "Should a cancelled run keep its column?",
+            "evidence": "dokima/board.py", "raised_by": "planner", "id": "P17"}
+SAID = "a cancelled run stays in its column"
+SAID_MD = "Fail closed."
+Q_COMMENT, A_COMMENT, M_COMMENT = "Should a failed run move its card?", "The plan assumes it does.", "a failed run lands in Needs you"
+Q_MD, A_MD = "Should a broken check block?", "The plan assumes it blocks."
+WORK = {"summary": "Slow calls now return a job id.", "criteria": {"40.1": "returns a job id"}, "evidence": "3 passed",
+        "raises": [], "answers": []}
+
+
+def run_rec(role, stage=None, **handback):
+    """One passed run's record, as the record step builds it."""
+    return {"role": role, "stage": stage, **META, "handback": handback, "check": {"passed": True, "problems": []}}
+
+
+@pytest.fixture
+def env(monkeypatch):
+    """The repo and server the run comments are drawn for, as the workflow sets them."""
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+
+
+def shown_lines(body):
+    """The lines of a run comment, without its Full record fold.
+
+    That fold's JSON is data, not drawn text."""
+    body = re.sub(r"<details><summary>Full record</summary>.*?</details>", "", body, flags=re.S)
+    return body.splitlines()
+
+
+def comments():
+    """A run comment of every kind that names an issue, pull request or comment.
+
+    Each comes back as (name, markdown)."""
+    planner = run_rec("planner", **PLAN)
+    asked = dict(PLAN, questions=[{"question": Q_COMMENT, "assumption": A_COMMENT},
+                                  {"question": Q_MD, "assumption": A_MD}])
+    plan_review = run_rec("reviewer", "plan", verdict="approve", summary="The plan holds.", blockers=[], notes=[],
+                          issues_found=[], asks=[{"ask": "One card.", "source": COMMENT, "criterion": "40.1"}],
+                          assumptions=[{"question": Q_COMMENT, "accepted": True, "changes": False,
+                                        "matched": M_COMMENT, "source": COMMENT},
+                                       {"question": Q_MD, "accepted": True, "changes": False,
+                                        "matched": SAID_MD, "source": "AGENTS.md"}])
+    asker = run_rec("planner", **dict(PLAN, raises=[QUESTION], answers=[]))
+    code_review = run_rec("reviewer", "pr", verdict="approve", summary="The work holds.", asks=[], raises=[],
+                          answers=[{"raise": "P17", "answer": "done", "why": "Your words settle it.",
+                                    "words": SAID, "source": COMMENT}])
+    split = run_rec("split", stories=[{"story": i, "issue": c["number"], "title": c["title"],
+                                       "blocked_by": [] if i == 1 else [1]} for i, c in enumerate(CHILDREN, 1)])
+    return [("the planner's record", agent.render(planner)),
+            ("the plan review's record", agent.render(plan_review, plan=asked)),
+            ("the code review's record", agent.render(code_review, earlier=[asker])),
+            ("the worker's record", agent.render(run_rec("worker", **WORK), PR["html_url"])),
+            ("the split's record", agent.render(split))]
+
+
+def test_the_workers_comment_names_its_pull_request_as_a_github_reference(record_property, env):
+    """The worker's comment names its pull request as a GitHub reference.
+
+    Draws a finished worker's comment with its pull request known, and checks its opening line still holds the
+    worker's own sentence, then the pull request's own link written out bare, so GitHub draws it with its icon and
+    title, and no link with words of its own such as “pull request #5”. Proves 359.5."""
+    record_property("proves", "359.5")
+    first = shown_lines(agent.render(run_rec("worker", **WORK), PR["html_url"]))[1]
+    assert WORK["summary"] in plain(first), f"359.5: the worker's sentence is gone from its opening line: {first}"
+    assert not wrapped(first) and "](" not in first and "<a " not in first, \
+        f"359.5: the worker's comment links its pull request under words of its own: {first}"
+    assert bare_urls(first) == [PR["html_url"]], \
+        f"359.5: the worker's opening line should name {PR['html_url']} written out bare, once: {first}"
+    assert "pull request #5" not in first.lower(), f"359.5: the worker's line still writes the words pull request #5: {first}"
+
+
+def test_a_review_quotes_the_owners_words_then_the_reference_to_where_they_said_them(record_property, env):
+    """A review quotes the owner's words, then GitHub's reference to where they said them.
+
+    Draws a plan review that answered a question on the owner's comment and another on AGENTS.md, and a code review
+    that answered an earlier raise on the owner's comment. Each Your words line must show the quoted words as plain
+    text, not as a link, followed by the comment's own link written out bare; words from AGENTS.md, which is no issue
+    or pull request, still link to AGENTS.md on the main branch. Proves 359.5."""
+    record_property("proves", "359.5")
+    drawn = dict(comments())
+    for name, words in (("the plan review's record", M_COMMENT), ("the code review's record", SAID)):
+        lines = [l for l in shown_lines(drawn[name]) if "Your words" in l and words in l]
+        assert len(lines) == 1, f"359.5: {name} should have one Your words line quoting “{words}”, has {len(lines)}"
+        line = lines[0]
+        assert not wrapped(line) and "](" not in line and "<a " not in line, \
+            f"359.5: {name} links the owner's comment under the quoted words, not as a GitHub reference: {line}"
+        assert f'"{words}"' in line, f"359.5: {name} no longer quotes the owner's words “{words}”: {line}"
+        assert line.index(f'"{words}"') < line.index(COMMENT), \
+            f"359.5: in {name} the reference should follow the quoted words: {line}"
+        assert bare_urls(line) == [COMMENT], f"359.5: {name} should name {COMMENT} written out bare, once: {line}"
+    md = [l for l in shown_lines(drawn["the plan review's record"]) if "Your words" in l and SAID_MD in l]
+    assert len(md) == 1 and re.search(r"\[[^\]]*" + re.escape(SAID_MD) + r"[^\]]*\]\(" + re.escape(AGENTS_MD) + r"\)", md[0]), \
+        f"359.5: words quoted from AGENTS.md should still link to {AGENTS_MD}: {md}"
+
+
+def test_no_run_comment_links_an_issue_or_pr_under_words_of_its_own(record_property, env):
+    """No run comment links an issue, pull request or comment under words of its own.
+
+    Draws the planner's, the plan review's, the code review's, the worker's and the split's records, and checks no
+    line of any of them links an issue, pull request or comment under words of its own, while each still names what
+    it names as a GitHub reference: the planner its related issues, the reviews the owner's comment, the worker its
+    pull request and the split each story it filed. Proves 359.5."""
+    record_property("proves", "359.5")
+    want = {"the planner's record": {50, 51, 52}, "the plan review's record": {40}, "the code review's record": {40},
+            "the worker's record": {5}, "the split's record": {41, 42, 43}}
+    for name, body in comments():
+        lines = shown_lines(body)
+        bad = [w for l in lines for w in wrapped(l)]
+        assert not bad, f"359.5: {name} links issues, PRs or comments under words of their own: {bad}"
+        named = {n for l in lines for n in refs(l)}
+        assert want[name] <= named, f"359.5: {name} does not show {sorted(want[name] - named)} as GitHub references"
