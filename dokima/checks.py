@@ -93,7 +93,7 @@ def text_only(repo, number):
                ("previous_filename" not in f or is_text(f["previous_filename"])) for f in files)
 
 
-def annotations(junit_xml, repo, sha, done_when):
+def annotations(junit_xml, repo, sha, criterion):
     """One annotation per test that ran, with a permanent link to the test's first line at this commit."""
     lines = []
     for tc in ET.fromstring(junit_xml).iter("testcase"):
@@ -101,7 +101,7 @@ def annotations(junit_xml, repo, sha, done_when):
         kind, verdict = ("error", "failed") if failed else ("notice", "passed")
         path, line = tc.get("file"), int(tc.get("line")) + 1
         link = f"https://github.com/{repo}/blob/{sha}/{path}#L{line}"
-        lines.append(f"::{kind} file={path},line={line},title={done_when} {verdict}::"
+        lines.append(f"::{kind} file={path},line={line},title={criterion} {verdict}::"
                      f"{tc.get('name')} {verdict} · {path} line {line} · view the test: {link}")
     return lines
 

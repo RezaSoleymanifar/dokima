@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import checks  # noqa: E402
 
 
-def test_long_done_whens_get_short_check_names(record_property):
+def test_long_criteria_get_short_check_names(record_property):
     record_property("proves", "29.1")
     assert checks.check_name("40.1", "x" * 100) == "40.1 · " + "x" * 57 + "..."
 
