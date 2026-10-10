@@ -27,6 +27,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      # The app's budget before the run is read with a key made for this one call and revoked at once, so no bot key
+      # stays live while the agent works.
+      - id: budget-key
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          skip-token-revoke: true
+      - name: Read the API budget before the run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.budget-key.outputs.token }}
+        run: |
+          python3 -m dokima.budget before app /tmp/budget.jsonl
+          gh api -X DELETE installation/token --silent || echo "::warning title=Key not revoked::the budget's key could not be revoked"
       - name: Only a code owner's label counts
         id: who
         env:
@@ -122,3 +138,17 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: python3 -m dokima.planner rejected "${{ github.event.issue.number }}" /tmp/dokima-out
+      - name: Read the API budget after the run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget after app /tmp/budget.jsonl
+      - name: Keep the API budget with the run
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-${{ github.job }}
+          path: /tmp/budget.jsonl
+          if-no-files-found: warn

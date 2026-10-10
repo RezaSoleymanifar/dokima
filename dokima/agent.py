@@ -641,7 +641,7 @@ def render(rec, pr=None, plan=None, earlier=None):
         who = {"planner": "The planner", "reviewer": "The reviewer", "worker": "The worker",
                "split": "Filing the split"}.get(a, "The command")
         lines = [MARK, f"{icon(repo, 'failed')} {role_icon(repo, a, rec.get('stage'))}{who} stopped before any agent started.", ""] + [f"- {p}" for p in rec["check"]["problems"]]
-        lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        lines += record_fold(rec) + ["", no_agent_footnote(rec)]
         return "\n".join(lines) + "\n"
     if role == "cancelled":
         a = rec.get("attempt")
@@ -649,7 +649,7 @@ def render(rec, pr=None, plan=None, earlier=None):
         what = (f"{who} run was cancelled after its agent started, and nothing it handed back is used." if rec.get("agent_started")
                 else f"{who} run was cancelled before its agent started.")
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
-        lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
+        lines += record_fold(rec) + ["", footnote(rec) if rec.get("agent_started") else no_agent_footnote(rec)]
         return "\n".join(lines) + "\n"
     if role == "updater":
         # A clash with main, found by code after a merge: the merge, its PR and every file that clashed.
@@ -792,8 +792,63 @@ def run_report(path):
             "tokens_out": u.get("output_tokens")}
 
 
+def budget_of(out):
+    """The GitHub API budget left before and after the run, from OUT/budget.jsonl.
+
+    agent.yml keeps the readings there: the first reading before and the last after, each its two numbers or GitHub's reason it could not be read."""
+    found = {}
+    try:
+        lines = open(os.path.join(out, "budget.jsonl")).read().splitlines()
+    except OSError as e:
+        lines, missing = [], f"no reading was kept: {e.strerror or e}"
+    else:
+        missing = "no reading was kept"
+    for l in lines:
+        try:
+            e = json.loads(l)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(e, dict) and e.get("moment") in ("before", "after") and (e["moment"] == "after" or "before" not in found):
+            found[e["moment"]] = e
+    budget = {}
+    for moment in ("before", "after"):
+        e = found.get(moment) or {}
+        if e.get("error") or not all(isinstance(e.get(k), int) for k in ("graphql", "rest")):
+            budget[moment] = {"error": str(e.get("error") or missing)}
+        else:
+            budget[moment] = {"graphql": e["graphql"], "rest": e["rest"]}
+        if e.get("time"):
+            budget[moment]["time"] = e["time"]
+    return budget
+
+
+def budget_line(rec):
+    """The run's GitHub API budget as the footnote shows it, before → after.
+
+    GraphQL then REST; a budget GitHub would not give says so with its reason. Empty for a record that holds no budget."""
+    b = rec.get("budget")
+    if not isinstance(b, dict):
+        return ""
+    ok = {m: isinstance(b.get(m), dict) and "error" not in b[m] for m in ("before", "after")}
+    shown = lambda m, k: f"{b[m][k]:,}" if ok[m] else "?"
+    parts = [f"GraphQL {shown('before', 'graphql')} → {shown('after', 'graphql')}",
+             f"REST {shown('before', 'rest')} → {shown('after', 'rest')}"] if any(ok.values()) else []
+    for m in ("before", "after"):
+        if not ok[m]:
+            parts.append(f"budget {m} the run could not be read: {escape_line(str((b.get(m) or {}).get('error') or 'no reading'))}")
+    return " · ".join(parts)
+
+
+def no_agent_footnote(rec):
+    """The line under a card whose agent never started: its budget and run link."""
+    budget = budget_line(rec)
+    return f"<sub>No agent ran · " + (budget + " · " if budget else "") + f"[run]({rec.get('run', '')})</sub>"
+
+
 def footnote(rec):
-    """One line under every card: model, time, turns, tokens and cost, and the link to the full conversation."""
+    """One line under every card: model, time, turns, tokens, cost and API budget.
+
+    Then the link to the full conversation."""
     r = rec.get("report") or {}
     stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
     if rec.get("role") == "split":
@@ -808,6 +863,8 @@ def footnote(rec):
         parts.append(f"{r.get('tokens_in', 0):,} tokens in, {r.get('tokens_out') or 0:,} out")
     if r.get("cost_usd") is not None:
         parts.append(f"${r['cost_usd']:.2f} at API prices")
+    if budget_line(rec):
+        parts.append(budget_line(rec))
     links = " · ".join(x for x in (f"[conversation]({rec['log']})" if rec.get("log") else "", f"[run]({rec['run']})" if rec.get("run") else "") if x)
     return f"<sub>{stats} " + " · ".join(parts) + (" · " + links if links else "") + "</sub>"
 
@@ -2012,6 +2069,7 @@ def main(argv):
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "commit_before": os.environ.get("BASE"),
                 "started_by": os.environ.get("GITHUB_ACTOR"), "models": models_used(log_dir),
                 "report": run_report(os.path.join(out, "claude.json")), "log": os.environ.get("LOG_URL"),
+                "budget": budget_of(out),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
         earlier = []
@@ -2037,6 +2095,7 @@ def main(argv):
     if argv[1] == "not-started":
         role, stage, out, why_file = argv[2:6]
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "budget": budget_of(out),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         rec = not_started(role, stage, open(why_file).read() if os.path.exists(why_file) else "", meta)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
@@ -2045,6 +2104,7 @@ def main(argv):
     if argv[1] == "cancelled":
         role, stage, out, started, log_dir = argv[2:7]
         meta = {"run_id": os.environ.get("GITHUB_RUN_ID"), "started_by": os.environ.get("GITHUB_ACTOR"),
+                "budget": budget_of(out),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         if started == "true":
             meta.update({"models": models_used(log_dir), "report": run_report(os.path.join(out, "claude.json")),

@@ -39,6 +39,14 @@ jobs:
     outputs:
       group: ${{ steps.queue.outputs.group }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Read the API budget before the run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m dokima.budget before github-token /tmp/budget.jsonl
       # The issue this event is about, from the issue, the pull request's branch or the worker run's title.
       - id: queue
         env:
@@ -69,6 +77,20 @@ jobs:
           else group="card-run-$RUN"
           fi
           echo "group=$group" >> "$GITHUB_OUTPUT"
+      - name: Read the API budget after the run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m dokima.budget after github-token /tmp/budget.jsonl
+      - name: Keep the API budget with the run
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-${{ github.job }}
+          path: /tmp/budget.jsonl
+          if-no-files-found: warn
   card:
     needs: queue
     if: needs.queue.outputs.group != 'none'
@@ -85,6 +107,11 @@ jobs:
         with:
           app-id: ${{ vars.DOKIMA_APP_ID }}
           private-key: ${{ secrets.DOKIMA_APP_KEY }}
+      - name: Read the API budget before the run
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget before app /tmp/budget.jsonl
       - name: Write the card
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -96,3 +123,17 @@ jobs:
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
           DOKIMA_BOARD: ${{ vars.DOKIMA_BOARD }}
         run: python3 dokima/card.py
+      - name: Read the API budget after the run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m dokima.budget after app /tmp/budget.jsonl
+      - name: Keep the API budget with the run
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-${{ github.job }}
+          path: /tmp/budget.jsonl
+          if-no-files-found: warn
