@@ -313,7 +313,8 @@ def make_true(w, *items):
     for kind, n in items:
         text = scan.card_now(REPO, kind, n)
         if kind == "pr":
-            w.prs[n]["body"] = card.pr_body(text, w.prs[n]["body"])
+            # The PR carries its issue's Original issue fold below the card (#373), read from the issue's body.
+            w.prs[n]["body"] = card.pr_body(text, w.prs[n]["body"], body.ask(w.issues[w.prs[n]["issue"]]["body"]))
         else:
             w.issues[n]["body"] = body.redraw(w.issues[n]["body"], text)
 

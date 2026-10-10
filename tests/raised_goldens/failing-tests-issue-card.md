@@ -20,13 +20,13 @@ Slow calls hand back a job id.
 
 </details>
 
-**Scope:**
+**Scope:** `dokima/agent.py`
 
-- dokima/agent.py
-
-**Out of scope:**
+<details><summary><b>Out of scope</b></summary>
 
 - The board.
+
+</details>
 
 **Definition of Done:** <a href="https://x/check/3"><img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/failed.svg" width="16" height="16" align="absmiddle" alt="failed"></a> All tests · <a href="https://github.com/o/r/actions/runs/7"><img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/passed.svg" width="16" height="16" align="absmiddle" alt="passed"></a> <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/code-review.svg" width="16" height="16" align="absmiddle" alt="code review"> Code review · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/none.svg" width="16" height="16" align="absmiddle" alt="not started"> <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/owner-approval.svg" width="16" height="16" align="absmiddle" alt="owner approval"> Owner approval
 
