@@ -151,6 +151,7 @@ def item_for(items, rid):
 
 
 FINAL = [("reviewer", "pr", ["P1", "R2", "W3", "R4"], "a code review"),
+         ("reviewer", "plan", ["P1"], "a plan review"),
          ("worker", None, ["R4"], "a worker"),
          ("planner", None, ["R2", "W3"], "a planner")]
 
