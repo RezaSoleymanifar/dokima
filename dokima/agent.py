@@ -660,16 +660,27 @@ def answered_lines(repo, rec, earlier):
     found = {}
     for r in earlier or []:
         if isinstance(r, dict) and (r.get("check") or {}).get("passed"):
-            found.update({x["id"]: x for x in card.raises_of(r.get("handback")) if x.get("id")})
+            found.update({x["id"]: (x, r) for x in card.raises_of(r.get("handback")) if x.get("id")})
     lines = ["", "**Raised earlier:**", ""]
     for a in card.answers_of(h):
-        r = found.get(a["raise"])
-        lines.append(card.raise_line(repo, r) if r else "- A raise not found in this issue's earlier records")
+        r, by = found.get(a["raise"], (None, None))
+        lines.append(f"- {raised_by(by)} raised: {card.raise_line(repo, r)[2:]}" if r
+                     else "- A raise not found in this issue's earlier records")
         word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
         lines.append(f"  - {word}: {escape_line(a.get('why'))}")
         if filled(a.get("words")) and filled(a.get("source")):
             lines.append(f"  - Your words: {said(a['words'], a['source'])}")
     return lines
+
+
+def raised_by(rec):
+    """Who raised an earlier record's raises and where, e.g. "Code review on [#462](link)".
+
+    The link is the comment the record was posted as; just "Planner" when that comment is not known."""
+    name = review_name(rec.get("stage")) if rec.get("role") == "reviewer" else \
+        {"planner": "Planner", "worker": "Worker"}.get(rec.get("role"), "Code")
+    m = re.fullmatch(r"https://[^\s()]+/(?:issues|pull)/(\d+)#issuecomment-\d+", str(rec.get("url") or ""))
+    return f"{name} on [#{m.group(1)}]({rec['url']})" if m else name
 
 
 def raised_lines(repo, rec, placed=()):
@@ -1112,8 +1123,12 @@ def pack(repo, number, role, stage, dest):
     # The open raises this agent must answer; the file keeps the name the workflows give it.
     json.dump(raises_for(recs, role), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
+    # Each record keeps the link of the comment it was posted as, so a later run can say where a raise came from.
+    urls = [c.get("url") for c in items if records([c])]
     for i, r in enumerate(recs, 1):
         name = name_of(r, i)
+        if len(urls) == len(recs) and isinstance(urls[i - 1], str):
+            r = {**r, "url": urls[i - 1]}
         json.dump(r, open(os.path.join(dest, "in", name), "w"), indent=1)
     plan = latest(recs, "planner")
     if role == "worker" and not approved(recs):

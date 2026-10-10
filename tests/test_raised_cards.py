@@ -171,8 +171,13 @@ def who_of(raise_):
 
 
 def check_raise_line(item, raise_, crit, where):
-    """Assert an item shows a raise: icon first, label, text and who it is for."""
+    """Assert an item shows a raise: icon first, label, text and who it is for.
+
+    Under Raised earlier the item first says who raised it and where (#478), e.g. "Code review on [#462](...)
+    raised: ", and the raise follows."""
     first = item.splitlines()[0]
+    if where == "Raised earlier":
+        first = re.sub(r"^- (Planner|Worker|Plan review|Code review)( on \[#\d+\]\([^)\s]+\))? raised: ", "- ", first)
     assert first.startswith("- " + img(ICON_OF[raise_["kind"]])), \
         f"{crit}: in {where}, the {raise_['kind']} line does not open with the {raise_['kind']} icon:\n{first}"
     if raise_.get("label"):
