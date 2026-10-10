@@ -24,7 +24,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -m dokima.budget before github-token /tmp/budget.jsonl
+        run: python3 -m dokima.budget before github-token /tmp/budget.jsonl || true
       - id: m
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,7 +34,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -m dokima.budget after github-token /tmp/budget.jsonl
+        run: python3 -m dokima.budget after github-token /tmp/budget.jsonl || true
       - name: Keep the API budget with the run
         if: always()
         continue-on-error: true
