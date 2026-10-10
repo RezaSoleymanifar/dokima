@@ -181,7 +181,8 @@ def test_the_run_workflow_button_starts_the_play_through_for_a_given_dokima_comm
 
     Proves 437.3.
     Reads .github/workflows/playthrough.yml and checks it starts on workflow_dispatch with a required `commit` input,
-    checks that commit out into a folder of its own, and runs `python3 -m dokima.playthrough`."""
+    checks that commit out into a folder of its own, and runs `python3 -m dokima.playthrough` with PLAYED naming
+    that folder and PLAYED_COMMIT the commit, so the play-through knows what to install on the sandbox."""
     record_property("proves", "437.3")
     wf = workflow("437.3")
     on = wf.get("on") or {}
@@ -193,8 +194,16 @@ def test_the_run_workflow_button_starts_the_play_through_for_a_given_dokima_comm
     played = [s for s in steps if "actions/checkout" in str(s.get("uses"))
               and "inputs.commit" in str((s.get("with") or {}).get("ref")) and (s.get("with") or {}).get("path")]
     assert played, "437.3: no checkout step checks out `inputs.commit` into a folder of its own"
-    assert any("python3 -m dokima.playthrough" in str(s.get("run")) for s in steps), \
-        "437.3: no step runs `python3 -m dokima.playthrough`"
+    runs = [s for s in steps if "python3 -m dokima.playthrough" in str(s.get("run"))]
+    assert runs, "437.3: no step runs `python3 -m dokima.playthrough`"
+    folders = {str(s["with"]["path"]).strip("./") for s in played}
+    for s in runs:
+        env = {**(wf.get("env") or {}), **next((j.get("env") or {} for j in wf["jobs"].values() if s in (j.get("steps") or [])), {}),
+               **(s.get("env") or {})}
+        assert str(env.get("PLAYED", "")).replace("${{ github.workspace }}", "").strip("./") in folders, \
+            f"437.3: the play-through is not told the played commit's folder: PLAYED is {env.get('PLAYED')!r}, the checkout is in {sorted(folders)}"
+        assert "inputs.commit" in str(env.get("PLAYED_COMMIT")), \
+            f"437.3: the play-through is not told the played commit: PLAYED_COMMIT is {env.get('PLAYED_COMMIT')!r}"
 
 
 def test_the_stand_in_agents_call_no_model_and_their_records_show_no_tokens(tmp_path, record_property):
@@ -299,7 +308,7 @@ def test_the_key_is_minted_for_the_sandbox_repo_only(record_property):
     assert wf.get("permissions") is not None, "437.6: playthrough.yml sets no permissions, so its own token gets the defaults"
 
 
-def run_playthrough(tmp_path, repo):
+def run_playthrough(tmp_path, repo, played=ROOT, commit="f7340db"):
     """Run the play-through for `repo` with gh and git faked; return the result and calls.
 
     The fake gh and git log their arguments and fail every call, as a GitHub that refuses everything."""
@@ -312,7 +321,7 @@ def run_playthrough(tmp_path, repo):
                      "sys.stderr.write('HTTP 403: refused by the fake GitHub\\n')\nsys.exit(1)\n")
         f.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "GH_"))}
-    env.update(PATH=f"{bin_}{os.pathsep}{env.get('PATH', '')}", REPO=repo, GH_TOKEN="fake", PLAYED=ROOT,
+    env.update(PATH=f"{bin_}{os.pathsep}{env.get('PATH', '')}", REPO=repo, GH_TOKEN="fake", PLAYED=str(played), PLAYED_COMMIT=commit,
                PLAYTHROUGH_WAIT="3", GIT_TERMINAL_PROMPT="0", PYTHONPATH=ROOT)
     out = subprocess.run([sys.executable, "-m", "dokima.playthrough"], cwd=str(tmp_path), env=env,
                          capture_output=True, text=True, timeout=120)
@@ -373,13 +382,21 @@ class FakeSandbox:
 
     After each step it shows the cards that step should leave.
     `stale` names steps whose cards stay as the step before left them; `hung` names steps whose card runs never
-    finish. Card runs of every other step finish on the second look. Each hand-back folder play() passes is read
+    finish; `refuse` is the reason the sandbox refuses to install the played commit. Card runs of every other step
+    finish on the second look. Each hand-back folder play() passes is read
     at once, before play() may remove it."""
 
-    def __init__(self, stale=(), hung=()):
+    def __init__(self, stale=(), hung=(), refuse=None):
         self.right = right_cards()
+        self.refuse = refuse
         self.stale, self.hung = set(stale), set(hung)
         self.calls, self.step, self.looks, self.handbacks = [], None, 0, {}
+
+    def install(self):
+        """Install the played commit on the fake sandbox; raises when the sandbox refuses it."""
+        self.calls.append(("install", None))
+        if self.refuse:
+            raise RuntimeError(self.refuse)
 
     def do(self, step, handback):
         """Play one step on the fake sandbox, noting the stand-in hand-back it was given."""
@@ -493,3 +510,53 @@ def test_a_hung_step_fails_the_run_naming_the_wait_and_the_run_plays_on(record_p
     assert lines[-2:] == ["PASS: code review record posted", "PASS: merged"], \
         f"437.8: the steps after the hung one should still pass: {lines[-2:]}"
     assert code == 1, f"437.8: a hung step should make play() return 1, not {code!r}"
+
+
+def test_the_play_through_installs_the_played_commit_on_the_sandbox_before_the_first_step(tmp_path, record_property):
+    """Before the first step, the play-through puts the played commit's Dokima on the sandbox.
+
+    Proves 437.3.
+    card.yml always runs the default branch's copy of itself and of dokima/card.py, so the cards on card-gallery are
+    drawn by the commit played only once that commit is installed there. Checks install_files() picks every file of
+    the played folder's dokima/ and .github/workflows/, with its content, and nothing else; that play() installs
+    before it plays any step; that a refused install plays no step and returns 1 with one `FAIL: install` line giving
+    the reason; that a played folder with no dokima/ fails naming it before any gh or git call; and that a real run
+    on the sandbox whose install GitHub refuses exits 1 naming the commit and plays no step."""
+    record_property("proves", "437.3")
+    p = playthrough("437.3")
+    played = tmp_path / "played"
+    for rel, text in (("dokima/card.py", "CARD of the played commit"), ("dokima/icons/x.svg", "<svg/>"),
+                      (".github/workflows/card.yml", "name: card of the played commit"),
+                      ("tests/test_a.py", "def test_a(): pass"), ("README.md", "readme")):
+        (played / rel).parent.mkdir(parents=True, exist_ok=True)
+        (played / rel).write_text(text)
+    got = {k.replace(os.sep, "/"): (v.decode() if isinstance(v, bytes) else v) for k, v in p.install_files(str(played)).items()}
+    want = {"dokima/card.py": "CARD of the played commit", "dokima/icons/x.svg": "<svg/>",
+            ".github/workflows/card.yml": "name: card of the played commit"}
+    assert got == want, f"437.3: install_files() should give the played commit's dokima/ and .github/workflows/ files, not {sorted(got)}"
+    hub = FakeSandbox()
+    code, lines = play(p, hub, "437.3")
+    assert hub.calls[0] == ("install", None), f"437.3: play() should install the played commit before any step: {hub.calls[:3]}"
+    assert code == 0 and lines == [f"PASS: {s}" for s in STEPS], f"437.3: after an install, the steps play as usual: {lines}"
+    hub = FakeSandbox(refuse="HTTP 403: workflows permission refused")
+    code, lines = play(p, hub, "437.3")
+    assert [c for c in hub.calls if c[0] != "install"] == [], f"437.3: after a refused install, play() still played {hub.calls}"
+    assert len(lines) == 1 and lines[0].startswith("FAIL: install") and "workflows permission refused" in lines[0], \
+        f"437.3: a refused install should log one line starting 'FAIL: install' with GitHub's reason, not {lines}"
+    assert code == 1, f"437.3: a refused install should make play() return 1, not {code!r}"
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "run1").mkdir()
+    out, made = run_playthrough(tmp_path / "run1", SANDBOX, played=tmp_path / "empty")
+    said = out.stdout + out.stderr
+    assert out.returncode != 0 and str(tmp_path / "empty") in said, \
+        f"437.3: a played folder with no dokima/ should fail naming it: exit {out.returncode}, {said[-1000:]}"
+    assert made == [], f"437.3: with nothing to install, the play-through still called {made[:3]}"
+    (tmp_path / "run2").mkdir()
+    out, made = run_playthrough(tmp_path / "run2", SANDBOX, commit="0123abcd4567")
+    said = out.stdout + out.stderr
+    assert out.returncode == 1, f"437.3: an install GitHub refuses should exit 1, not {out.returncode}: {said[-1000:]}"
+    assert "FAIL: install" in said and "0123abcd4567" in said, \
+        f"437.3: a refused install should say 'FAIL: install' naming the commit 0123abcd4567: {said[-1000:]}"
+    for step in STEPS:
+        assert f"PASS: {step}" not in said and f"FAIL: {step}" not in said, \
+            f"437.3: with the played commit not installed, the play-through still judged {step!r}: {said[-1000:]}"
