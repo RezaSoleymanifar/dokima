@@ -117,7 +117,7 @@ def visible(comment):
 
 
 def shows_block(text, criterion, where):
-    """Why the code block is not in `text` as written in a fence; None when it is."""
+    """Why `text` lacks the code block in a fence; None when it has it."""
     lines = text.splitlines()
     first, second = BLOCK.splitlines()
     for i, line in enumerate(lines[:-1]):
@@ -235,7 +235,7 @@ def test_an_agents_words_outside_code_never_draw_html(record_property, env):
 
 @pytest.mark.parametrize("where", ["the card", "the run comment"])
 def test_a_fence_that_never_closes_at_a_line_start_draws_no_html(record_property, env, where):
-    """A fence an agent never closes, at a line start, never lets later text draw HTML.
+    """An unclosed fence at a line start never lets later text draw HTML.
 
     Proves 456.4. On the card, the plan's summary is just ``` open and a criterion's words after its code block are
     ~~~ open; in the run comment, a blocker's and a question's words after their code blocks are ``` open and ~~~ open.
@@ -259,7 +259,7 @@ def test_a_fence_that_never_closes_at_a_line_start_draws_no_html(record_property
 
 # A backtick an agent writes where GitHub never pairs it with the next one: inside a link's address, which GitHub reads
 # first, and in a raise's label, drawn on the same line as its words. Code must not take either for the start of code
-# and leave the HTML after it unescaped.
+# and leave the HTML after it unescaped. Raises are drawn only in run comments since #465, so the label case is there.
 LINK_TEXT = f"See [the log](run`x) {EVIL} `"
 TICK_LABEL, TICK_WORDS = "`", f"` {EVIL} `"
 TICK_RAISE = {"kind": "question", "to": "owner", "label": TICK_LABEL, "text": TICK_WORDS,
@@ -268,7 +268,6 @@ BARE_PLAN = {**PLAN, "user_story": "Owners read words.", "out_of_scope": ["Nothi
              "acceptance_criteria": [{"text": "Words show.", "source": SRC}] * 2}
 TICK_TEXTS = {
     ("the card", "a backtick inside a link's address"): lambda: the_card({**BARE_PLAN, "summary": LINK_TEXT}),
-    ("the card", "a raise's label that opens a backtick"): lambda: the_card({**BARE_PLAN, "raises": [TICK_RAISE]}),
     ("the run comment", "a backtick inside a link's address"): lambda: the_comment(
         {**FENCE_REVIEW, "raises": [{**TICK_RAISE, "label": "Two readings", "text": LINK_TEXT, "raised_by": "reviewer"}]}),
     ("the run comment", "a raise's label that opens a backtick"): lambda: the_comment(
@@ -281,9 +280,9 @@ def test_a_backtick_in_a_link_address_or_a_raise_label_draws_no_html(record_prop
     """A backtick in a link address or raise label never lets words draw HTML.
 
     Proves 456.4. On the card and in the run comment, writes words `See [the log](run`x) <kbd>evil</kbd> `` (GitHub reads
-    the backtick as part of the link's address, so it opens no code), and a raise whose label is a lone backtick and
-    whose words are `` ` <kbd>evil</kbd> ` `` (label and words share one line, so GitHub may pair the label's backtick
-    with the words'). As GitHub renders what the code writes (its answer recorded for exactly that text), no <kbd> is
+    the backtick as part of the link's address, so it opens no code), and in the run comment a raise whose label is a
+    lone backtick and whose words are `` ` <kbd>evil</kbd> ` `` (label and words share one line, so GitHub may pair
+    the label's backtick with the words'). As GitHub renders what the code writes (its answer recorded for exactly that text), no <kbd> is
     drawn and <kbd>evil</kbd> reads as plain words."""
     record_property("proves", "456.4")
     text = TICK_TEXTS[(where, case)]()
@@ -293,3 +292,40 @@ def test_a_backtick_in_a_link_address_or_a_raise_label_draws_no_html(record_prop
                        "took that backtick for the start of code and left the words after it unescaped")
     words = "".join(seen.text)
     assert EVIL in words, f"456.4: as GitHub renders {where} with {case}, the agent's {EVIL} no longer reads as written"
+
+
+# A raise's label an agent writes over several lines, as a code block. If its lines were kept, its fence would sit at the
+# start of a line outside the list and never close (the words follow it on the same line), so the fence of the raise's
+# own code block would close it and the words inside that block would be read as plain words, drawing HTML.
+LABEL_RAISE = {"kind": "blocker", "to": "worker", "label": "```\nx\n```",
+               "text": f"Fails:\n```\n{EVIL}\n```\nthen {EVIL} after it.", "evidence": "Seen.",
+               "raised_by": "reviewer", "id": "R1"}
+LABEL_TEXTS = {
+    "Raised": lambda: the_comment({**FENCE_REVIEW, "raises": [LABEL_RAISE]}),
+    "Raised earlier": lambda: agent.render(
+        rec("reviewer", "pr", {**FENCE_REVIEW, "raises": [],
+                                "answers": [{"raise": "R1", "answer": "done", "why": "Fixed."}]}, 15),
+        plan=PLAN, earlier=[rec("reviewer", "pr", {**FENCE_REVIEW, "raises": [LABEL_RAISE]}, 14)]),
+}
+
+
+@pytest.mark.parametrize("section", list(LABEL_TEXTS))
+def test_a_raise_label_over_several_lines_draws_no_html(record_property, env, section):
+    """A raise's label written over several lines never lets its words draw HTML.
+
+    Proves 456.4. In a run comment's Raised and Raised earlier sections, draws a blocker whose label is a code block
+    and whose words hold a code block of <kbd>evil</kbd>, then <kbd>evil</kbd> in words after it. As GitHub renders
+    what the code writes (its answer recorded for exactly that text), no <kbd> is drawn, the words' code block shows
+    <kbd>evil</kbd> as written, and the <kbd>evil</kbd> after it reads as plain words."""
+    record_property("proves", "456.4")
+    seen = github_html.page(github_html.rendered(visible(LABEL_TEXTS[section]()), "456.4"))
+    drawn = [t for t, a in seen.tags if t == "kbd"]
+    assert not drawn, (f"456.4: as GitHub renders a run comment's {section} section, a raise's label written over "
+                       f"several lines lets an agent's {EVIL} draw HTML")
+    shown = [c for c in seen.codes if c.strip() == EVIL]
+    assert len(shown) == 1, (f"456.4: as GitHub renders a run comment's {section} section, the raise's code block of "
+                             f"{EVIL} should show it as written, but {len(shown)} code shows it; the code GitHub shows "
+                             f"begins {[c[:60] for c in seen.codes]}")
+    words = "".join(t for t in seen.text if t not in seen.codes)
+    assert EVIL in words, (f"456.4: as GitHub renders a run comment's {section} section, the {EVIL} in the raise's "
+                           "words after its code block no longer reads as written")
