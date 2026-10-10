@@ -110,7 +110,7 @@ jobs:
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git add tests
-          git commit -m "Tests for #$N"
+          git commit -m "Tests for #$N" --trailer "Co-authored-by: Reza Soleymanifar <34189616+RezaSoleymanifar@users.noreply.github.com>"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:work/issue-$N"
       - name: Write the plan into the issue, or post the question
         if: success() && steps.who.outputs.ok == 'true'

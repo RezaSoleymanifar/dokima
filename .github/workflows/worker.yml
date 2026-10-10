@@ -111,7 +111,7 @@ jobs:
           git config user.name "${SLUG}[bot]"
           git config user.email "${BOT_ID}+${SLUG}[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Build #$N"
+          git commit -m "Build #$N" --trailer "Co-authored-by: Reza Soleymanifar <34189616+RezaSoleymanifar@users.noreply.github.com>"
       - name: Push and open the pull request
         if: steps.who.outputs.ok == 'true'
         env:
