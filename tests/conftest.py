@@ -77,7 +77,6 @@ SLOW = {
     "test_parent_source.py::test_on_autopilot_the_owners_words_in_the_parent_count_as_really_said",
     "test_plan_check.py::test_a_source_outside_this_issue_is_rejected_and_named[other",
     "test_plan_check.py::test_anything_but_a_story_or_a_feature_is_rejected_saying_the_planner_always_hands_back_a_plan[no",
-    "test_plan_check_rerun.py::test_a_plan_check_that_cannot_run_again_says_why_on_the_pull_request",
     "test_plan_check_rerun.py::test_a_reapproved_plan_with_no_new_commit_ends_with_a_passing_plan_check",
     "test_plan_check_rerun.py::test_only_an_approval_with_an_open_pull_request_runs_the_plan_check_again",
     "test_plan_check_rerun.py::test_the_plan_check_runs_again_only_with_the_apps_key_after_the_agent_finished",
