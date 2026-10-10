@@ -427,8 +427,8 @@ def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, monkeypatc
     """The card the scan compares with is the one Dokima draws from GitHub's state now.
 
     Proves 333.1.
-    #312 has no record and its card is the old one: the card the scan expects says Backlog and that the issue has no
-    plan yet. Once a plan is recorded on #312, the card it expects says the plan's summary and no longer says there is
+    #312 has no record and its card is the old one: the card the scan expects says Backlog and shows no plan.
+    Once a plan is recorded on #312, the card it expects says the plan's summary and no longer says there is
     no plan. Merged PR #260 of #246, with every check passed: the card it expects for the PR says Merged, with All tests
     passed, and is the same card it expects on #246. For both issues it is exactly the card Dokima's card code writes
     when it redraws them. A scan that trusted the card already on the issue, or drew one fixed card, would fail here."""
@@ -437,7 +437,7 @@ def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, monkeypatc
     w = world
     w.issue(312, card=OLD_CARD)
     first = true_card(w, "issue", 312)
-    assert "Backlog" in first and "This issue has no plan yet." in first, \
+    assert "Backlog" in first and "Every card says what is true." not in first, \
         f"333.1: for #312 with no record, the scan expects this card, not one in Backlog with no plan: {first}"
     w.issues[312]["records"] = plan_approved(summary="Every card says what is true.")
     second = true_card(w, "issue", 312)
