@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from dokima import board, card, plan  # noqa: E402
+from dokima import board, body, card, plan  # noqa: E402
 
 UNREAD = (subprocess.CalledProcessError, RuntimeError, ValueError, KeyError, TypeError, AttributeError)
 
@@ -72,7 +72,7 @@ def check(b, repo, owners, c, places):
         stale = not card.shows(got["current_body"] or "", top)
     else:
         current = (found["pr"] or {}).get("body") or ""
-        stale = card.pr_body(top, current) != current
+        stale = card.pr_body(top, current, body.ask(got["current_body"])) != current
     if stale:
         out.append(f"{label(kind, n)} does not show the card Dokima draws for it now.")
     return out
