@@ -56,7 +56,8 @@ TESTS = {"tests/test_a.py::test_one": {"verified_by": "The `<b>` tag & more show
                                          "url": "https://github.com/o/r/blob/abc/tests/test_a.py#L15"}}
 CARD_CODES = [INLINE, "<T> & U", "dokima/<name>.py", "--x <y>", "<b>"]
 
-BLOCKER = {"kind": "blocker", "to": "worker", "label": "456.2", "text": f"`{INLINE}` fails, while {PROSE} stays text.",
+BLOCKER = {"kind": "blocker", "to": "worker", "label": "456.2",
+           "text": f"`{INLINE}` fails under `pytest -k '<x>'`, while {PROSE} stays text.",
            "evidence": f"Ran `pytest -k '<x>'` & saw {PROSE}.", "raised_by": "reviewer", "id": "R1"}
 QUESTION = {"kind": "question", "to": "owner", "label": "Two readings",
             "text": f"Should this run?\n```\n{BLOCK}\n```\nThe plan assumes {PROSE} stays text.",
@@ -151,9 +152,10 @@ def test_code_on_the_card_shows_exactly_as_written_and_prose_stays_escaped(recor
 def test_code_in_a_run_comment_shows_exactly_as_written_and_prose_stays_escaped(record_property, env):
     """In a run comment, code is written exactly as the agent wrote it.
 
-    Proves 456.2. Draws a code review's comment with a failing criterion, its blocker, the blocker's evidence and a question for the
-    owner, all holding code with <, > and &, and checks each code span and the code block are there as written, while
-    the prose around them is still escaped."""
+    Proves 456.2. Draws a code review's comment with a failing criterion, the blocker placed under it and a question for the
+    owner with its evidence, all holding code with <, > and &, and checks each code span and the code block are there
+    as written, while the prose around them is still escaped. A blocker placed under its criterion shows only its
+    words (236.4), so the code it must show is in its words, not its evidence."""
     record_property("proves", "456.2")
     text = visible(the_comment())
     missing = [c for c in COMMENT_CODES if f"`{c}`" not in text]
