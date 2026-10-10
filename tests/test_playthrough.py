@@ -73,7 +73,7 @@ def as_work(card_text):
 
 
 def right_cards():
-    """For every step, the issue and PR bodies that show it (no PR body before the PR)."""
+    """For every step, the issue and PR bodies that show it."""
     b = built()
     approve = rec("reviewer", "pr", verdict="approve", blockers=[])
     return {
@@ -361,3 +361,135 @@ def test_a_step_whose_card_runs_do_not_finish_in_time_fails_naming_the_step_and_
     left = iter([2, 1, 0])
     assert p.wait_for_cards("plan posted", lambda: next(left, 0), 5, 0.01) is None, \
         "437.8: card runs that finish within the wait should let the step go on (None)"
+
+
+STANDINS = {"plan posted": ("planner", "", "plan.json"), "plan approved": ("reviewer", "plan", "review.json"),
+            "pull request opened": ("worker", "", "work.json"),
+            "code review record posted": ("reviewer", "pr", "review.json")}
+
+
+class FakeSandbox:
+    """A fake sandbox for play() that logs calls and shows each step's right cards.
+
+    After each step it shows the cards that step should leave.
+    `stale` names steps whose cards stay as the step before left them; `hung` names steps whose card runs never
+    finish. Card runs of every other step finish on the second look. Each hand-back folder play() passes is read
+    at once, before play() may remove it."""
+
+    def __init__(self, stale=(), hung=()):
+        self.right = right_cards()
+        self.stale, self.hung = set(stale), set(hung)
+        self.calls, self.step, self.looks, self.handbacks = [], None, 0, {}
+
+    def do(self, step, handback):
+        """Play one step on the fake sandbox, noting the stand-in hand-back it was given."""
+        self.calls.append(("do", step))
+        self.step, self.looks = step, 0
+        if handback is not None:
+            self.handbacks[step] = {"files": sorted(os.listdir(handback)),
+                                    "report": agent.run_report(os.path.join(handback, "claude.json"))}
+            for name in os.listdir(handback):
+                if name.endswith(".json") and name != "claude.json":
+                    json.load(open(os.path.join(handback, name)))
+        else:
+            self.handbacks[step] = None
+
+    def pending(self):
+        """How many card runs of the newest step are still queued or running."""
+        self.calls.append(("pending", self.step))
+        self.looks += 1
+        return 1 if self.step in self.hung or self.looks < 2 else 0
+
+    def cards(self):
+        """The issue and PR bodies as they stand after the newest step."""
+        self.calls.append(("cards", self.step))
+        i = STEPS.index(self.step)
+        return self.right[STEPS[i - 1] if self.step in self.stale and i else self.step]
+
+
+def play(p, sandbox, k):
+    """Run p.play() on a fake sandbox with a 1 s wait; return code and lines."""
+    lines = []
+    start = time.monotonic()
+    code = p.play(sandbox, 1, 0.01, lines.append)
+    took = time.monotonic() - start
+    assert took < 30, f"{k}: play() took {took:.0f} s on a fake sandbox with a 1 s wait"
+    return code, lines
+
+
+def test_one_run_plays_every_step_waits_judges_both_cards_and_logs_one_line_each(record_property):
+    """One run plays all eight steps, waiting, checking both cards and logging a line each.
+
+    Proves 437.1.
+    Runs dokima/playthrough.py's play() on a fake sandbox whose cards always show the step just played: it must
+    play the eight steps in order, after each look at the card runs until they finish and then read the cards before
+    the next step, log exactly `PASS: <step>` for each in order, and return 0. Then, with the cards of plan approved
+    and code review record posted left stale, it must still play all eight steps, log `FAIL: <step>` for those two
+    and PASS for the rest, and return 1, so one failure never stops the run."""
+    record_property("proves", "437.1")
+    p = playthrough("437.1")
+    hub = FakeSandbox()
+    code, lines = play(p, hub, "437.1")
+    done = [s for kind, s in hub.calls if kind == "do"]
+    assert done == list(STEPS), f"437.1: play() should play the eight steps in order, not {done}"
+    for i, step in enumerate(STEPS):
+        mine = [kind for kind, s in hub.calls if s == step]
+        assert mine[0] == "do" and "pending" in mine and mine[-1] == "cards" and mine.index("pending") < mine.index("cards"), \
+            f"437.1: at {step!r}, play() should play it, wait for its card runs, then read both cards: {mine}"
+        assert mine.count("pending") >= 2, f"437.1: at {step!r}, play() read the cards before its card runs finished"
+    assert lines == [f"PASS: {s}" for s in STEPS], \
+        f"437.1: with every card right, play() should log one PASS line per step in order, not {lines}"
+    assert code == 0, f"437.1: with every step passing, play() should return 0, not {code!r}"
+    hub = FakeSandbox(stale=("plan approved", "code review record posted"))
+    code, lines = play(p, hub, "437.1")
+    assert [s for kind, s in hub.calls if kind == "do"] == list(STEPS), \
+        "437.1: after a failed step, play() should still play every step to the end"
+    assert len(lines) == len(STEPS), f"437.1: play() should log one line per step, not {lines}"
+    for step, line in zip(STEPS, lines):
+        want = "FAIL: " if step in hub.stale else "PASS: "
+        assert line.startswith(want + step), f"437.1: at {step!r}, play() should log a line starting {want + step!r}, not {line!r}"
+    assert code == 1, f"437.1: with two failed steps, play() should return 1, not {code!r}"
+
+
+def test_the_run_plays_its_agent_steps_with_stand_ins_that_leave_no_token_report(record_property):
+    """The run hands its agent steps the stand-ins' hand-backs, each with no model report.
+
+    Proves 437.4.
+    Runs play() on a fake sandbox and checks each agent step (plan posted, plan approved, pull request opened, code
+    review record posted) is played with a hand-back folder holding its role's file and no claude.json, so its
+    record shows no tokens, and that every other step is played with no hand-back."""
+    record_property("proves", "437.4")
+    p = playthrough("437.4")
+    hub = FakeSandbox()
+    play(p, hub, "437.4")
+    for step in STEPS:
+        got = hub.handbacks.get(step, "never played")
+        if step in STANDINS:
+            role, stage, name = STANDINS[step]
+            assert isinstance(got, dict), f"437.4: {step!r} was played with no stand-in {role} {stage} hand-back: {got!r}"
+            assert name in got["files"], f"437.4: the stand-in {role} {stage} hand-back at {step!r} holds no {name}: {got['files']}"
+            assert "claude.json" not in got["files"] and not got["report"], \
+                f"437.4: the stand-in {role} {stage} at {step!r} left a model report, so its record shows tokens"
+        else:
+            assert got is None, f"437.4: {step!r} needs no agent, yet play() handed it {got!r}"
+
+
+def test_a_hung_step_fails_the_run_naming_the_wait_and_the_run_plays_on(record_property):
+    """A hung step fails naming the step and the wait, and the run plays on.
+
+    Proves 437.8.
+    Runs play() with a 1 s wait on a fake sandbox whose card runs never finish after code review started: the line
+    for that step must start `FAIL: code review started` and name `1 s`, the steps after it must still be played
+    and pass, and play() must return 1 within seconds."""
+    record_property("proves", "437.8")
+    p = playthrough("437.8")
+    hub = FakeSandbox(hung=("code review started",))
+    code, lines = play(p, hub, "437.8")
+    assert len(lines) == len(STEPS), f"437.8: play() should log one line per step, not {lines}"
+    hung = lines[STEPS.index("code review started")]
+    assert hung.startswith("FAIL: code review started") and "1 s" in hung, \
+        f"437.8: a step whose card runs outlast the 1 s wait should fail naming it and the wait, not {hung!r}"
+    assert [s for kind, s in hub.calls if kind == "do"] == list(STEPS), "437.8: after a hung step, play() should play on"
+    assert lines[-2:] == ["PASS: code review record posted", "PASS: merged"], \
+        f"437.8: the steps after the hung one should still pass: {lines[-2:]}"
+    assert code == 1, f"437.8: a hung step should make play() return 1, not {code!r}"
