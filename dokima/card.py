@@ -43,6 +43,8 @@ FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-re
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
 # A `#` right after a closing keyword, as GitHub reads one (fixes #99, Closes: #12, resolved o/r#7).
 KEYWORD_HASH = re.compile(r"(\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:[\w.-]+/[\w.-]+)?)#(?=\d)", re.I)
+# An issue's full address right after a closing keyword (Fixes https://github.com/o/r/issues/98).
+KEYWORD_URL = re.compile(r"(\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+)h(?=ttps://github\.com/[\w.-]+/[\w.-]+/issues/\d)", re.I)
 
 
 def icon(repo, name, alt=None):
@@ -348,14 +350,16 @@ def child_row(repo, child):
     return f"- https://github.com/{repo}/issues/{n} · {st}"
 
 
-def links_row(repo, issue, pr, worker, check_runs):
-    """The links that matter, the issue and its PR both included, so the card reads the same on either page.
+def links_row(repo, issue, pr, worker, check_runs, page="issue"):
+    """The latest run, the issue on the PR's page, the PR and its files changed.
 
-    The issue and the PR are written out bare, so GitHub draws them as its own references."""
+    On the issue's own page GitHub shortens a link to that page to a bare #N, so the issue leaves its own link out
+    (#452). The issue and the PR are written out bare, so GitHub draws them as its own references."""
     links = []
     if worker:
         links.append(f"[latest run]({worker['html_url']})")
-    links.append(issue["url"])
+    if page == "pr":
+        links.append(issue["url"])
     if pr:
         links.append(f"https://github.com/{repo}/pull/{pr['number']}")
     if pr:
@@ -445,7 +449,8 @@ def done_row(repo, found, all_tests):
 
 def render(repo, issue, found, page="issue"):
     """The card for `issue`, drawn only from `found`: the agents' records, the PR, its latest commit's checks, its
-    reviews, the code owners, the plan's tests and the latest worker run. It is the same on either `page`."""
+    reviews, the code owners, the plan's tests and the latest worker run. It is the same on either `page`, but for the
+    PR's top row, which also links the issue."""
     from dokima import agent
     recs, pr, check_runs, worker = found["recs"], found["pr"], found["check_runs"], found["worker"]
     by_key = checks_by_key(check_runs)
@@ -461,7 +466,7 @@ def render(repo, issue, found, page="issue"):
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
     lines += [status_line(repo, *status(issue, found)), ""]
-    links = links_row(repo, issue, pr, worker, check_runs)
+    links = links_row(repo, issue, pr, worker, check_runs, page)
     if links:
         lines += [links, ""]
     raised = waiting_raises(recs)
@@ -509,15 +514,18 @@ def issue_body(card, notes):
     return card + ("\n\n" + notes if notes else "")
 
 
-def pr_body(card, text, ask):
+def pr_body(card, text, ask, issue_url=None):
     """The PR's description: the card, the owner's Original issue fold, then the Closes line.
 
-    In the PR's copy a `#` after a closing keyword is written `&#35;`, which shows the same, so the owner's words never
-    close or name another issue: the PR's own Closes line stays the only closing reference (#373)."""
+    The Closes line names the issue by its full address `issue_url`, so GitHub shows its title (#452); without one it
+    keeps the PR's own Closes #N. In the PR's copy a `#` after a closing keyword is written `&#35;`, and the `h` of a
+    full address after one `&#104;`, which show the same, so the owner's words never close or name another issue: the
+    PR's own Closes line stays the only closing reference (#373)."""
     found = CLOSES.search(text or "")
-    shown = KEYWORD_HASH.sub(r"\1&#35;", ask or "")
+    closing = f"Closes {issue_url}" if issue_url else found.group(0) if found else None
+    shown = KEYWORD_URL.sub(r"\1&#104;", KEYWORD_HASH.sub(r"\1&#35;", ask or ""))
     return (card.rstrip("\n") + "\n\n" + body.MARKER + body.FOLD_START + shown + body.FOLD_END
-            + ("\n\n" + found.group(0) if found else ""))
+            + ("\n\n" + closing if closing else ""))
 
 
 def shows(current, top):
@@ -867,11 +875,13 @@ def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_on
         print(f"Card written into issue #{number}")
     if now.get("loop") and now["loop"] != before.get("loop"):
         stop_for_loop(repo, number, now["loop"], found.get("owners"))
-    # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
+    # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224); its
+    # top row also links the issue, and it closes the issue by its full address (#452).
     ask = body.ask(current)
-    if pr and not (changed_only and pr_body(top, pr.get("body"), ask) == (pr.get("body") or "")):
+    described = pr and pr_body(render(repo, issue, found, page="pr"), pr.get("body"), ask, issue_url=issue["url"])
+    if pr and not (changed_only and described == (pr.get("body") or "")):
         with open("pr.md", "w") as f:
-            f.write(pr_body(top, pr.get("body"), ask))
+            f.write(described)
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
     return before, now

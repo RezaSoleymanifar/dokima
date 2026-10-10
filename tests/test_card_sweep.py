@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from card_player import (FAKE_GH, STALE_CARD, Hub, card_of, issue_comment, must_redraw, schedule,  # noqa: E402
-                         stage_of, triggers, listed, workflow)
+                         stage_of, triggers, listed, without_issue_link, workflow)
 
 DEFS_AT = 'if a[:2] == ["issue", "view"]:\n'
 CALL_AT = '    method = (flag("-X", "--method") or ("POST" if f and route != "graphql" else "GET")).upper()\n'
@@ -177,7 +177,7 @@ def test_the_sweep_redraws_every_stale_card_updated_since_the_last_sweep_open_or
         f"347.1: the sweep left closed #246 or merged PR #260 showing an old card: " \
         f"{stage_of(hub.issue_body(246))!r}, {stage_of(hub.pr_body(260))!r}"
     assert not stale(hub, 312), f"347.1: PR #314 was updated but the sweep left #312's old card: {hub.issue_body(312)!r}"
-    assert card_of(hub.pr_body(314)) and card_of(hub.pr_body(314)) == card_of(hub.issue_body(312)), \
+    assert card_of(hub.pr_body(314)) and without_issue_link(card_of(hub.pr_body(314)), 312) == card_of(hub.issue_body(312)), \
         f"347.1: the sweep did not write #312's card on PR #314: {hub.pr_body(314)!r}"
     assert "The owner sees issue 320 done." in (card_of(hub.issue_body(320)) or ""), \
         f"347.1: the sweep left #320's card without its plan: {card_of(hub.issue_body(320))!r}"
@@ -195,7 +195,8 @@ def test_an_issue_updated_since_the_last_sweep_gets_its_pr_card_redrawn_too(tmp_
     """An issue updated since the last sweep gets its pull request's card redrawn too.
 
     The last sweep succeeded at 05:00. Issue #312 was updated at 06:00, but its PR #314, which holds no card, was not.
-    After one scheduled run, #312's card is redrawn and PR #314 shows the same card, with its closing line kept. Proves 347.1."""
+    After one scheduled run, #312's card is redrawn and PR #314 shows the same card, but for its link back to #312
+    (#452), with its closing line kept, by the issue's full address. Proves 347.1."""
     record_property("proves", "347.1")
     hub = SweepHub(tmp_path)
     hub.no_pr_card(314, 312)
@@ -203,9 +204,9 @@ def test_an_issue_updated_since_the_last_sweep_gets_its_pr_card_redrawn_too(tmp_
     hub.last_sweep("2026-10-09T05:00:00Z")
     must_redraw(hub, schedule(), "347.1")
     assert not stale(hub, 312), f"347.1: #312 was updated but the sweep left its old card: {hub.issue_body(312)!r}"
-    assert card_of(hub.pr_body(314)) == card_of(hub.issue_body(312)), \
+    assert without_issue_link(card_of(hub.pr_body(314)), 312) == card_of(hub.issue_body(312)), \
         f"347.1: #312 was updated but the sweep did not write its card on PR #314: {hub.pr_body(314)!r}"
-    assert hub.pr_body(314).rstrip().endswith("Closes #312"), "347.1: PR #314 lost its closing line"
+    assert hub.pr_body(314).rstrip().endswith("Closes https://github.com/o/r/issues/312"), "347.1: PR #314 lost its closing line"
 
 
 def test_a_card_that_already_shows_its_state_is_not_rewritten(tmp_path, record_property):
@@ -326,7 +327,7 @@ def test_when_github_cannot_say_what_changed_every_card_is_rechecked(tmp_path, r
     r = must_redraw(hub, schedule(), "347.3")
     assert stage_of(hub.issue_body(246)) == "Merged" and stage_of(hub.pr_body(260)) == "Merged", \
         "347.3: GitHub could not say what changed, and the sweep left closed #246 or merged PR #260 stale"
-    assert not stale(hub, 312) and card_of(hub.pr_body(314)) == card_of(hub.issue_body(312)), \
+    assert not stale(hub, 312) and without_issue_link(card_of(hub.pr_body(314)), 312) == card_of(hub.issue_body(312)), \
         "347.3: GitHub could not say what changed, and the sweep left #312's or PR #314's card stale"
     assert "502" in r.log, f"347.3: the sweep's log does not say why it rechecked every card:\n{r.log[-2000:]}"
 
@@ -344,7 +345,7 @@ def test_with_no_sweep_that_succeeded_yet_every_card_is_rechecked(tmp_path, reco
     must_redraw(hub, schedule(), "347.3")
     assert stage_of(hub.issue_body(246)) == "Merged" and stage_of(hub.pr_body(260)) == "Merged", \
         "347.3: with no sweep that succeeded yet, the sweep left closed #246 or merged PR #260 stale"
-    assert not stale(hub, 312) and card_of(hub.pr_body(314)) == card_of(hub.issue_body(312)), \
+    assert not stale(hub, 312) and without_issue_link(card_of(hub.pr_body(314)), 312) == card_of(hub.issue_body(312)), \
         "347.3: with no sweep that succeeded yet, the sweep left #312's or PR #314's card stale"
 
 
