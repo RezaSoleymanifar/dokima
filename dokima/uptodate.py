@@ -16,6 +16,7 @@ from dokima import agent, plan
 from dokima.board import api
 
 PER_PAGE = 100
+UPDATE_WORDS = ("This pull request could not be updated with ", "This pull request is up to date with ")
 
 
 def open_prs(repo, base, rest):
@@ -38,10 +39,45 @@ def reason(e):
     return message or (e.stderr or "").strip() or str(e)
 
 
-def run(repo, base, sha, rest=api, on_clash=None):
-    """Update every open PR into base whose branch is behind it; a refused PR gets one comment saying why.
+def refusal_comments(repo, n, rest):
+    """The bot's own update comments on PR n, oldest first.
 
-    on_clash(pr, sha) is called for each PR GitHub refuses with a merge conflict. Returns (updated, refused) numbers."""
+    Nobody else's comment counts, whatever it says."""
+    out, page = [], 1
+    while True:
+        batch = rest("GET", f"repos/{repo}/issues/{n}/comments?per_page={PER_PAGE}&page={page}")
+        out += [c for c in batch if (c.get("user") or {}).get("login") == f"{agent.BOT}[bot]"
+                and (c.get("body") or "").startswith(UPDATE_WORDS)]
+        if len(batch) < PER_PAGE:
+            return out
+        page += 1
+
+
+def say(repo, n, body, rest, refused):
+    """Keeps one update comment on PR n, saying body.
+
+    The newest is edited to body and the older ones deleted. A refusal posts it when there is none; a clean update
+    with none says nothing."""
+    *older, newest = refusal_comments(repo, n, rest) or [None]
+    if newest is None:
+        if refused:
+            rest("POST", f"repos/{repo}/issues/{n}/comments", body=body)
+        return
+    if newest.get("body") != body:
+        rest("PATCH", f"repos/{repo}/issues/comments/{newest['id']}", body=body)
+    for c in older:
+        rest("DELETE", f"repos/{repo}/issues/comments/{c['id']}")
+
+
+def run(repo, base, sha, rest=api, on_clash=None, failed=None):
+    """Update every open PR into base whose branch is behind it.
+
+    A refused PR carries one comment saying why, edited in place on every later refusal and to say it is up to date
+    once it updates cleanly.
+
+    on_clash(pr, sha) is called for each PR GitHub refuses with a merge conflict. When GitHub cannot list or change a
+    PR's comments, (number, reason) goes into `failed` and the rest go on; with no `failed` list it raises.
+    Returns (updated, refused) numbers."""
     updated, refused = [], []
     for pr in open_prs(repo, base, rest):
         n, head = pr["number"], pr["head"]["sha"]
@@ -52,12 +88,19 @@ def run(repo, base, sha, rest=api, on_clash=None):
         except subprocess.CalledProcessError as e:
             why = reason(e)
             refused.append(n)
-            rest("POST", f"repos/{repo}/issues/{n}/comments",
-                 body=f"This pull request could not be updated with `{base}` ({sha[:7]}). GitHub said: {why}")
-            if on_clash and "merge conflict" in why.lower():
-                on_clash(pr, sha)
-            continue
-        updated.append(n)
+            body = f"This pull request could not be updated with `{base}` ({sha[:7]}). GitHub said: {why}"
+        else:
+            why = None
+            updated.append(n)
+            body = f"This pull request is up to date with `{base}` ({sha[:7]})."
+        try:
+            say(repo, n, body, rest, why is not None)
+        except subprocess.CalledProcessError as e:
+            if failed is None:
+                raise
+            failed.append((n, reason(e)))
+        if why is not None and on_clash and "merge conflict" in why.lower():
+            on_clash(pr, sha)
     return updated, refused
 
 
@@ -162,12 +205,15 @@ def main():
             failed.append(pr["number"])
             print(f"::error::uptodate: the clash on #{pr['number']} could not be handled: {reason(e)}")
 
-    updated, refused = run(repo, base, sha, on_clash=on_clash)
+    unsaid = []
+    updated, refused = run(repo, base, sha, on_clash=on_clash, failed=unsaid)
     for n in updated:
         print(f"uptodate: updated #{n}")
     for n in refused:
         print(f"::warning::uptodate: #{n} could not be updated")
-    return 1 if failed else 0
+    for n, why in unsaid:
+        print(f"::error::uptodate: the update comment on #{n} could not be listed or changed: {why}")
+    return 1 if failed or unsaid else 0
 
 
 if __name__ == "__main__":
