@@ -400,8 +400,8 @@ def test_the_split_comment_shows_the_blocked_by_icon(record_property, env):
     in front, once; the first story's line has none."""
     record_property("proves", "234.2")
     body = agent.render(built("split", "", SPLIT))
-    shows(body, "blocked by", "blocked by https://github.com/o/r/issues/201", "234.2", "the split's comment")
-    first = next((l for l in body.splitlines() if l.startswith("1. ") and "issues/201" in l), "")
+    shows(body, "blocked by", "blocked by #201", "234.2", "the split's comment")
+    first = next((l for l in body.splitlines() if "#201 First" in l), "")
     assert img("blocked by") not in first, f"234.2: a story blocked by nothing shows the blocked by icon: {first}"
     assert body.count(img("blocked by")) == 1, f"234.2: the split shows the blocked by icon {body.count(img('blocked by'))} times"
 

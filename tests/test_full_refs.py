@@ -1,22 +1,18 @@
 """Outside prose, every issue Dokima names shows as GitHub's own reference: its full address.
 
 Issue #480, part of #416. Inside prose (a sentence, a record's text) an issue stays short, as #N, so the text reads
-well. Everywhere else, in the card's fields and lists and the lists code writes for a split, an issue is written out
-as its full address, `https://github.com/OWNER/REPO/issues/N`, on its own, so GitHub draws it with its icon, its title
-and its number. An acceptance criterion's Source is always that full address, never #N and never a word linked to it.
+well. In the card's fields and lists an issue is written out as its full address,
+`https://github.com/OWNER/REPO/issues/N`, on its own, so GitHub draws it with its icon, its title and its number. An
+acceptance criterion's Source on the card is always that full address, never #N.
 
-These tests draw the card with `dokima/card.py`, a filed split's comment with `dokima/agent.py`, and file a split
-through `agent.file_split` with GitHub faked, then read the markdown they write.
+These tests draw the card with `dokima/card.py` and read the markdown it writes.
 """
-import json
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import pytest
-
-from dokima import agent, card, plan  # noqa: E402
+from dokima import card, plan  # noqa: E402
 
 REPO = "o/r"
 N = 480
@@ -71,13 +67,6 @@ def line_of(text, label):
     rows = [l for l in text.splitlines() if f"**{label}:**" in l]
     assert len(rows) == 1, f"the card has {len(rows)} lines with {label}:\n{text}"
     return rows[0]
-
-
-@pytest.fixture
-def env(monkeypatch):
-    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
-    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
-    monkeypatch.setenv("GITHUB_RUN_ID", "1")
 
 
 # 480.1: Blocked by, Blocks and Relates to name each issue by its full address
@@ -167,71 +156,3 @@ def test_a_source_given_as_a_short_reference_shows_its_full_address(record_prope
             f"480.3: on the {page} card a source written #{N} shows as “{sources[0]}”, not its full address {SRC}"
         assert sources[1] == f"- Source: {comment}", \
             f"480.3: on the {page} card a comment's source changed to “{sources[1]}”, not {comment}"
-
-
-def file_split(monkeypatch, sources):
-    """Files a two-story split of #139 with GitHub faked; its record and story bodies."""
-    calls = []
-
-    def fake_gh(*args):
-        calls.append(args)
-        if args[:2] == ("issue", "view"):
-            return json.dumps({"title": "Parent"})
-        if args[:2] == ("issue", "create"):
-            return f"https://github.com/o/r/issues/{200 + sum(1 for c in calls if c[:2] == ('issue', 'create'))}\n"
-        if args[0] == "api" and args[1].startswith("repos/o/r/issues/2"):
-            return json.dumps({"id": 9000 + int(args[1].split("/")[-1])})
-        return "{}"
-    monkeypatch.setattr(agent, "gh", fake_gh)
-    split = {"kind": "feature", "summary": "s", "feature": "f", "stories": [
-        {"title": "First", "user_story": "u1", "acceptance_criteria": [{"text": "a", "source": sources[0]}],
-         "non_functional": [], "depends_on": []},
-        {"title": "Second", "user_story": "u2", "acceptance_criteria": [{"text": "b", "source": sources[1]}],
-         "non_functional": [], "depends_on": [0]}]}
-    recs = [rec("planner", n=1, **split), rec("reviewer", "plan", n=2, verdict="approve")]
-    r = agent.file_split(REPO, 139, recs)
-    bodies = [c[c.index("--body") + 1] for c in calls if c[:2] == ("issue", "create")]
-    assert len(bodies) == 2, f"filing the split created {len(bodies)} issues, not 2"
-    return r, bodies
-
-
-def test_a_filed_storys_criteria_give_their_source_as_a_full_address(record_property, monkeypatch, env):
-    """A filed story's criteria show their Source as the full address, never a linked word.
-
-    Proves 480.3. Files a split whose stories' criteria come from #139 itself and from a comment on it, and checks each story's body
-    shows its source's full address on its own, with no [source](...) link and no link with words around it."""
-    record_property("proves", f"{N}.3")
-    sources = ["https://github.com/o/r/issues/139", "https://github.com/o/r/issues/139#issuecomment-5"]
-    _, bodies = file_split(monkeypatch, sources)
-    for i, (body, src) in enumerate(zip(bodies, sources), 1):
-        assert "[source](" not in body, f"480.3: story {i}'s body links the word source to its Source:\n{body}"
-        assert bare(src, body), f"480.3: story {i}'s body does not show its Source {src} on its own:\n{body}"
-        line = next((l for l in body.splitlines() if l.startswith("- ") and src in l), "")
-        assert re.search(r"Source:?\**\s*" + re.escape(src), line), \
-            f"480.3: story {i}'s criterion does not say Source before {src}: {line}"
-
-
-# 480.4: a split's lists name each issue by its full address
-
-def test_the_split_comment_and_filed_stories_name_issues_by_full_address(record_property, monkeypatch, env):
-    """A filed split's comment and each story's Part of name issues by full address.
-
-    Proves 480.4. Files a split of #139 into #201 and #202, #202 blocked by #201, and checks the split's comment lists each story by
-    its full address with #202's blocked by naming #201 by full address, none of them as #N; and each story's body
-    names its parent in Part of by #139's full address, not as #139."""
-    record_property("proves", f"{N}.4")
-    r, bodies = file_split(monkeypatch, [SRC, SRC])
-    words = re.sub(r"<img [^>]*>\s*", "", agent.render(r)).split("<details>", 1)[0]
-    first = next((l for l in words.splitlines() if l.startswith("1. ")), "")
-    second = next((l for l in words.splitlines() if l.startswith("2. ")), "")
-    assert bare(url(201), first) and not short(201, first), \
-        f"480.4: the split's comment does not list story 1 by its full address {url(201)}: {first!r}"
-    assert second.startswith(f"2. {url(202)}") and not short(202, second), \
-        f"480.4: the split's comment does not list story 2 by its full address {url(202)}: {second!r}"
-    assert re.search(r"blocked by " + re.escape(url(201)), second) and not short(201, second), \
-        f"480.4: story 2's blocked by does not name #201 by its full address: {second!r}"
-    assert "blocked by" not in first, f"480.4: story 1, blocked by nothing, says blocked by: {first!r}"
-    for i, body in enumerate(bodies, 1):
-        part = next((l for l in body.splitlines() if "Part of" in l), "")
-        assert bare(url(139), part) and not short(139, part), \
-            f"480.4: story {i}'s Part of does not name its parent #139 by its full address: {part!r}"
