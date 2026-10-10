@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from dokima import body, plan  # noqa: E402
+from dokima import body, plan, retry  # noqa: E402
 
 ALL_TESTS = "all tests"
 TODO = {"questions": "Answer the questions with /plan, or say /review",
@@ -822,14 +822,19 @@ def main():
         return
     repo = os.environ["REPO"]
     if not os.environ.get("ISSUE_NUMBER") and os.environ.get("GITHUB_EVENT_NAME") == "schedule":
-        sys.exit(1 if sweep(repo) else 0)
+        # A sweep or redraw the empty API budget stopped runs once more, from scratch, after the budget resets.
+        sys.exit(1 if retry.once_more("the card sweep", lambda: sweep(repo), failed=bool) else 0)
     number, pr_number = find_work(repo)
     if not number:
         print("No issue for this event; nothing to write.")
         return
-    cache = {}
-    before, now = draw(repo, number, pr_number, cache=cache)
-    if follow(repo, number, before, now, cache):
+
+    def redraw():
+        cache = {}
+        before, now = draw(repo, number, pr_number, cache=cache)
+        return follow(repo, number, before, now, cache)
+
+    if retry.once_more(f"the card of #{number}", redraw, failed=bool):
         sys.exit(1)
 
 
