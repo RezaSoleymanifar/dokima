@@ -16,6 +16,8 @@ TABLE = MappingProxyType({
 })
 # A worker's raise to the planner goes through the reviewer, who answers it first.
 THROUGH = MappingProxyType({("worker", "planner"): "reviewer"})
+# An issue the planner or the worker raises is filed only once the reviewer confirms it.
+CONFIRMS = "reviewer"
 FIELDS = ("kind", "to", "label", "text", "evidence")
 STAMPED = ("raised_by", "id")
 ANSWERS = ("done", "disagree")
@@ -62,11 +64,41 @@ def check_raises(role, raises):
 
 
 def sent_to(raise_):
-    """The one who must answer a stamped raise first; None for an issue."""
+    """The one who must answer a stamped raise first.
+
+    None for an issue, unless code sent it to the reviewer to confirm (for_review)."""
     if raise_.get("kind") == "issue":
-        return None
+        return CONFIRMS if raise_.get("to") == CONFIRMS else None
     to = raise_.get("to")
     return THROUGH.get((raise_.get("raised_by"), to), to)
+
+
+def for_review(raise_):
+    """A planner's or worker's issue as code lists it for the reviewer to confirm.
+
+    Code files it only once the reviewer confirms it. None for any other raise, the reviewer's own issue included."""
+    if raise_.get("kind") != "issue" or raise_.get("raised_by") not in ("planner", "worker"):
+        return None
+    return {**raise_, "to": CONFIRMS}
+
+
+def passes_on(raise_, answer):
+    """The reviewer's blocker that its answer to a raise sent through it passes on.
+
+    Done sends the raise on to whom it was for; disagree sends the one who raised it the reviewer's why. None for a
+    raise that did not go through the reviewer, or an answer that is neither."""
+    if raise_.get("kind") == "issue" or THROUGH.get((raise_.get("raised_by"), raise_.get("to"))) is None:
+        return None
+    word, why, text = answer.get("answer"), answer.get("why") or "", raise_.get("text") or ""
+    if word == "done":
+        to, said = raise_.get("to"), f"{text} The reviewer confirmed it: {why}"
+    elif word == "disagree":
+        to, said = raise_.get("raised_by"), f"The reviewer disagrees with your raise \"{text}\": {why}"
+    else:
+        return None
+    out = {"kind": "blocker", "to": to, "label": raise_.get("label"), "text": said, "evidence": raise_.get("evidence"),
+           "raised_by": THROUGH[(raise_.get("raised_by"), raise_.get("to"))], "id": f"R{raise_.get('id')}"}
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def stamp(role, raises, taken):
