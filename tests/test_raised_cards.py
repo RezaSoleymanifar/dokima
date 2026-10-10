@@ -377,10 +377,12 @@ def test_an_answer_given_for_you_on_autopilot_quotes_your_words_and_links_them(r
     record_property("proves", "299.3")
     earlier = section(shown(draw(NEW_REVIEW, earlier=[NEW_PLANNER, NEW_WORKER])), "Raised earlier:")
     assert earlier is not None, "299.3: the review's comment has no Raised earlier section"
-    linked = re.compile(r"\[[^\]]*" + re.escape(A_FOR_OWNER["words"]) + r"[^\]]*\]\(" + re.escape(SAID) + r"\)")
+    # Since #359 the words are quoted as plain text and the comment follows as a bare link GitHub draws as a reference.
+    linked = re.compile(r"^(?!.*\]\()(?!.*<a ).*\"" + re.escape(A_FOR_OWNER["words"]) + r"\".*?(?<![\w/\"=\[<])"
+                        + re.escape(SAID) + r"(?![\w/#-])", re.M)
     item = item_with(earlier, P_QUESTION["text"])
     assert linked.search(item), (f"299.3: the answer given for you does not quote your words "
-                                 f"{A_FOR_OWNER['words']!r} linked to {SAID}:\n{item}")
+                                 f"{A_FOR_OWNER['words']!r} followed by where you said them, {SAID}:\n{item}")
     other = item_with(earlier, W_BLOCKER["text"])
     assert SAID not in other, f"299.3: an answer with no words of yours links your comment:\n{other}"
 

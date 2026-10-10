@@ -483,7 +483,7 @@ def raised_lines(repo, rec, earlier):
             word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
             lines.append(f"  - {word}: {escape_line(a.get('why'))}")
             if filled(a.get("words")) and filled(a.get("source")):
-                lines.append(f"  - Your words: [\"{escape_line(a['words']).replace(']', '\\]')}\"]({words_link(a['source'])})")
+                lines.append(f"  - Your words: {said(a['words'], a['source'])}")
     raised = card.raises_of(h)
     if raised:
         lines += ["", "**Raised:**", ""] + [card.raise_line(repo, r) for r in raised]
@@ -526,7 +526,7 @@ def render(rec, pr=None, plan=None, earlier=None):
     passed = rec["check"]["passed"]
     first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
     if role == "worker" and pr:
-        first += f" ([pull request #{pr.rstrip('/').rsplit('/', 1)[-1]}]({pr}))"
+        first += f" {pr}"
     lines = [MARK, first]
     if not passed:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
@@ -554,7 +554,7 @@ def render(rec, pr=None, plan=None, earlier=None):
             lines += ["", f"{field_icon(repo, 'question')} **Answered from your words:**"]
             for a in answered:
                 lines += [f"- {escape_line(a['question'])}", f"  - {escape_line(answers[a['question']])}",
-                          f"  - Your words: [\"{escape_line(a['matched']).replace(']', '\\]')}\"]({words_link(a['source'])})"]
+                          f"  - Your words: {said(a['matched'], a['source'])}"]
         judged = [a for a in judged if a not in answered]
         if judged:
             lines += ["", "**The plan's assumptions:**"]
@@ -587,6 +587,16 @@ def words_link(source):
     if source == "AGENTS.md":
         return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/blob/main/AGENTS.md"
     return source
+
+
+def said(words, source):
+    """The owner's quoted words, then where they said them.
+
+    An issue or comment follows the quote written out bare, so GitHub draws it as its own reference; words from
+    AGENTS.md, which is no issue or pull request, stay linked to it."""
+    if source == "AGENTS.md":
+        return f"[\"{escape_line(words).replace(']', '\\]')}\"]({words_link(source)})"
+    return f"\"{escape_line(words)}\" {source}"
 
 
 def escape_line(text):
