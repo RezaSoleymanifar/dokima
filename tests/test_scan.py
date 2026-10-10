@@ -313,8 +313,11 @@ def make_true(w, *items):
     for kind, n in items:
         text = scan.card_now(REPO, kind, n)
         if kind == "pr":
-            # The PR carries its issue's Original issue fold below the card (#373), read from the issue's body.
-            w.prs[n]["body"] = card.pr_body(text, w.prs[n]["body"], body.ask(w.issues[w.prs[n]["issue"]]["body"]))
+            # The PR carries its issue's Original issue fold below the card (#373), read from the issue's body, and
+            # closes its issue by the issue's full address (#452).
+            issue = w.prs[n]["issue"]
+            w.prs[n]["body"] = card.pr_body(text, w.prs[n]["body"], body.ask(w.issues[issue]["body"]),
+                                            issue_url=f"https://github.com/o/r/issues/{issue}")
         else:
             w.issues[n]["body"] = body.redraw(w.issues[n]["body"], text)
 
@@ -430,7 +433,7 @@ def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, monkeypatc
     #312 has no record and its card is the old one: the card the scan expects says Backlog and shows no plan.
     Once a plan is recorded on #312, the card it expects says the plan's summary and no longer says there is
     no plan. Merged PR #260 of #246, with every check passed: the card it expects for the PR says Merged, with All tests
-    passed, and is the same card it expects on #246. For both issues it is exactly the card Dokima's card code writes
+    passed, and is the same card it expects on #246 but for the PR's link back to #246 (#452). For both issues it is exactly the card Dokima's card code writes
     when it redraws them. A scan that trusted the card already on the issue, or drew one fixed card, would fail here."""
     record_property("proves", "333.1")
     need_scan("333.1")
@@ -449,7 +452,10 @@ def test_the_card_the_scan_expects_is_drawn_from_the_state_now(world, monkeypatc
     assert "**Merged**" in pr_card, f"333.1: for merged PR #260 the scan expects a card that does not say Merged: {pr_card}"
     assert re.search(r'alt="passed"></a> All tests', pr_card), \
         f"333.1: for PR #260, whose every check passed, the scan expects a card without All tests passed: {pr_card}"
-    assert pr_card == true_card(w, "issue", 246), "333.1: the scan expects a different card on PR #260 than on #246"
+    # Since #452 the PR's card links back to its issue in its top row, and the issue's own card does not.
+    url = re.escape("https://github.com/o/r/issues/246")
+    assert re.sub(rf"^{url} · | · {url}(?= · |$)", "", pr_card, count=1, flags=re.M) == true_card(w, "issue", 246), \
+        "333.1: the scan expects a different card on PR #260 than on #246, besides the PR's link back to #246"
     for n, pr_number in ((312, None), (246, 260)):
         assert true_card(w, "issue", n) == drawn(w, n, pr_number, monkeypatch, tmp_path), \
             f"333.1: the card the scan expects for #{n} is not the one Dokima's card code writes on a redraw"

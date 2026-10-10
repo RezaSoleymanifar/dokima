@@ -355,8 +355,10 @@ def test_the_issue_and_its_pr_show_the_same_card(record_property, monkeypatch, t
     a, b = block(on_issue).splitlines(), block(on_pr).splitlines()
     assert len(a) == len(b), "180.1: the issue and the PR show cards of different lengths"
     for x, y in zip(a, b):
-        assert x == y or "[PR #5]" in x or "[issue #40]" in y, f"180.1: the issue and PR cards differ: “{x}” vs “{y}”"
-    assert "Closes #40" in on_pr, "180.1: the PR lost its line closing the issue"
+        # Since #452 the links row differs only by the issue's own link, which the PR's row keeps.
+        assert x == y or x == y.replace(" · " + ISSUE["url"] + " · ", " · ", 1), \
+            f"180.1: the issue and PR cards differ: “{x}” vs “{y}”"
+    assert on_pr.rstrip().endswith("Closes " + ISSUE["url"]), "180.1: the PR lost its line closing the issue"
 
 
 def test_the_card_finds_the_pr_on_either_branch(record_property, monkeypatch):
