@@ -1,6 +1,6 @@
 """An approved plan runs the pull request's plan check again on its current head (#295).
 
-The plan check is the done-whens workflow (.github/workflows/done-whens.yml): its `list` job reads the issue's records
+The plan check is the Acceptance criteria workflow (.github/workflows/acceptance-criteria.yml): its `list` job reads the issue's records
 and builds one check per criterion of the approved plan, and its gate, "all done-whens passed", fails with "No approved
 plan found" while the newest plan has no approving review. It runs only when the pull request gets a new commit, so a
 plan re-approved with nothing new to push kept its stale failure.
@@ -14,7 +14,7 @@ The fake GitHub of test_start.py is taught pull request #60 and GitHub Actions r
 {id, name, path, event, head_sha, head_branch, status, conclusion, run_attempt, matrix, reruns}. It answers:
   - `gh pr view 60|try/issue-57 --json ...` (number, headRefName, headRefOid, body, state, url, comments, reviews) and
     `gh api repos/o/r/pulls/60` (number, state, body, head.sha, head.ref), with -q/--jq a plain `.field` or `.head.sha`;
-  - the runs: `gh api repos/o/r/actions/runs` and `repos/o/r/actions/workflows/done-whens.yml/runs` (the file name or
+  - the runs: `gh api repos/o/r/actions/runs` and `repos/o/r/actions/workflows/acceptance-criteria.yml/runs` (the file name or
     the path), filtered by the query's head_sha, branch, event and status, newest first, as {total_count,
     workflow_runs}; `gh api repos/o/r/actions/runs/ID`; and `gh run list` with --workflow, --commit, --branch,
     --status, -L/--limit and --json (databaseId, headSha, status, conclusion, workflowName, event, number, attempt);
@@ -163,7 +163,7 @@ def fake_gh():
 
 def plan_run(rid, sha, status="completed", conclusion="failure", matrix=None):
     """One run of the plan check on commit `sha`, as GitHub keeps it."""
-    return {"id": rid, "name": "done-whens", "path": ".github/workflows/done-whens.yml", "event": "pull_request_target",
+    return {"id": rid, "name": "Acceptance criteria", "path": ".github/workflows/acceptance-criteria.yml", "event": "pull_request_target",
             "head_sha": sha, "head_branch": "try/issue-57", "status": status,
             "conclusion": conclusion if status == "completed" else None, "run_attempt": 1,
             "matrix": STALE if matrix is None else matrix, "reruns": []}
