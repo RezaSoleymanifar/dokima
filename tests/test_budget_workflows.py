@@ -21,7 +21,7 @@ import test_start as ts  # noqa: E402
 
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
 NAMED = ["agent.yml", "assign.yml", "audit.yml", "autopilot.yml", "board.yml", "card.yml", "commands.yml",
-         "done-whens.yml", "planner.yml", "worker.yml", "uptodate.yml"]
+         "acceptance-criteria.yml", "planner.yml", "worker.yml", "uptodate.yml"]
 BUDGET = re.compile(r"python3\s+(?:-m\s+dokima\.budget|\S*dokima/budget\.py)\s+(.*)")
 APP_TOKEN = re.compile(r"^\$\{\{\s*steps\.([\w-]+)\.outputs\.token\s*\}\}$")
 
