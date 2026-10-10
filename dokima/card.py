@@ -384,6 +384,22 @@ def code_review(recs):
     return reviews[-1] if reviews else None
 
 
+def review_running(items):
+    """True while the bot's code review run card since the newest build awaits its record."""
+    from dokima import agent
+    running = False
+    for c in items or []:
+        rs = agent.records([c])
+        if rs:
+            if rs[0].get("role") == "worker" or (rs[0].get("role") == "reviewer" and rs[0].get("stage") == "pr"):
+                running = False
+            continue
+        if (c.get("author") or {}).get("login") in (agent.BOT, f"{agent.BOT}[bot]") and \
+                re.match(re.escape(agent.LIVE) + r"[^*]*\*\*Reviewer \(pr\)\*\*", (c.get("body") or "").strip()):
+            running = True
+    return running
+
+
 def owner_review(reviews, owners):
     """The newest Approve or Request changes on the PR by a code owner; None when there is none."""
     found = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
@@ -401,7 +417,8 @@ def done_row(repo, found, all_tests):
     """The Definition of Done: All tests, the code review and the owner's approval, each with its verdict and proof.
     A code owner's merge is their approval, with or without an Approve review."""
     review = code_review(found["recs"])
-    review_st = "not started" if not review else "passed" if review["handback"].get("verdict") == "approve" else "failed"
+    review_st = ("running" if review_running(found.get("items")) else "not started" if not review else
+                 "passed" if review["handback"].get("verdict") == "approve" else "failed")
     merge = owner_merge(found["pr"], found["owners"])
     approval = {"state": "APPROVED", "html_url": merge.get("html_url")} if merge else owner_review(found["reviews"], found["owners"])
     approval_st = "not started" if not approval else "passed" if approval["state"] == "APPROVED" else "failed"
@@ -506,6 +523,10 @@ def issue_pr(repo, n):
 
 def find_work(repo):
     """The issue and open PR this event is about, as (issue number, PR number or None)."""
+    if os.environ.get("ON_PR"):
+        # A comment on a pull request carries the pull request's number as the issue's.
+        pr = int(os.environ["ON_PR"])
+        return plan.pr_issue_number(repo, pr), pr
     if os.environ.get("ISSUE_NUMBER"):
         n = int(os.environ["ISSUE_NUMBER"])
         return n, issue_pr(repo, n)
