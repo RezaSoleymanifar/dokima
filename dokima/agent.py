@@ -2258,7 +2258,7 @@ def main(argv):
         repo = os.environ["GITHUB_REPOSITORY"]
         # A run that never started stops for the owner, and a cancelled one stops, whatever the conversation says,
         # so it is not read.
-        d, items, unread = {}, [], []
+        d, items, unread, undecided = {}, [], [], False
         try:
             with rate_limit_waited_once():
                 d, items = ({}, []) if rec.get("role") in ("not-started", "cancelled") else conversation(repo, number)
@@ -2320,6 +2320,7 @@ def main(argv):
         except subprocess.CalledProcessError as e:
             # Deciding what runs next needs GitHub; a call it refused, after the one wait for its rate limit, stops
             # for the owner with GitHub's own words, and nothing starts.
+            undecided = True
             step = ("stop", (f"{UNREAD} GitHub's reason: " if unread else "GitHub refused a call while deciding what "
                              "runs next, so nothing starts by itself: ") + f"{gh_reason(e)}. Give the command again once "
                             "GitHub answers.")
@@ -2348,6 +2349,9 @@ def main(argv):
             open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")
         column, needs = board_place(json.load(open(os.path.join(out, "record.json"))), step)
         open(os.path.join(out, "board.txt"), "w").write(f"{column} {'needs' if needs else 'none'}\n")
+        if undecided:
+            # GitHub refused the decision, so the board step must not wait on GitHub's state to show Needs you.
+            open(os.path.join(out, "undecided"), "w").write("")
         print(" ".join(step[:3]) if step[0] == "start" else "stop")
         return 0
     if argv[1] == "recheck":
@@ -2369,7 +2373,8 @@ def main(argv):
         except (OSError, json.JSONDecodeError):
             rec = {"role": os.environ.get("ROLE", ""), "stage": os.environ.get("STAGE", "")}
         rec = rec if isinstance(rec, dict) else {}
-        if rec.get("role") == "cancelled" or os.path.exists(os.path.join(argv[3], "board.txt")) and (rec.get("check") or {"passed": True}).get("passed"):
+        if rec.get("role") == "cancelled" or os.path.exists(os.path.join(argv[3], "board.txt")) and (rec.get("check") or {"passed": True}).get("passed") \
+                and not os.path.exists(os.path.join(argv[3], "undecided")):
             # A run that decided what follows, or was cancelled, is placed from GitHub's state, never from the run.
             try:
                 placed = board.rebuild(board.Board(spec, repo), repo, plan.repo_approvers(repo.split("/")[0]), int(argv[2]))
@@ -2379,7 +2384,7 @@ def main(argv):
             for kind, n, column, pill in placed:
                 print(f"board: {kind} #{n} -> {column}{f' · {pill}' if pill else ''}")
             return 0
-        # The run failed, so the river stopped: its own stage's column with Needs you, at once.
+        # The run failed, or deciding what follows did, so the river stopped: its own stage's column with Needs you, at once.
         column = board_place(rec, ("stop",))[0]
         print(f"board: #{argv[2]} and its open pull request -> {column} · Needs you")
         try:
