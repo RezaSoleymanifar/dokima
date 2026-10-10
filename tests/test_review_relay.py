@@ -140,7 +140,7 @@ def test_a_review_and_a_line_note_reach_the_board_through_a_relay(record_propert
         f"396.2: board.yml runs after {sorted(names)}, and none of them runs on a submitted review and a created line "
         "note, so a review or a line note never reaches the board from main's copy")
     assert "completed" in types, f"396.2: board.yml runs after {sorted(names)} only on {sorted(types)}, not when they complete"
-    assert "done-whens" in names, "396.2: board.yml no longer runs when the done-whens checks complete"
+    assert "Acceptance criteria" in names, "396.2: board.yml no longer runs when the criteria checks complete"
 
 
 def test_a_code_owners_review_command_clears_needs_you_through_the_relay(record_property, make):

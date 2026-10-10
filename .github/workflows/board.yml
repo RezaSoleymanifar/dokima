@@ -23,7 +23,7 @@ on:
   # A review or line note would run the pull request's own copy of this file, so
   # they reach it through reviews.yml, which holds no key; this runs after it.
   workflow_run:
-    workflows: [done-whens, reviews]
+    workflows: [Acceptance criteria, reviews]
     types: [completed]
 permissions:
   contents: read

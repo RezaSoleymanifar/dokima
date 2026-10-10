@@ -1,10 +1,10 @@
 """A pull request changing only text files skips the plan and its tests (issue #358).
 
-Most tests here run the real command the done-whens workflow runs, `python3 -m dokima.checks matrix`, from the repo
+Most tests here run the real command the Acceptance criteria workflow runs, `python3 -m dokima.checks matrix`, from the repo
 root, with GitHub faked: a stub `gh` on PATH answers the pull request's changed files (GitHub's `pulls/N/files` list,
 split over two pages the way `gh api --paginate` prints them back to back) and finds no plan: either no issue is
 linked, or the description says "Closes #77" and issue #77 has no comments and no pull requests.
-Others run the shell of the done-whens workflow's own steps, cut out of `.github/workflows/done-whens.yml`, with a fake
+Others run the shell of the Acceptance criteria workflow's own steps, cut out of `.github/workflows/acceptance-criteria.yml`, with a fake
 `pytest` on PATH, so the workflow GitHub runs is the thing judged. Nothing here touches the network.
 
 Text files are `.md` files outside `dokima/roles/`, `tests/` and `.github/`: AGENTS.md, README.md, the wiki under
@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-WORKFLOW = os.path.join(ROOT, ".github", "workflows", "done-whens.yml")
+WORKFLOW = os.path.join(ROOT, ".github", "workflows", "acceptance-criteria.yml")
 SHORTCUT = "Text only: no plan needed"
 NO_ISSUE = "No approved plan found: no issue linked"
 PR = 900
@@ -74,7 +74,7 @@ def run_matrix(tmp_path, files, files_fail=False, body=""):
 
 
 def step_script(name):
-    """The shell one done-whens workflow step runs, found by step name or job key."""
+    """The shell one Acceptance criteria workflow step runs, found by step name or job key."""
     lines = open(WORKFLOW).read().splitlines()
     start = next(i for i, l in enumerate(lines) if l.strip() in (f"- name: {name}", f"{name}:"))
     run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
@@ -144,15 +144,15 @@ def test_the_text_only_check_passes_without_running_any_test(record_property, tm
     """The "Text only" check passes without running any test, and the gate goes green.
 
     Proves 358.2.
-    Runs the done-whens workflow's own test step with the text-only check's id and no tests: it must exit 0 without
+    Runs the Acceptance criteria workflow's own test step with the text-only check's id and no tests: it must exit 0 without
     calling pytest. The same step for a real criterion with no test must still fail saying it has no test, so the pass
     is not a step that passes everything. Then the gate step, given the text-only check list and a passing check job,
     must pass."""
     record_property("proves", "358.2")
-    code, out, ran = run_step(tmp_path, "Run this done-when's tests", {"ID": "text-only", "TESTS": ""})
-    assert code == 0, f"358.2: the text-only check failed in the done-whens workflow (exit {code}):\n{out}"
+    code, out, ran = run_step(tmp_path, "Run this criterion's tests", {"ID": "text-only", "TESTS": ""})
+    assert code == 0, f"358.2: the text-only check failed in the Acceptance criteria workflow (exit {code}):\n{out}"
     assert not ran, "358.2: the text-only check ran pytest; it should pass without running any test"
-    code, out, ran = run_step(tmp_path, "Run this done-when's tests", {"ID": "358.1", "TESTS": ""})
+    code, out, ran = run_step(tmp_path, "Run this criterion's tests", {"ID": "358.1", "TESTS": ""})
     assert code != 0 and "has no test" in out, \
         f"358.2: a real criterion with no test now passes too (exit {code}); only the text-only check may:\n{out}"
     matrix = json.dumps([{"id": "text-only", "name": SHORTCUT, "tests": ""}])
@@ -197,7 +197,7 @@ def test_the_owner_still_approves_and_merges_a_text_only_pull_request(record_pro
     """A text-only pull request still needs both checks and the owner's approval.
 
     Proves 358.4.
-    The shortcut lives only inside the done-whens check: the text-only pull request still gets a check (so the
+    The shortcut lives only inside the criteria check: the text-only pull request still gets a check (so the
     "all done-whens passed" gate still waits on it and fails when it fails), main's branch rule still requires
     "all tests" and "all done-whens passed", and CODEOWNERS still names a code owner for every file, whose approving
     review GitHub requires before the merge."""

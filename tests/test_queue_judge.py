@@ -1,6 +1,6 @@
 """In the merge queue, main's copy of Dokima's code judges a queued pull request (#388).
 
-On the merge queue's event GitHub hands done-whens.yml the queued commit: the pull request on top of the latest main.
+On the merge queue's event GitHub hands acceptance-criteria.yml the queued commit: the pull request on top of the latest main.
 A checkout with no `ref:` then copies that commit, so a pull request that edits dokima/checks.py would make its own
 check list in the queue. These tests play GitHub's part. They build four tiny trees: main, the pull request's head,
 the queued commit, and another pull request queued ahead of it. In the queue the event's base_sha is the commit just
@@ -9,7 +9,7 @@ Each tree holds a stand-in dokima/checks.py that notes whose copy ran; main's li
 other three are "edited" to list one always-passing Text only check. Each tree also holds app.py and the test that
 checks it, its code working or broken.
 
-Every job of the real done-whens.yml (list, check once per row of the list's matrix, gate) then runs step by step:
+Every job of the real acceptance-criteria.yml (list, check once per row of the list's matrix, gate) then runs step by step:
 `actions/checkout` copies the tree its `ref` names on that event (the queued commit by default on merge_group, main
 by default on pull_request_target), other `uses:` steps are skipped, every `run:` script runs with bash, its `${{ }}`
 filled in, with a `pip` that does nothing and a `pytest` that runs this machine's pytest.
@@ -23,7 +23,7 @@ import sys
 import test_start as ts
 
 ROOT = ts.ROOT
-WORKFLOW = os.path.join(ROOT, ".github", "workflows", "done-whens.yml")
+WORKFLOW = os.path.join(ROOT, ".github", "workflows", "acceptance-criteria.yml")
 MAIN_SHA = "3" * 40
 PR_SHA = "1" * 40
 QUEUE_SHA = "2" * 40
@@ -69,7 +69,7 @@ def tree(where, who, app, rows, log):
 
 
 def context(event, needs=None, matrix=None):
-    """The `${{ }}` contexts GitHub gives done-whens.yml on this event."""
+    """The `${{ }}` contexts GitHub gives acceptance-criteria.yml on this event."""
     if event == "merge_group":
         # Another pull request is queued ahead: the queued commit is built on its queued commit, not on main.
         ev = {"action": "checks_requested", "merge_group": {
@@ -140,7 +140,7 @@ def run_job(job, wf, ctx, event, trees, ws, bin_dir, out_file):
 
 
 def queue(tmp_path, event, app):
-    """Run every job of done-whens.yml on this event for a pull request with this code.
+    """Run every job of acceptance-criteria.yml on this event for a pull request with this code.
 
     The pull request's and the queued commit's app.py is `app`. Main's code is always the working one. Returns whether the gate passed, which copies of dokima/checks.py ran
     (as 'who what' lines), and the log of every job."""
@@ -186,7 +186,7 @@ def queue(tmp_path, event, app):
 def test_the_queue_makes_its_check_list_with_mains_copy_of_dokimas_code(record_property, tmp_path):
     """In the merge queue, main's copy of Dokima's code lists and annotates the checks.
 
-    Proves 388.1. Queues a pull request whose dokima/checks.py was edited, runs every job of done-whens.yml on the merge queue's
+    Proves 388.1. Queues a pull request whose dokima/checks.py was edited, runs every job of acceptance-criteria.yml on the merge queue's
     event with another pull request queued ahead whose dokima/checks.py was edited too, and checks that main's copy
     listed the checks and annotated the tests while neither the queued commit's copy nor the one queued ahead ever
     ran. Then opens the same pull request (pull_request_target) and checks the same holds there, as before."""
@@ -211,9 +211,9 @@ def test_the_queue_still_tests_the_queued_commits_code(record_property, tmp_path
     record_property("proves", "388.2")
     for event in ("merge_group", "pull_request_target"):
         passed, _, logs = queue(tmp_path / f"{event}-good", event, APP_GOOD)
-        assert passed, f"388.2: on {event} a pull request with working code did not pass its done-whens:\n{logs}"
+        assert passed, f"388.2: on {event} a pull request with working code did not pass its acceptance criteria:\n{logs}"
         passed, ran, logs = queue(tmp_path / f"{event}-bad", event, APP_BAD)
         assert not passed, (f"388.2: on {event} a pull request with broken code that edits dokima/checks.py passed "
-                            f"its done-whens (copies that ran: {', '.join(ran) or 'none'}):\n{logs}")
+                            f"its acceptance criteria (copies that ran: {', '.join(ran) or 'none'}):\n{logs}")
         assert "main matrix" in ran and "1 failed" in logs, \
             f"388.2: on {event} the broken pull request did not fail on the plan's own test:\n{logs}"
