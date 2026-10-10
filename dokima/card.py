@@ -244,14 +244,26 @@ def raise_line(repo, r):
     return f"- {field_icon(repo, RAISE_ICON[r['kind']])} {label}{words(r.get('text') or '')} · {who}"
 
 
-def waiting_raises(recs):
-    """Every raise on the issue still waiting for an answer, oldest first.
+def asked(rec, url=None):
+    """The owner's to-do for the questions and blockers `rec` raised for them.
 
-    Only records whose hand-back passed count: a rejected hand-back's raises are not drawn, and its answers
-    take nothing off."""
-    used = [r.get("handback") for r in recs if (r.get("check") or {}).get("passed")]
-    answered = {a["raise"] for h in used for a in answers_of(h)}
-    return [x for h in used for x in raises_of(h) if x.get("id") not in answered]
+    It reads "answer 2 questions", "answer 1 blocker" or "answer 1 question and 1 blocker", linked to the comment at
+    `url`, then how to answer; None when it raised none. The same raise counts once, by its ID or its kind and words."""
+    from dokima import agent
+    seen, count = set(), {"question": 0, "blocker": 0}
+    for r in agent.owner_raises(rec.get("handback") or {}):
+        keys = {("id", r.get("id")), (r["kind"], " ".join(str(r.get("text") or "").split()))} - {("id", None)}
+        if keys & seen:
+            continue
+        seen |= keys
+        count[r["kind"]] += 1
+    parts = [f"{n} {k}{'' if n == 1 else 's'}" for k, n in count.items() if n]
+    if not parts:
+        return None
+    words = "answer " + " and ".join(parts)
+    how = ("with `/plan`, `/work` or `/review`" if rec.get("role") == "reviewer" else
+           "with `/plan`" if count["blocker"] else "with `/plan`, or say `/review`")
+    return f"{f'[{words}]({url})' if url else words} {how}"
 
 
 def checks_by_key(check_runs):
@@ -280,14 +292,16 @@ def checks_passed(number, h, check_runs):
     return count > 0 and all(state(r) == "passed" for r in runs)
 
 
-def todo(issue, found, rec):
-    """What the owner must do now that the river stopped for them on the record `rec`."""
+def todo(issue, found, rec, url=None):
+    """What the owner must do now the river stopped on record `rec`, posted at `url`."""
     from dokima import agent
     role, h = rec.get("role"), rec.get("handback") or {}
     if role == "not-started":
         return TODO["not started"]
     if not rec.get("check", {}).get("passed"):
         return TODO["rejected"]
+    if role in ("planner", "reviewer") and asked(rec, url):
+        return asked(rec, url)
     if role == "planner" and h.get("questions"):
         return TODO["questions"]
     verdict = h.get("verdict") if role == "reviewer" else None
@@ -328,7 +342,7 @@ def status(issue, found):
     column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, owners))
     # A pull request autopilot put in the merge queue is GitHub's to merge, so nothing is the owner's.
     needs = needs and not agent.queued_since(items, at[-1])
-    return column, todo(issue, found, rec) if needs else None
+    return column, todo(issue, found, rec, items[at[-1]].get("url")) if needs else None
 
 
 def status_line(repo, stage, todo):
@@ -464,9 +478,6 @@ def render(repo, issue, found, page="issue"):
     links = links_row(repo, issue, pr, worker, check_runs)
     if links:
         lines += [links, ""]
-    raised = waiting_raises(recs)
-    if raised:
-        lines += ["**Raised:**", ""] + [raise_line(repo, r) for r in raised] + [""]
     children = found.get("children") or []
     if children:
         lines += ["**Stories:**", ""] + [child_row(repo, c) for c in children] + [""]
