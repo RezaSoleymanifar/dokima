@@ -228,15 +228,18 @@ def test_the_board_runs_on_every_event_about_an_issue_or_its_pull_request(record
     """The board workflow runs on every event about an issue or its PR.
 
     Proves 331.1. Reads .github/workflows/board.yml's triggers: issues opened, edited, closed, reopened, labeled and unlabeled; a
-    comment created; a pull request opened, reopened, synchronized and closed; a review submitted; a line note created;
-    the done-whens checks completed; and the schedule */15 * * * *."""
+    comment created; a pull request opened, reopened, synchronized and closed; the done-whens checks completed; the
+    schedule */15 * * * *; and, through a keyless workflow it runs after (#396), a review submitted and a line note created."""
     record_property("proves", "331.1")
     on = triggers(open(WORKFLOW).read())
     want = {"issues": {"opened", "edited", "closed", "reopened", "labeled", "unlabeled"}, "issue_comment": {"created"},
-            "pull_request_target": {"opened", "reopened", "synchronize", "closed"}, "pull_request_review": {"submitted"},
-            "pull_request_review_comment": {"created"}, "workflow_run": {"completed"}}
+            "pull_request_target": {"opened", "reopened", "synchronize", "closed"}, "workflow_run": {"completed"}}
     missing = {e: sorted(t - on.get(e, set())) for e, t in want.items() if not t <= on.get(e, set())}
     assert not missing, f"331.1: board.yml does not run on these events about an issue or its pull request: {missing}"
+    # Since #396 a review and a line note reach board.yml through a keyless workflow it runs after, never directly.
+    import test_review_relay as trr
+    assert trr.review_relays(), \
+        "331.1: board.yml runs after no workflow that runs on a submitted review and a created line note"
     assert re.search(r"cron:\s*[\"']\*/15 \* \* \* \*[\"']", open(WORKFLOW).read()), "331.1: board.yml has no 15-minute schedule"
 
 
