@@ -29,6 +29,7 @@ from dokima import agent, body, card  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "playthrough.yml")
 SANDBOX = "dokima-dev/card-gallery"
+SANDBOX_TOKEN = "sandbox-token-only-for-card-gallery-7f3e"
 STEPS = ("issue opened", "plan posted", "plan approved", "build started", "pull request opened",
          "code review started", "code review record posted", "merged")
 
@@ -182,7 +183,9 @@ def test_the_run_workflow_button_starts_the_play_through_for_a_given_dokima_comm
     Proves 437.3.
     Reads .github/workflows/playthrough.yml and checks it starts on workflow_dispatch with a required `commit` input,
     checks that commit out into a folder of its own, and runs `python3 -m dokima.playthrough` with PLAYED naming
-    that folder and PLAYED_COMMIT the commit, so the play-through knows what to install on the sandbox."""
+    that folder and PLAYED_COMMIT the commit, so the play-through knows what to install on the sandbox. That job
+    opens the keys environment and hands the play-through the SANDBOX_TOKEN secret as SANDBOX_TOKEN, the key it
+    installs with."""
     record_property("proves", "437.3")
     wf = workflow("437.3")
     on = wf.get("on") or {}
@@ -198,8 +201,13 @@ def test_the_run_workflow_button_starts_the_play_through_for_a_given_dokima_comm
     assert runs, "437.3: no step runs `python3 -m dokima.playthrough`"
     folders = {str(s["with"]["path"]).strip("./") for s in played}
     for s in runs:
-        env = {**(wf.get("env") or {}), **next((j.get("env") or {} for j in wf["jobs"].values() if s in (j.get("steps") or [])), {}),
-               **(s.get("env") or {})}
+        job = next(j for j in wf["jobs"].values() if s in (j.get("steps") or []))
+        envname = job.get("environment")
+        envname = envname.get("name") if isinstance(envname, dict) else envname
+        assert envname == "keys", f"437.3: the job that runs the play-through opens environment {envname!r}, not keys, so SANDBOX_TOKEN is not there"
+        env = {**(wf.get("env") or {}), **(job.get("env") or {}), **(s.get("env") or {})}
+        assert re.fullmatch(r"\$\{\{\s*secrets\.SANDBOX_TOKEN\s*\}\}", str(env.get("SANDBOX_TOKEN", "")).strip()), \
+            f"437.3: the play-through is not handed the SANDBOX_TOKEN secret as SANDBOX_TOKEN: {env.get('SANDBOX_TOKEN')!r}"
         assert str(env.get("PLAYED", "")).replace("${{ github.workspace }}", "").strip("./") in folders, \
             f"437.3: the play-through is not told the played commit's folder: PLAYED is {env.get('PLAYED')!r}, the checkout is in {sorted(folders)}"
         assert "inputs.commit" in str(env.get("PLAYED_COMMIT")), \
@@ -210,7 +218,7 @@ def test_the_stand_in_agents_call_no_model_and_their_records_show_no_tokens(tmp_
     """The run holds no model key, and the stand-in agents' records show no tokens.
 
     Proves 437.4.
-    Reads playthrough.yml: no model key or model CLI anywhere, and DOKIMA_APP_KEY its only secret. Then writes each
+    Reads playthrough.yml: no model key or model CLI anywhere, and DOKIMA_APP_KEY and SANDBOX_TOKEN its only secrets. Then writes each
     stand-in agent's hand-back with dokima/playthrough.py's standin() and checks it holds the role's JSON file and
     no claude.json, so the record's footnote, drawn by dokima/agent.py, shows no tokens."""
     record_property("proves", "437.4")
@@ -219,7 +227,8 @@ def test_the_stand_in_agents_call_no_model_and_their_records_show_no_tokens(tmp_
     for word in ("anthropic", "claude", "openai"):
         assert word not in text.lower(), f"437.4: playthrough.yml mentions {word!r}, so the run may hold a model key or call a model"
     secrets = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", text))
-    assert secrets == {"DOKIMA_APP_KEY"}, f"437.4: playthrough.yml should hold only DOKIMA_APP_KEY, not {sorted(secrets)}"
+    assert secrets == {"DOKIMA_APP_KEY", "SANDBOX_TOKEN"}, \
+        f"437.4: playthrough.yml should hold only DOKIMA_APP_KEY and SANDBOX_TOKEN, not {sorted(secrets)}"
     p = playthrough("437.4")
     for role, stage, name in (("planner", "", "plan.json"), ("reviewer", "plan", "review.json"),
                               ("worker", "", "work.json"), ("reviewer", "pr", "review.json")):
@@ -289,7 +298,8 @@ def test_the_key_is_minted_for_the_sandbox_repo_only(record_property):
 
     Proves 437.6.
     Reads playthrough.yml: every app token step names owner dokima-dev and repositories card-gallery and nothing else,
-    there is at least one, and the workflow's own GitHub token may write nothing."""
+    there is at least one, none asks for permission to write workflows (Dokima's app never gets it; the install uses
+    SANDBOX_TOKEN), and the workflow's own GitHub token may write nothing."""
     record_property("proves", "437.6")
     wf = workflow("437.6")
     tokens = [s for s in steps_of(wf) if "create-github-app-token" in str(s.get("uses"))]
@@ -299,6 +309,8 @@ def test_the_key_is_minted_for_the_sandbox_repo_only(record_property):
         assert w.get("owner") == "dokima-dev", f"437.6: an app token step does not name owner dokima-dev: {w}"
         repos = [r.strip() for r in re.split(r"[,\n]", str(w.get("repositories") or "")) if r.strip()]
         assert repos == ["card-gallery"], f"437.6: an app token is minted for {repos or 'every repository'}, not card-gallery only"
+        asks = {k: v for k, v in w.items() if "workflow" in str(k).lower()}
+        assert not asks, f"437.6: an app token asks for workflow permissions {asks}, but Dokima's app never gets workflow write"
     perms = [wf.get("permissions")] + [j.get("permissions") for j in (wf.get("jobs") or {}).values()]
     for p in perms:
         if isinstance(p, dict):
@@ -308,25 +320,53 @@ def test_the_key_is_minted_for_the_sandbox_repo_only(record_property):
     assert wf.get("permissions") is not None, "437.6: playthrough.yml sets no permissions, so its own token gets the defaults"
 
 
-def run_playthrough(tmp_path, repo, played=ROOT, commit="f7340db"):
+FAKE_TOOL = """
+import base64, json, os, re, sys
+TOKEN = {token!r}
+said = sys.argv[1:] + [v for k, v in os.environ.items() if k != "SANDBOX_TOKEN"]
+def carries(text):
+    if not TOKEN:
+        return False
+    if TOKEN in text:
+        return True
+    for chunk in re.findall(r"[A-Za-z0-9+/=_-]{{16,}}", text):
+        try:
+            if TOKEN in base64.b64decode(chunk + "=" * (-len(chunk) % 4), altchars=b"-_" if "-" in chunk or "_" in chunk else None).decode("utf-8", "replace"):
+                return True
+        except Exception:
+            pass
+    return False
+with open({calls!r}, "a") as f:
+    f.write(json.dumps({{"argv": [{tool!r}] + sys.argv[1:], "sandbox_token": any(carries(x) for x in said)}}) + "\\n")
+sys.stderr.write("HTTP 403: refused by the fake GitHub\\n")
+sys.exit(1)
+"""
+
+
+def run_playthrough(tmp_path, repo, played=ROOT, commit="f7340db", sandbox_token=SANDBOX_TOKEN, with_calls=False):
     """Run the play-through for `repo` with gh and git faked; return the result and calls.
 
-    The fake gh and git log their arguments and fail every call, as a GitHub that refuses everything."""
+    The fake gh and git log their arguments, and whether the call carries the sandbox token (in its arguments or
+    environment, as is or base64-encoded as git's auth header is; the SANDBOX_TOKEN variable every call inherits does
+    not count), then fail every call, as a GitHub that refuses
+    everything. `sandbox_token` None leaves SANDBOX_TOKEN unset. Calls come back as argument lists, or as the logged
+    records when `with_calls` is set."""
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     calls = tmp_path / "calls.jsonl"
     for tool in ("gh", "git"):
         f = bin_ / tool
-        f.write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(calls)!r}, 'a').write(json.dumps([{tool!r}] + sys.argv[1:]) + '\\n')\n"
-                     "sys.stderr.write('HTTP 403: refused by the fake GitHub\\n')\nsys.exit(1)\n")
+        f.write_text(f"#!{sys.executable}\n" + FAKE_TOOL.format(token=sandbox_token or "", calls=str(calls), tool=tool))
         f.chmod(0o755)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "GH_"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GITHUB_", "GH_", "SANDBOX_"))}
     env.update(PATH=f"{bin_}{os.pathsep}{env.get('PATH', '')}", REPO=repo, GH_TOKEN="fake", PLAYED=str(played), PLAYED_COMMIT=commit,
                PLAYTHROUGH_WAIT="3", GIT_TERMINAL_PROMPT="0", PYTHONPATH=ROOT)
+    if sandbox_token is not None:
+        env["SANDBOX_TOKEN"] = sandbox_token
     out = subprocess.run([sys.executable, "-m", "dokima.playthrough"], cwd=str(tmp_path), env=env,
                          capture_output=True, text=True, timeout=120)
     made = [json.loads(l) for l in calls.read_text().splitlines()] if calls.exists() else []
-    return out, made
+    return out, (made if with_calls else [c["argv"] for c in made])
 
 
 def test_the_play_through_touches_only_the_sandbox_repo(tmp_path, record_property):
@@ -520,8 +560,10 @@ def test_the_play_through_installs_the_played_commit_on_the_sandbox_before_the_f
     drawn by the commit played only once that commit is installed there. Checks install_files() picks every file of
     the played folder's dokima/ and .github/workflows/, with its content, and nothing else; that play() installs
     before it plays any step; that a refused install plays no step and returns 1 with one `FAIL: install` line giving
-    the reason; that a played folder with no dokima/ fails naming it before any gh or git call; and that a real run
-    on the sandbox whose install GitHub refuses exits 1 naming the commit and plays no step."""
+    the reason; that a played folder with no dokima/ fails naming it before any gh or git call; that a real run
+    on the sandbox pushes with SANDBOX_TOKEN and, when GitHub refuses, exits 1 naming the commit and plays no step;
+    and that with SANDBOX_TOKEN unset or empty, as GitHub gives a secret that does not exist, the run makes no gh or
+    git call, logs one `FAIL: install` line naming SANDBOX_TOKEN, plays no step and exits 1."""
     record_property("proves", "437.3")
     p = playthrough("437.3")
     played = tmp_path / "played"
@@ -552,11 +594,26 @@ def test_the_play_through_installs_the_played_commit_on_the_sandbox_before_the_f
         f"437.3: a played folder with no dokima/ should fail naming it: exit {out.returncode}, {said[-1000:]}"
     assert made == [], f"437.3: with nothing to install, the play-through still called {made[:3]}"
     (tmp_path / "run2").mkdir()
-    out, made = run_playthrough(tmp_path / "run2", SANDBOX, commit="0123abcd4567")
+    out, made = run_playthrough(tmp_path / "run2", SANDBOX, commit="0123abcd4567", with_calls=True)
     said = out.stdout + out.stderr
+    assert made and made[0]["sandbox_token"], \
+        f"437.3: the install should push to card-gallery with SANDBOX_TOKEN, yet its first call does not carry it: {made[:3]}"
     assert out.returncode == 1, f"437.3: an install GitHub refuses should exit 1, not {out.returncode}: {said[-1000:]}"
     assert "FAIL: install" in said and "0123abcd4567" in said, \
         f"437.3: a refused install should say 'FAIL: install' naming the commit 0123abcd4567: {said[-1000:]}"
     for step in STEPS:
         assert f"PASS: {step}" not in said and f"FAIL: {step}" not in said, \
             f"437.3: with the played commit not installed, the play-through still judged {step!r}: {said[-1000:]}"
+    for case, token in (("unset", None), ("empty", "")):
+        run = tmp_path / f"no-token-{case}"
+        run.mkdir()
+        out, made = run_playthrough(run, SANDBOX, sandbox_token=token)
+        said = out.stdout + out.stderr
+        fails = [l for l in said.splitlines() if "FAIL: install" in l]
+        assert out.returncode == 1, f"437.3: with SANDBOX_TOKEN {case}, the run should exit 1, not {out.returncode}: {said[-1000:]}"
+        assert len(fails) == 1 and "SANDBOX_TOKEN" in fails[0], \
+            f"437.3: with SANDBOX_TOKEN {case}, the run should log one 'FAIL: install' line naming SANDBOX_TOKEN: {said[-1000:]}"
+        assert made == [], f"437.3: with SANDBOX_TOKEN {case}, the run still called {made[:3]}"
+        for step in STEPS:
+            assert f"PASS: {step}" not in said and f"FAIL: {step}" not in said, \
+                f"437.3: with SANDBOX_TOKEN {case}, the play-through still judged {step!r}: {said[-1000:]}"
