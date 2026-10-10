@@ -472,7 +472,8 @@ def render(repo, issue, found, page="issue"):
     if related:
         lines += related + [""]
     if not h:
-        lines += ["This issue has no plan yet.", ""]
+        # With no plan, the Definition of Done goes below the owner's text (#371): body.redraw puts it after the fold.
+        return "\n".join(lines + [plan.CARD_END, "", body.DONE, done_row(repo, found, all_tests)])
     else:
         criteria, nfr = h.get("acceptance_criteria") or [], h.get("non_functional") or []
         tests, plan_tests = found["tests"], h.get("tests") or {}
