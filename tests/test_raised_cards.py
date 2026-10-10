@@ -200,6 +200,26 @@ def golden(name):
         return f.read()
 
 
+STATS_FOLD = re.compile(r"\n<details><summary>[^\n]*stats\.svg[^\n]*Stats[^\n]*</summary>\n\n(.*?)\n\n</details>\n", re.S)
+
+
+def without_stats(text):
+    """The comment with its stats taken out, and the stats' words.
+
+    The stats are a Stats fold, or since #454 the comment's last line.
+
+    The stats moved from a fold above the full record to the comment's last line (#454); everything else in a
+    comment drawn by code stays byte for byte, so the goldens are compared without it."""
+    m = STATS_FOLD.search(text)
+    if m:
+        return text[:m.start()] + text[m.end():], m.group(1).strip()
+    lines = text.rstrip("\n").split("\n")
+    if "stats.svg" in lines[-1]:
+        words = re.sub(r"<[^>]+>", "", lines[-1]).strip()
+        return "\n".join(lines[:-1]).rstrip("\n") + "\n", words
+    return text, ""
+
+
 def found_for(recs):
     """What card.render draws the issue card from, for a card with records only."""
     return {"recs": recs, "pr": None, "check_runs": [], "reviews": [], "owners": {"boss"}, "tests": {}, "worker": None}
@@ -507,17 +527,19 @@ def test_what_code_detects_draws_exactly_as_today(record_property, env, name, re
     """Rejected hand-backs, merge conflicts, red main and cancelled runs draw exactly as today.
 
     Draws each record, the rejected one carrying a raise in its hand-back, and checks each comment is byte for byte
-    what today's code drew, kept in tests/raised_goldens/, with no Raised section: a rejected hand-back, a clash with
+    what today's code drew, kept in tests/raised_goldens/, apart from where its stats sit (#454), with the same stats
+    and no Raised section: a rejected hand-back, a clash with
     main found after a merge, main found red before the worker started, a merge of main that failed, and a cancelled
     run. Then checks the same planner run, passed, does draw its raise in Raised, so the rejected one leaves it out on
     purpose.
 
     Proves 299.5."""
     record_property("proves", "299.5")
-    body = agent.render(record)
-    assert body == golden(name), (f"299.5: what code detects ({name}) no longer draws as today; first difference:\n"
-                                  + next((f"now:  {a}\nwas:  {b}" for a, b in zip(body.splitlines(), golden(name).splitlines())
-                                          if a != b), f"lengths {len(body)} and {len(golden(name))}"))
+    (body, stats), (was, stats_was) = without_stats(agent.render(record)), without_stats(golden(name))
+    assert body == was, (f"299.5: what code detects ({name}) no longer draws as today; first difference:\n"
+                         + next((f"now:  {a}\nwas:  {b}" for a, b in zip(body.splitlines(), was.splitlines())
+                                 if a != b), f"lengths {len(body)} and {len(was)}"))
+    assert stats_was in stats, f"299.5: what code detects ({name}) lost its stats {stats_was!r}: {stats!r}"
     assert not headings(body, "Raised:"), f"299.5: what code detects ({name}) shows a Raised section:\n{body}"
     passed = copy.deepcopy(REJECTED)
     passed["check"] = {"passed": True, "problems": []}

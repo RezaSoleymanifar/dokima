@@ -86,7 +86,7 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
     (whose card is on its open pull request) work, and after a review's hand-back passed code's check. Each must leave
     exactly one comment, in the right place, that says it was cancelled, no longer says getting ready or working,
     names no one with an @, shows no running, queued or failed icon, does not say any hand-back was rejected or that a
-    step failed, and ends with a Next line.
+    step failed, and ends with a Next line, followed only by its stats line (#454).
     Runs that end without a cancel (a rejected hand-back, a failed install, a blocking review) must leave their record
     and never say cancelled in any comment they leave, including the next stage's queued card a hand-off posts."""
     record_property("proves", "188.1")
@@ -107,8 +107,11 @@ def test_a_cancelled_run_says_so_on_its_card_and_mentions_no_one(record_property
         assert "rejected" not in body.lower() and "failed" not in re.sub(r"<img[^>]*>", "", body).lower(), \
             f"188.1 ({name}): the cancelled run's card reads as a failure, not a cancel:\n{body[:900]}"
         lines = [l for l in body.splitlines() if l.strip()]
-        assert lines and lines[-1].startswith("**Next:**"), \
-            f"188.1 ({name}): the cancelled run's card does not end with a Next line:\n{body[-600:]}"
+        # Since #454 the stats line is the comment's last line, right below Next.
+        stats_last = len(lines) > 1 and ("stats.svg" in lines[-1] or "No agent ran" in lines[-1])
+        nxt = lines[-2] if stats_last else (lines[-1] if lines else "")
+        assert nxt.startswith("**Next:**"), \
+            f"188.1 ({name}): the cancelled run's card does not end with a Next line above its stats line:\n{body[-600:]}"
     for name in ("rejected", "no-tools", "blocked"):
         r = runs[name]
         assert r.cancelled_step is None and r.agent_started() == (name != "no-tools"), f"188.1 ({name}): setup went wrong:\n{r.tail()}"

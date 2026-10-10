@@ -40,7 +40,11 @@ def assert_folded(k, new, ask):
     assert body.ask(new) == ask, f"{k}: the quoted ask does not read back byte for byte"
     head = part.lstrip()
     assert head.startswith("<details>" + FOLD_SUMMARY), f"{k}: the ask is not folded under Original issue"
-    assert part.rstrip().endswith("</details>"), f"{k}: the Original issue fold is not closed after the quoted story"
+    tail = part.rstrip()
+    if tail.splitlines()[-1].startswith("**Definition of Done:**"):
+        # A planned issue's Definition of Done is the body's last line, right after the fold (#454).
+        tail = "\n".join(l for l in tail.splitlines()[:-1] if not l.startswith("<!--")).rstrip()
+    assert tail.endswith("</details>"), f"{k}: the Original issue fold is not closed after the quoted story"
     assert ask in part, f"{k}: the quoted story is not inside the fold as written"
 
 

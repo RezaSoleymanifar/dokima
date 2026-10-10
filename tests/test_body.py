@@ -236,15 +236,17 @@ def test_the_card_never_changes_the_owner_part(record_property, monkeypatch, git
     """Redrawing the card again and again leaves the owner's part byte for byte as it was.
 
     Runs the card's main three times on an issue with an ask the card cannot read, each time on the body it saved
-    before, and checks the ask and every byte below the marker never change."""
+    before, and checks the ask never changes, and that once the first run has put the planned issue's Definition of
+    Done below the fold (#454), every byte below the marker stays as that run left it."""
     record_property("proves", "179.2")
     body = helper("179.2")
     current = body.redraw(TRICKY, PLAN_TOP)
-    below = current.split(body.MARKER, 1)[1]
+    below = None
     for k in range(3):
         saved = run_card(monkeypatch, github, current)
         assert saved is not None, f"179.2: card run {k + 1} saved nothing"
         assert body.ask(saved) == TRICKY, f"179.2: card run {k + 1} changed the owner's ask"
+        below = saved.split(body.MARKER, 1)[1] if below is None else below
         assert saved.split(body.MARKER, 1)[1] == below, f"179.2: card run {k + 1} changed the part below the marker"
         assert "first thing works" in saved.split(body.MARKER, 1)[0], f"179.2: card run {k + 1} lost the plan above"
         current = saved

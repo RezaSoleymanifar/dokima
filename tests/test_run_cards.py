@@ -251,7 +251,8 @@ def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record
 
     Writes a worker's record and comment the way the run does, then runs the step that decides what follows
     (agent next) with GitHub faked to say the open pull request of try/issue-9 is #7, and checks the posted comment's
-    sentence now links that pull request, still ends with the Next line and still reads back as the same record."""
+    sentence now links that pull request, still ends with the Next line and its stats line below it (#454), and still
+    reads back as the same record."""
     record_property("proves", "182.3")
     r = rec("worker", handback=WORK)
     (tmp_path / "record.json").write_text(json.dumps(r))
@@ -270,7 +271,9 @@ def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record
     body = (tmp_path / "comment.md").read_text()
     lines = shown(body)
     assert lines and names_pr(lines[0]), f"182.3: after the run the worker card's sentence does not name pull request #7:\n{body}"
-    assert body.rstrip().splitlines()[-1].startswith("**Next:**"), f"182.3: the worker card lost its Next line:\n{body}"
+    tail = [l for l in body.splitlines() if l.strip()][-2:]
+    assert tail and tail[0].startswith("**Next:**") and "stats.svg" in tail[-1], \
+        f"182.3: the worker card lost its Next line right above its stats line (#454):\n{body}"
     got = agent.records([{"author": {"login": agent.BOT}, "body": body, "createdAt": "2026-10-08T10:00:00Z"}])
     assert got == [r], f"182.3: the worker card no longer reads back as its record: {got}"
 

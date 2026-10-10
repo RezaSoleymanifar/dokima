@@ -40,6 +40,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import card, checks, plan  # noqa: E402
+sys.path.insert(0, os.path.dirname(__file__))
+from card_view import owner_card  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 REPO = "o/r"
@@ -115,9 +117,10 @@ def draw(page="issue", **kw):
 
 
 def block(text):
-    """The card itself: from its start marker to its end marker."""
-    assert plan.CARD_START in text and plan.CARD_END in text, "the text holds no card between its markers"
-    return text[text.index(plan.CARD_START):text.index(plan.CARD_END) + len(plan.CARD_END)]
+    """The card itself, from marker to marker, with its Definition of Done.
+
+    The Definition of Done counts even where it sits below the fold (#454)."""
+    return owner_card(text)
 
 
 def links_as_html(text):

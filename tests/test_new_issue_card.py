@@ -176,33 +176,6 @@ def test_a_new_issues_card_is_not_rewritten_when_nothing_changed(record_property
         assert card.shows(saved, TOPS[-1]), "371.2: the scan's card check says a freshly saved new issue is out of date"
 
 
-# 371.3: once the issue has a plan, the Definition of Done stays at the bottom of the card, above the owner's text
-
-def test_a_planned_issue_keeps_its_definition_of_done_in_the_card(record_property, monkeypatch, github):
-    """Once planned, the Definition of Done is the card's last line, above the owner's text.
-
-    Proves 371.3. Saves a new issue's card with no plan and checks its Definition of Done sits below the owner's
-    text, then records a plan and redraws, and checks the Definition of Done shows exactly once, as the card's last line above the marker,
-    and the owner's text is alone in its Original issue fold with nothing after it."""
-    record_property("proves", "371.3")
-    for ask in ASKS:
-        fresh = draw(monkeypatch, github, ask, [])
-        assert_new_issue_layout("371.3", fresh, ask, [])
-        for current in (fresh, ask):
-            recs = [rec("planner", **PLAN)]
-            saved = draw(monkeypatch, github, current, recs)
-            assert saved is not None, "371.3: the card saved nothing on the planned issue"
-            top, below = saved.split(body.MARKER, 1)
-            assert below == FOLD_START + ask + FOLD_END, \
-                f"371.3: with a plan, something other than the owner's fold sits below the card:\n{below!r}"
-            assert top.count(DOD) == 1 and saved.count(DOD) == ask.count(DOD) + 1, \
-                f"371.3: with a plan, the card does not show the Definition of Done exactly once above the owner's text"
-            card_lines = [ln for ln in top.split(plan.CARD_START, 1)[1].split(plan.CARD_END, 1)[0].splitlines()
-                          if ln.strip()]
-            assert card_lines[-1].startswith(DOD) and SUMMARY in top, \
-                f"371.3: with a plan, the Definition of Done is not the card's last line: {card_lines[-1]!r}"
-
-
 # 371.4: the owner's text is never changed: kept byte for byte, or the save is refused and says why
 
 ODD_ASKS = ("My ask.\n\n**Definition of Done:** my own idea of done\n",

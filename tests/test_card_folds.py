@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 from dokima import agent, body, card, planner  # noqa: E402
 from test_body import PLAN_TOP, TRICKY, github, run_card, text_of  # noqa: E402,F401
+from card_view import owner_card  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 REPO = "o/r"
@@ -140,15 +141,19 @@ ASKS = ("Please fold my words.\n- [ ] Goal: an old goal\n", TRICKY, "",
         "<details><summary>My own fold</summary>\n\nA detail I folded myself.\n\n</details>\n")
 FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
+# A planned issue's Definition of Done, the body's last line right after the fold (#454).
+DONE_AFTER = re.compile(r"\s*(?:<!--[^\n]*?-->\s*)*\*\*Definition of Done:\*\*[^\n]*\s*")
 
 
 def assert_folded(k, new, ask):
     """Fail naming criterion k unless the owner's text sits alone in a closed fold.
 
-    It must sit below the one marker, byte for byte, and read back as written."""
+    It must sit below the one marker, byte for byte, and read back as written; only a planned issue's Definition of
+    Done may follow the fold, as its last line (#454)."""
     assert new.count(body.MARKER) == 1, f"{k}: expected exactly one marker, found {new.count(body.MARKER)}"
     below = new.split(body.MARKER, 1)[1]
-    assert below == FOLD_START + ask + FOLD_END, \
+    fold = FOLD_START + ask + FOLD_END
+    assert below.startswith(fold) and (below == fold or DONE_AFTER.fullmatch(below[len(fold):])), \
         f"{k}: the owner's text is not alone inside a closed Original issue fold below the card:\n{below!r}"
     assert body.ask(new) == ask, f"{k}: the owner's text does not read back byte for byte"
 
@@ -283,12 +288,12 @@ def test_the_pr_card_carries_the_same_original_issue_fold(record_property, monke
             saved, pr_text = draw_both(monkeypatch, github, current, "old card\n\nCloses #40")
             assert saved is not None, "373.3: the card saved nothing on the issue"
             assert_folded("373.3", saved, ask)
-            top = saved.split(body.MARKER, 1)[0]
+            top = owner_card(saved)
             assert_pr_folded("373.3", pr_text, top, ask)
-            assert saved.split(body.MARKER, 1)[1] in pr_text, \
+            assert FOLD_START + ask + FOLD_END in saved and FOLD_START + ask + FOLD_END in pr_text, \
                 "373.3: the PR's Original issue fold is not the very fold the issue shows"
     saved, pr_text = draw_both(monkeypatch, github, "My ask.", "A PR with no closing line.")
-    assert_pr_folded("373.3", (pr_text or "") + "\n\nEND", saved.split(body.MARKER, 1)[0], "My ask.", closes="END")
+    assert_pr_folded("373.3", (pr_text or "") + "\n\nEND", owner_card(saved), "My ask.", closes="END")
 
 
 def test_an_old_pr_card_gains_the_fold_on_its_next_redraw(record_property, monkeypatch, github):
@@ -299,7 +304,7 @@ def test_an_old_pr_card_gains_the_fold_on_its_next_redraw(record_property, monke
     neither misses old PRs nor rewrites every PR every time."""
     record_property("proves", "373.3")
     saved, _ = draw_both(monkeypatch, github, "My ask.", "Closes #40")
-    top = saved.split(body.MARKER, 1)[0].rstrip("\n")
+    top = owner_card(saved)
     github.saves.clear()
     _, pr_text = draw_both(monkeypatch, github, saved, top + "\n\nCloses #40", changed_only=True)
     assert pr_text is not None, "373.3: an old PR card with no Original issue fold was not redrawn by the sweep"
@@ -354,7 +359,7 @@ def test_the_owners_closing_words_on_the_pr_close_nothing(record_property, monke
     shown = "This fixes &#35;99.\nCloses: &#35;12 and resolved o/r&#35;7, see #5.\n"
     saved, pr_text = draw_both(monkeypatch, github, ask, "Closes #40")
     assert_folded("373.5", saved, ask)
-    top = saved.split(body.MARKER, 1)[0]
+    top = owner_card(saved)
     assert_pr_folded("373.5", pr_text, top, shown)
     found = [m.group(0) for m in KEYWORDS.finditer(pr_text)]
     assert found == ["Closes #40"], f"373.5: the PR's description holds closing references other than Closes #40: {found}"

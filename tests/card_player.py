@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from test_start import Ctx, Nil, condition, evaluate, fill, github_shell, load_yaml  # noqa: E402
 from dokima import agent, body  # noqa: E402
+from card_view import owner_card  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
@@ -433,9 +434,11 @@ def worker_record():
 
 
 def card_of(text):
-    """The card block in a body, between its two marks; None when there is none."""
+    """The card block in a body, with its Definition of Done; None without one.
+
+    The Definition of Done counts even where it sits below the fold (#454)."""
     m = re.search(r"<!-- dokima-card -->.*?<!-- /dokima-card -->", text or "", re.S)
-    return m.group(0) if m else None
+    return owner_card(text) if m else None
 
 
 def stage_of(text):

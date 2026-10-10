@@ -27,6 +27,8 @@ from test_new_issue_card import (NO_PLAN, OLD_TOP, PLAN, REPO, SUMMARY, TOPS, dr
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
+# A planned issue's Definition of Done, the body's last line right after the fold (#454).
+DONE_AFTER = re.compile(r"\s*(?:<!--[^\n]*?-->\s*)*\*\*Definition of Done:\*\*[^\n]*\s*")
 OPEN_START = "\n\n"
 SUMMARY_TAG = "<summary>Original issue</summary>"
 DOD = "**Definition of Done:**"
@@ -67,11 +69,14 @@ def assert_open(k, saved, ask, recs):
 
 
 def assert_planned_fold(k, saved, ask):
-    """Fail naming k unless the owner's text sits alone in the closed Original issue fold."""
+    """Fail naming k unless the owner's text sits alone in the closed Original issue fold.
+
+    Only the planned issue's Definition of Done may follow the fold, as the body's last line (#454)."""
     assert saved is not None, f"{k}: the card saved nothing on the planned issue"
     assert saved.count(body.MARKER) == 1, f"{k}: expected exactly one marker, found {saved.count(body.MARKER)}"
     top, below = saved.split(body.MARKER, 1)
-    assert below == FOLD_START + ask + FOLD_END, \
+    fold = FOLD_START + ask + FOLD_END
+    assert below.startswith(fold) and (below == fold or DONE_AFTER.fullmatch(below[len(fold):])), \
         f"{k}: once planned, the owner's text is not alone in its closed Original issue fold:\n{below!r}"
     assert body.ask(saved) == ask, f"{k}: the owner's text does not read back byte for byte"
 
@@ -124,12 +129,12 @@ def test_an_open_new_issue_is_not_rewritten_when_nothing_changed(record_property
 # 407.2: once a plan exists, the owner's text moves into its closed Original issue fold, as today
 
 def test_once_planned_the_owners_text_folds(record_property, monkeypatch, github):
-    """Once planned, the owner's text folds under Original issue, the DoD back in the card.
+    """Once planned, the owner's text folds, with the Definition of Done below it.
 
     Proves 407.2.
     Saves each ask open on a new issue, then records a plan and redraws, also the way the sweep does, and checks the
-    owner's text now sits alone in its closed Original issue fold, the Definition of Done shows once as the card's
-    last line above it, and the card shows the plan's summary."""
+    owner's text now sits alone in its closed Original issue fold, the Definition of Done shows once, as the body's
+    last line right below the fold, and the card shows the plan's summary."""
     record_property("proves", "407.2")
     recs = [rec("planner", **PLAN)]
     for ask in ASKS:
@@ -139,9 +144,9 @@ def test_once_planned_the_owners_text_folds(record_property, monkeypatch, github
             saved = draw(monkeypatch, github, fresh, recs, changed_only=changed_only)
             assert_planned_fold("407.2", saved, ask)
             top = saved.split(body.MARKER, 1)[0]
-            lines = [ln for ln in top.split(plan.CARD_START, 1)[1].split(plan.CARD_END, 1)[0].splitlines() if ln.strip()]
-            assert top.count(DOD) == 1 and lines[-1].startswith(DOD) and SUMMARY in top, \
-                f"407.2: with a plan, the Definition of Done is not the card's last line once: {lines[-1]!r}"
+            last = saved.rstrip().splitlines()[-1]
+            assert saved.count(DOD) == ask.count(DOD) + 1 and last.startswith(DOD) and DOD not in top and SUMMARY in top, \
+                f"407.2: with a plan, the Definition of Done is not the body's last line once, below the fold: {last!r}"
 
 
 def test_the_planner_folds_an_open_new_issue(record_property):

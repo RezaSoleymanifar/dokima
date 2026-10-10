@@ -14,8 +14,8 @@ never a field retired by #300.
                         each ask nothing covers, then Raised: its blockers, its questions, then its issues
     the worker's        shows the files it changed since $BASE as links on one line, never its per-criterion sentences
     answers             of the planner and the worker show in the same Raised earlier section as a review's
-    every comment       folds its stats in a Stats fold right above the Full record fold, which stays last; token
-                        counts read short (950, 12K, 3M)
+    every comment       ends with its stats on one line, the last of the comment (#454), below the Full record
+                        fold, which stays the last fold; token counts read short (950, 12K, 3M)
 
 "Visible" below means the comment without its Full record fold: the record holds every ID and number by design.
 """
@@ -224,13 +224,15 @@ def item_of(text, needle):
     return None
 
 
-def stats_fold(body):
-    """The fold right above the Full record fold, and what lies between them.
+def stats_line(body):
+    """The comment's last line when it is its stats line; else None.
 
-    Both are None when there is no such fold."""
-    head = body.partition(RECORD_FOLD)[0]
-    m = re.search(r"<details>(?:(?!<details>).)*?</details>(\s*)$", head, re.S)
-    return (m.group(0), m.group(1)) if m else (None, None)
+    A stats line opens with the stats icon, small print allowed.
+
+    Since #454 the stats are one line, the last of the comment, below the Full record fold and the Next line."""
+    lines = [l for l in body.splitlines() if l.strip()]
+    last = lines[-1] if lines else ""
+    return last if re.sub(r"^\s*<sub>\s*", "", last).startswith(img("stats")) else None
 
 
 # 236.1: Plan review and Code review
@@ -320,7 +322,7 @@ def test_a_planners_comment_with_nothing_raised_or_changed_shows_no_empty_part(r
     """A plan that raised and changed nothing shows no heading or fold for them.
 
     Draws a plan with no raises, no answers and no changes to older tests, and checks its visible comment holds no
-    Raised heading, no Test changes words and no fold but the Stats fold and the Full record.
+    Raised heading, no Test changes words and no fold but the Full record (the stats are a line since #454).
 
     Proves 236.2."""
     record_property("proves", "236.2")
@@ -330,8 +332,8 @@ def test_a_planners_comment_with_nothing_raised_or_changed_shows_no_empty_part(r
         f"236.2: a plan that raised and answered nothing shows a Raised heading:\n{text}"
     assert "Test changes" not in text, f"236.2: a plan with no changes to older tests shows Test changes:\n{text}"
     folds = re.findall(r"<summary>(.*?)</summary>", body, re.S)
-    assert len(folds) == 2 and "Full record" in folds[-1] and "Stats" in folds[0], \
-        f"236.2: a plan with nothing to fold shows folds other than Stats and Full record: {folds}\n{body}"
+    assert folds == ["Full record"], \
+        f"236.2: a plan with nothing to fold shows folds other than the Full record: {folds}\n{body}"
 
 
 # 236.3: a review shows its verdict, then only what fails
@@ -554,51 +556,50 @@ CASES = [("planner", "", PLAN, True), ("worker", "", WORK, True), ("reviewer", "
          ("reviewer", "pr", BLOCK, True), ("rejected planner", "", PLAN, False)]
 
 
-def test_the_stats_sit_in_a_fold_right_above_the_full_record(record_property, env):
-    """Every run comment folds its stats right above the full record.
+def test_the_stats_are_the_comments_last_line(record_property, env):
+    """Every run comment shows its stats on its last line, below the full record.
 
     Draws a planner, a worker, a plan review, a code review, a rejected plan and a run cancelled after its agent
-    started, and checks the fold right above the Full record is a Stats fold with the stats icon holding the model,
-    time, turns, tokens, cost and the links to the conversation and the run, with nothing between the two folds,
-    and that no stats line is left open outside it.
+    started, and checks the last line of each is its stats line, with the stats icon, holding the model, time,
+    turns, tokens, cost and the links to the conversation and the run; that no Stats fold is left; and that the
+    stats show nowhere else (#454 moved them out of their fold).
 
     Proves 236.7."""
     record_property("proves", "236.7")
     bodies = [(role, agent.render(rec(role.split()[-1], stage, hb, passed, ["a problem"]))) for role, stage, hb, passed in CASES]
     bodies.append(("cancelled", agent.render(agent.cancelled("worker", "", True, META))))
     for what, body in bodies:
-        fold, between = stats_fold(body)
-        assert fold, f"236.7: the {what} comment has no fold right above the Full record:\n{body}"
-        title = re.search(r"<summary>(.*?)</summary>", fold, re.S).group(1)
-        assert img("stats") in title and "Stats" in plain(title), f"236.7: the {what} comment's last fold is not Stats: {title}"
-        assert not between.strip(), f"236.7: something sits between the Stats fold and the Full record: {between!r}"
+        line = stats_line(body)
+        assert line, f"236.7: the {what} comment does not end with its stats line:\n{body}"
         for said in ("Opus 5.5", "4.0 min", "23 turns", "401K", "18K", "$3.20", "https://g/log.md",
                      "https://github.com/o/r/actions/runs/1"):
-            assert said in fold, f"236.7: the {what} comment's Stats fold does not hold {said!r}:\n{fold}"
-        outside = FOLD.sub("", body)
-        assert "turns" not in outside and img("stats") not in outside, \
-            f"236.7: the {what} comment still shows its stats outside the fold:\n{outside}"
+            assert said in line, f"236.7: the {what} comment's stats line does not hold {said!r}:\n{line}"
+        assert not re.search(r"<summary>[^<]*(<img[^>]*>)?\s*Stats", body), f"236.7: the {what} comment still has a Stats fold"
+        rest = body[:body.rindex(line)]
+        assert "turns" not in FOLD.sub("", rest) and img("stats") not in rest, \
+            f"236.7: the {what} comment shows its stats somewhere else too:\n{rest}"
 
 
 def test_a_split_says_no_model_ran_and_a_run_no_agent_started_keeps_its_line(record_property, env):
-    """A split's Stats fold says no model ran; runs with no agent keep No agent ran.
+    """A split's stats line says no model ran; agentless runs keep No agent ran.
 
-    Draws a filed split and checks its Stats fold says no model and links the run; then a run that never started and
-    one cancelled before its agent started, and checks each keeps its No agent ran line and shows no Stats fold.
+    Draws a filed split and checks its stats line says no model and links the run; then a run that never started and
+    one cancelled before its agent started, and checks each keeps its No agent ran line and shows no stats icon.
 
     Proves 236.7."""
     record_property("proves", "236.7")
     split = {"role": "split", "stage": None, "run": "https://github.com/o/r/actions/runs/1",
              "handback": {"stories": [{"story": 1, "issue": 201, "title": "First", "blocked_by": []}]},
              "check": {"passed": True, "problems": []}}
-    fold, _ = stats_fold(agent.render(split))
-    assert fold and img("stats") in fold and "no model" in fold.lower() and "actions/runs/1" in fold, \
-        f"236.7: a filed split's Stats fold does not say no model ran:\n{fold}"
+    line = stats_line(agent.render(split))
+    assert line and "no model" in line.lower() and "actions/runs/1" in line, \
+        f"236.7: a filed split's stats line does not say no model ran:\n{line}"
     for what, r in (("never started", agent.not_started("worker", "", "main is red", META)),
                     ("cancelled before it started", agent.cancelled("worker", "", False, META))):
         body = agent.render(r)
         assert "No agent ran" in body, f"236.7: a run {what} lost its No agent ran line:\n{body}"
-        assert "Stats" not in plain(body.partition(RECORD_FOLD)[0]), f"236.7: a run {what} shows a Stats fold:\n{body}"
+        assert "Stats" not in plain(body.partition(RECORD_FOLD)[0]) and img("stats") not in body, \
+            f"236.7: a run {what} shows stats:\n{body}"
 
 
 # 236.8: token counts read short
@@ -609,19 +610,19 @@ def test_a_split_says_no_model_ran_and_a_run_no_agent_started_keeps_its_line(rec
 def test_token_counts_read_short(record_property, env, count, short):
     """Token counts read short: K from a thousand, M from a million, no decimals.
 
-    Draws a run whose tokens in and out are both the given count and checks its Stats fold shows the short form twice,
+    Draws a run whose tokens in and out are both the given count and checks its stats line shows the short form twice,
     rounded to the nearest with halves up, and never the count with commas or a decimal.
 
     Proves 236.8."""
     record_property("proves", "236.8")
     r = rec("worker", "", WORK)
     r["report"].update(tokens_in=count, tokens_out=count)
-    fold, _ = stats_fold(agent.render(r))
-    assert fold, "236.8: the run comment has no Stats fold to read the tokens from"
+    fold = stats_line(agent.render(r))
+    assert fold, "236.8: the run comment has no stats line to read the tokens from"
     found = re.findall(r"(?<![\w.,$])" + re.escape(short) + r"(?![\w.,]\d|\w)", fold)
-    assert len(found) == 2, f"236.8: {count:,} tokens in and out must read {short} twice in the Stats fold:\n{fold}"
+    assert len(found) == 2, f"236.8: {count:,} tokens in and out must read {short} twice in the stats line:\n{fold}"
     for long in (f"{count:,}", str(count)) if count >= 1000 else ():
-        assert long not in fold, f"236.8: the Stats fold still shows {long} tokens:\n{fold}"
+        assert long not in fold, f"236.8: the stats line still shows {long} tokens:\n{fold}"
     assert not re.search(r"\d\.\d+\s*[KM]\b", fold), f"236.8: a token count shows a decimal:\n{fold}"
 
 
@@ -630,9 +631,9 @@ def test_token_counts_read_short(record_property, env, count, short):
 def test_the_full_record_stays_the_last_fold_and_reads_back(record_property, run):
     """The full record stays the last fold of every run comment and reads back exactly.
 
-    Runs the record step for a planner, a worker and both reviews, and checks the Full record fold ends the comment,
-    right under the Stats fold, and that reading the posted comment back as the bot's gives the record written to
-    record.json, unchanged.
+    Runs the record step for a planner, a worker and both reviews, and checks the Full record fold is the comment's
+    last fold, followed only by its stats line (#454), and that reading the posted comment back as the bot's gives
+    the record written to record.json, unchanged.
 
     Proves 236.9."""
     record_property("proves", "236.9")
@@ -640,9 +641,8 @@ def test_the_full_record_stays_the_last_fold_and_reads_back(record_property, run
         body, record = run(role, stage, hb)
         assert RECORD_FOLD in body, f"236.9: the {role} {stage} comment has no Full record fold"
         after = body.partition(RECORD_FOLD)[2].partition("</details>")[2]
-        assert not after.strip(), f"236.9: something follows the Full record fold in the {role} {stage} comment: {after!r}"
-        fold, between = stats_fold(body)
-        assert fold and "Stats" in plain(re.search(r"<summary>(.*?)</summary>", fold, re.S).group(1)) and not between.strip(), \
-            f"236.9: the Full record of the {role} {stage} comment is not right under the Stats fold:\n{body}"
+        line = stats_line(body)
+        assert line and after.strip() == line.strip(), \
+            f"236.9: something other than the stats line follows the Full record fold in the {role} {stage} comment: {after!r}"
         back = agent.records([{"author": {"login": agent.BOT}, "body": body}])
         assert back == [record], f"236.9: the {role} {stage} comment does not read back as its record"
