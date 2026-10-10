@@ -11,12 +11,12 @@ Slow calls hand back a job id.
 
 <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/acceptance-criterion.svg" width="16" height="16" align="absmiddle" alt="acceptance criterion"> **Acceptance criteria**
 
-- <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/failed.svg" width="16" height="16" align="absmiddle" alt="failed"> **Acceptance criterion:** <a href="https://x/check/1">A slow call returns a job id.</a>
+- <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/failed.svg" width="16" height="16" align="absmiddle" alt="failed"> **<a href="https://x/check/1">Acceptance criterion</a>:** A slow call returns a job id.
   - <a href="https://github.com/o/r/issues/299">Source</a>
 
 <details><summary><b>Non-functional requirements</b></summary>
 
-- <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/passed.svg" width="16" height="16" align="absmiddle" alt="passed"> **Non-functional requirement:** <a href="https://x/check/2">Nothing leaks.</a>
+- <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/passed.svg" width="16" height="16" align="absmiddle" alt="passed"> **<a href="https://x/check/2">Non-functional requirement</a>:** Nothing leaks.
 
 </details>
 
