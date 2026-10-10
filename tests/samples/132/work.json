@@ -1,8 +1,8 @@
 {
  "summary": "Without a readable board.txt, agent board now places a failed run's card in its stage's column with Needs you.",
  "criteria": {
-  "132.1": "dokima/agent.py main() 'board': when board.txt is missing or unreadable, board_place(record, ('stop',)) puts the issue and its open PR in the record's stage column with Needs you; runs that decided still use board.txt, so a hand-on keeps the pill cleared.",
-  "132.2": "dokima/agent.py main() 'board': with no record.json either, it falls back to the job's ROLE and STAGE env for the column, sets Needs you, and exits 0."
+  "132.1": "A failed run's card goes to its stage's column with Needs you.",
+  "132.2": "With no record either, it takes the run's stage and still exits 0."
  },
  "evidence": "pytest -q: 273 passed in 22.40s"
 }

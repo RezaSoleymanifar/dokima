@@ -3,7 +3,8 @@
 Issue #239 (story 1 of #229). The owner set the caps: 25 words for a criterion's first sentence, 15 words for the
 first line of every docstring the planner adds in its tests. A text up to 20% over its cap (30 words for 25, 18 for 15)
 passes, and the check lists it; a text past that is rejected, naming it and its word count. Every new test's docstring
-names the criteria it proves by number, below its first line.
+names the criteria it proves by number, below its first line. Since #482 a criterion is capped on its whole text at
+12 words with no slack (tests/test_whole_text_caps.py); the docstring caps here keep their 20% slack.
 
 Every test here runs `python3 -m dokima.planner check 9 OUT` through planner.main, in the temp git repo of the `check`
 fixture of tests/test_plan_check.py (issue #9, one older test at the start, the planner's tests on top). Each test
@@ -74,30 +75,6 @@ def feature_with(ac):
     f = copy.deepcopy(FEATURE)
     f["stories"][1]["acceptance_criteria"][0]["text"] = ac
     return f
-
-
-def test_a_criterion_over_25_words_in_its_first_sentence_is_held_to_the_cap(record_property, check, capsys):
-    """A criterion's first sentence is held to 25 words; a paragraph may follow it.
-
-    Proves 239.1. A 25-word first sentence followed by a 40-word paragraph passes and is not listed, in an acceptance
-    criterion, a non-functional requirement and a split's story. A 31-word first sentence (with or without an end mark)
-    is rejected in each of the three, naming it.
-    """
-    record_property("proves", "239.1")
-    at_cap = words(25) + " " + words(40)
-    for plan in (with_criteria(ac=at_cap, nfr=at_cap), feature_with(at_cap)):
-        rc, why, printed = run(check, capsys, plan, jobs(), "239.1")
-        assert rc == 0 and not why, f"239.1: a 25-word first sentence with a paragraph after it was rejected: {why!r}"
-        assert "criterion" not in printed and "requirement" not in printed, \
-            f"239.1: a criterion within its cap was listed as over it: {printed!r}"
-    cases = [(with_criteria(ac=words(31) + " " + words(5)), "acceptance criterion 1"),
-             (with_criteria(ac=words(31, end="")), "acceptance criterion 1"),
-             (with_criteria(nfr=words(31) + " " + words(5)), "non-functional requirement 1"),
-             (feature_with(words(31) + " " + words(5)), "story 2: acceptance criterion 1")]
-    for plan, where in cases:
-        rc, why, _ = run(check, capsys, plan, jobs(), "239.1")
-        assert rc == 1, f"239.1: {where} opening with a 31-word sentence was accepted; the cap is 25 (30 at most)"
-        assert where in why and "31 words" in why, f"239.1: the reason does not name {where} and its 31 words: {why!r}"
 
 
 def test_a_docstring_the_planner_adds_is_held_to_15_words_in_its_first_line(record_property, check, capsys):
@@ -192,24 +169,23 @@ def test_the_number_must_sit_below_the_first_line_and_name_every_criterion(recor
 def test_texts_up_to_20_percent_over_pass_and_are_each_listed(record_property, check, capsys):
     """Texts at most 20% over their caps pass, and the check lists each one.
 
-    Proves 239.4. Criteria of 30 and 27 words, and docstrings of 18 and 16 words, pass with exit 0. The check's output
-    names each with its word count; one at its cap is not named.
+    Proves 239.4. A 30-word summary, and docstrings of 18 and 16 words, pass with exit 0. The check's output names
+    each with its word count; a docstring at its cap is not named. A split's 28-word summary passes and is listed.
+    Criteria no longer get this slack: #482 caps them at 12 words, whole text, with none.
     """
     record_property("proves", "239.4")
-    plan = with_criteria(ac=words(30), nfr=words(27))
-    plan["acceptance_criteria"][1]["text"] = words(25)
-    text = jobs(id_doc=words(18), helper_doc=words(16))
+    plan = dict(STORY, summary=words(30))
+    text = jobs(id_doc=words(18), helper_doc=words(16), unique_doc=words(15))
     rc, why, printed = run(check, capsys, plan, text, "239.4")
     assert rc == 0 and not why, f"239.4: texts at most 20% over their caps got the plan rejected: {why!r}"
-    for where, n in (("acceptance criterion 1", 30), ("non-functional requirement 1", 27),
-                     ("tests/test_jobs.py::test_id", 18), ("tests/test_jobs.py::make_job", 16)):
+    for where, n in (("summary", 30), ("tests/test_jobs.py::test_id", 18), ("tests/test_jobs.py::make_job", 16)):
         line = next((x for x in printed.splitlines() if where in x and f"{n} words" in x), None)
         assert line, f"239.4: the check's output does not list {where} with its {n} words: {printed!r}"
-    assert "acceptance criterion 2" not in printed, \
-        f"239.4: acceptance criterion 2, exactly at its 25-word cap, was listed as over it: {printed!r}"
-    rc, why, printed = run(check, capsys, feature_with(words(30)), jobs(), "239.4")
-    assert rc == 0 and "story 2: acceptance criterion 1" in printed and "30 words" in printed, \
-        f"239.4: a split's 30-word criterion was not passed and listed: rc {rc}, {why!r}, {printed!r}"
+    assert "test_unique" not in printed, \
+        f"239.4: test_unique, exactly at its 15-word cap, was listed as over it: {printed!r}"
+    rc, why, printed = run(check, capsys, dict(FEATURE, summary=words(28)), jobs(), "239.4")
+    assert rc == 0 and "summary" in printed and "28 words" in printed, \
+        f"239.4: a split's 28-word summary was not passed and listed: rc {rc}, {why!r}, {printed!r}"
 
 
 def test_any_text_past_20_percent_rejects_the_plan_naming_each(record_property, check, capsys):
