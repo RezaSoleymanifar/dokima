@@ -368,15 +368,16 @@ def test_a_code_owners_command_in_a_review_summary_clears_needs_you_at_once(reco
 def test_the_board_runs_when_a_pull_request_review_is_submitted(record_property):
     """The board's workflow runs whenever a pull request review is submitted.
 
-    Proves 297.2. Reads .github/workflows/board.yml's triggers: they must include pull_request_review with the type
-    submitted. Today the board never hears of a review, so a review's command clears nothing until its run ends."""
+    Proves 297.2. Since #396 board.yml no longer runs on pull_request_review itself (that runs the pull request's own
+    copy of board.yml with the keys): it runs, as main's copy, when a workflow that runs on pull_request_review
+    submitted completes. Reads board.yml's workflow_run trigger and that workflow's triggers."""
     record_property("proves", "297.2")
-    text = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "board.yml")).read()
-    on = re.split(r"(?m)^[a-z]", text.split("\non:\n", 1)[1], maxsplit=1)[0]
-    m = re.search(r"(?m)^  pull_request_review:\s*\n((?:    .*\n?)*)", on)
-    assert m, "297.2: board.yml does not run on pull_request_review, so a review's command never reaches the board"
-    assert re.search(r"types:\s*\[[^\]]*\bsubmitted\b", m.group(1)), \
-        f"297.2: board.yml runs on pull_request_review but not on its submitted type: {m.group(1).strip()!r}"
+    import test_review_relay as trr
+    names, types = trr.run_on(open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "board.yml")).read())
+    heard = [f for f, (name, text) in trr.workflows().items()
+             if f != "board.yml" and name in names and "submitted" in trr.triggers(text).get("pull_request_review", set())]
+    assert heard, "297.2: board.yml runs after no workflow that runs on a submitted review, so a review's command never reaches the board"
+    assert "completed" in types, f"297.2: board.yml runs after {heard} only on {sorted(types)}, not when they complete"
 
 
 # 297.3: Needs you clears when the item closes and never lands on a closed item

@@ -1,0 +1,15 @@
+name: reviews
+# Runs on every submitted review and new line note, only so board.yml, which runs
+# after it as main's copy, puts the cards where their state says. GitHub runs this
+# file from the pull request's own copy, so it holds no key and starts nothing.
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+permissions: {}
+jobs:
+  heard:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Review or line note on pull request ${{ github.event.pull_request.number }}"
