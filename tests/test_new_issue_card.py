@@ -2,10 +2,10 @@
 
 Issue #371. The owner asked (2026-10-09) that when an issue is first posted and has no plan yet, the Definition of
 Done line no longer comes before the owner's original issue text: it moves below that text, and the line "This issue
-has no plan yet." goes away. Since #373 the owner's text sits in a closed fold titled Original issue below the card's
-marker, so on an issue with no plan the body reads: the card's status and link lines, the Original issue fold, then the
-Definition of Done. Once the issue has a plan, the card is drawn as before, with the Definition of Done at its bottom,
-above the fold.
+has no plan yet." goes away. Since #407 the owner's text shows open below the card's marker until the issue has a plan,
+so on an issue with no plan the body reads: the card's status and link lines, the owner's text, then the Definition of
+Done. Once the issue has a plan, the card is drawn as before, with the Definition of Done at its bottom, above the
+owner's text in its closed Original issue fold.
 
 The card is drawn by dokima/card.py render and saved by card.draw through dokima/body.py, which keeps the owner's text
 byte for byte or refuses. These tests run card.draw with GitHub faked by the recorder in tests/test_body.py, and read
@@ -89,19 +89,19 @@ def without_comments(text):
 
 
 def assert_new_issue_layout(k, saved, ask, recs):
-    """Fail naming k unless the body reads: card, owner's fold, then only the Definition of Done.
+    """Fail naming k unless the body reads: card, owner's open text, Definition of Done.
 
-    The card above the marker holds the status line and no Definition of Done; the owner's text follows byte for byte
-    in one closed Original issue fold; after the fold comes exactly the Definition of Done line the card draws, and
-    nothing else the owner can see."""
+    The card above the marker holds the status line and no Definition of Done; the owner's text follows byte for byte,
+    open, not folded (#407); after it comes exactly the Definition of Done line the card draws, and nothing else the
+    owner can see."""
     assert saved is not None, f"{k}: the card saved nothing on the issue"
     assert saved.count(body.MARKER) == 1, f"{k}: expected exactly one marker, found {saved.count(body.MARKER)}"
     top, below = saved.split(body.MARKER, 1)
     assert "**Backlog**" in top, f"{k}: the card above the owner's text lost its status line:\n{top}"
     assert DOD not in top, f"{k}: the Definition of Done still comes before the owner's text:\n{top}"
-    fold = FOLD_START + ask + FOLD_END
-    assert below.startswith(fold), \
-        f"{k}: the owner's text does not come first below the card, byte for byte in its Original issue fold:\n{below!r}"
+    fold = "\n\n" + ask
+    assert below.startswith(fold) and not below.startswith(FOLD_START), \
+        f"{k}: the owner's text does not come first below the card, byte for byte and open:\n{below!r}"
     after = without_comments(below[len(fold):]).strip()
     expected = card.done_row(REPO, found_for(recs), None)
     assert after == expected, \
@@ -139,7 +139,7 @@ def test_a_new_issue_shows_the_owners_text_then_the_definition_of_done(record_pr
     Proves 371.2. Draws the card of an issue with no plan (no record, or only a rejected plan) for four asks (plain
     words, one full of Windows line ends and stray markup, an empty one and one with the owner's own fold), and
     checks the saved issue shows the status line above the marker with no Definition of Done there, then the owner's
-    text byte for byte in its closed Original issue fold, then the Definition of Done line and nothing else."""
+    text byte for byte and open (#407), then the Definition of Done line and nothing else."""
     record_property("proves", "371.2")
     for name, recs in NO_PLAN.items():
         for ask in ASKS:
@@ -240,10 +240,10 @@ def test_the_owners_text_is_kept_or_the_save_refused(record_property, monkeypatc
 # 371.5: AGENTS.md says where a new issue's Definition of Done sits
 
 def test_agents_md_says_a_new_issues_definition_of_done_sits_below_the_owners_text(record_property):
-    """AGENTS.md says a new issue's Definition of Done sits below the Original issue fold.
+    """AGENTS.md says a new issue's Definition of Done sits below the owner's text.
 
     Proves 371.5. Reads AGENTS.md's The issue body section and checks it names the Definition of Done and says where
-    it sits on an issue with no plan, below the owner's Original issue fold, and still says code never changes the
+    it sits on an issue with no plan, below the owner's text (open since #407), and still says code never changes the
     owner's text."""
     record_property("proves", "371.5")
     text = open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8").read()
@@ -251,8 +251,8 @@ def test_agents_md_says_a_new_issues_definition_of_done_sits_below_the_owners_te
     assert m, "371.5: AGENTS.md has no '## The issue body' section"
     section = m.group(1)
     sentences = [s for s in re.split(r"(?<=[.;])\s+", section) if "Definition of Done" in s]
-    assert any("no plan" in s and "below" in s and "Original issue" in s for s in sentences), \
+    assert any("no plan" in s and "below" in s for s in sentences), \
         "371.5: AGENTS.md's The issue body does not say an issue with no plan shows its Definition of Done below the " \
-        "Original issue fold"
+        "owner's text"
     assert "Code only writes above the marker" in section and "checks the owner's part is unchanged" in section, \
         "371.5: AGENTS.md's The issue body no longer says code keeps the owner's part unchanged"
