@@ -273,6 +273,34 @@ def test_the_board_step_at_the_end_of_a_run_runs_again_after_the_reset(record_pr
         f"429.1: after the budget reset #57's card is at {place(w, 'issue', 57)}, not Plan with Needs you"
 
 
+def test_the_board_step_after_a_failed_run_shows_needs_you_after_the_reset(record_property, make, budget, monkeypatch, tmp_path):
+    """After a failed run, a budget-stopped board step shows Needs you once the budget resets.
+
+    Proves 429.1. A worker run on #57 fails its check, so the river stops for the owner: the step must put #57 and its
+    open pull request #70 in Work with Needs you. Their cards sit in Backlog and Review. GitHub refuses the board's
+    first read while the GraphQL budget is empty until 22:29Z, so a step that gives up at once leaves both cards where
+    they were. The step must exit 0, open the board twice (before and after the wait), and leave both in Work with
+    Needs you."""
+    record_property("proves", "429.1")
+    b = budget("429.1", empty={"graphql": 19 * 60})
+    w = make(prs={57: 70}, cards={("issue", 57): {"Status": "Backlog"}, ("pr", 70): {"Status": "Review"}})
+    refuse_while_empty(w, b, {57, 70}, monkeypatch, on_board=True)
+    monkeypatch.setenv("DOKIMA_BOARD", SPEC)
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    out = tmp_path / "out-57"
+    out.mkdir()
+    # The run failed its check, so it decided nothing: no board.txt, and the record says the check did not pass.
+    (out / "record.json").write_text(json.dumps({"role": "worker", "stage": "", "check": {"passed": False}}))
+    code = agent.main(["agent", "board", "57", str(out)])
+    assert code == 0, f"429.1: the board step after a failed run was stopped by the empty budget and exited {code}, not 0"
+    got = {"#57": place(w, "issue", 57), "PR #70": place(w, "pr", 70)}
+    assert got == {"#57": ("Work", NEEDS), "PR #70": ("Work", NEEDS)}, \
+        f"429.1: after the budget reset the failed run's cards are at {got}, not both in Work with Needs you: " \
+        "the board step after a failed run gave up instead of waiting for the reset"
+    assert w.runs == 2, f"429.1: the board step after a failed run opened the board {w.runs} times, not twice"
+    assert sum(b.slept) >= 19 * 60, f"429.1: the step waited {b.slept} s, less than the 1140 s until the reset"
+
+
 # 429.2: a card redraw a budget stopped is redrawn after the reset, showing the issue's state then
 
 def test_a_card_redraw_the_budget_stopped_is_redrawn_after_the_reset(record_property, budget, monkeypatch):
