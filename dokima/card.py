@@ -245,7 +245,13 @@ def escape_words(line):
     """One line of an agent's words: code in backticks as written, everything else HTML-escaped.
 
     Backticks pair as GitHub pairs them: a run opens a code span closed by the next run of the same length, a
-    backslash before a backtick makes it plain, and a run that never closes is plain text."""
+    backslash before a backtick makes it plain, and a run that never closes is plain text. Three or more backticks or
+    tildes that start the words and open no code span are written as character references, so GitHub never reads them
+    as a fence that opens a code block."""
+    fence = re.match(r"~{3,}|`{3,}", line)
+    if fence and (fence.group(0)[0] == "~" or not re.compile(rf"(?<!`){fence.group(0)}(?!`)").search(line, fence.end())):
+        mark = fence.group(0)
+        return "&#%d;" % ord(mark[0]) * len(mark) + escape_words(line[len(mark):])
     out, i = [], 0
     while i < len(line):
         if line[i] == "\\":
