@@ -331,10 +331,15 @@ def status(issue, found):
     return column, todo(issue, found, rec) if needs else None
 
 
-def status_line(repo, stage, todo):
-    """The small status line under the summary: the stage, then Needs you and the owner's to-do when there is one."""
+def status_line(repo, stage, todo, autopilot=False):
+    """The small status line under the summary: the stage, then Needs you or Autopilot.
+
+    Needs you comes with the owner's to-do when there is one; else Autopilot shows on an issue on autopilot, as on
+    the board's pills (#454)."""
     head = f"{field_icon(repo, 'merged')} **{stage}**" if stage == "Merged" else f"**{stage}**"
-    return head + (f" · {field_icon(repo, 'needs you')} Needs you: {todo}" if todo else "")
+    if todo:
+        return head + f" · {field_icon(repo, 'needs you')} Needs you: {todo}"
+    return head + (f" · {field_icon(repo, 'autopilot')} Autopilot" if autopilot else "")
 
 
 def child_row(repo, child):
@@ -460,7 +465,7 @@ def render(repo, issue, found, page="issue"):
         lines += [f"<!-- dokima-blocking: {json.dumps(gh_links)} -->"]
     if h and isinstance(h.get("summary"), str) and h["summary"].strip():
         lines += [escape(h["summary"].strip()), ""]
-    lines += [status_line(repo, *status(issue, found)), ""]
+    lines += [status_line(repo, *status(issue, found), found.get("autopilot") is True), ""]
     links = links_row(repo, issue, pr, worker, check_runs)
     if links:
         lines += [links, ""]
@@ -500,6 +505,8 @@ def render(repo, issue, found, page="issue"):
         lines += [" ".join(["**Scope:**", ", ".join(f"`{s}`" for s in h.get("scope") or [])]).rstrip(), ""]
         if h.get("out_of_scope"):
             lines += fold("Out of scope", [f"- {escape(s)}" for s in h["out_of_scope"]]) + [""]
+    # Once planned, the Definition of Done is the card's last line here, as on the PR; body.redraw puts it below the
+    # owner's folded text on the issue (#454).
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
     return "\n".join(lines)
 
@@ -634,7 +641,8 @@ def gather(repo, number, pr_number):
     children = [{"number": st["issue"], "title": st.get("title"), "stage": child_stage(repo, st["issue"], owners)}
                 for st in (split["handback"].get("stories") or [] if split else [])]
     return {"recs": recs, "items": items, "pr": pr, "check_runs": check_runs, "reviews": reviews, "owners": owners,
-            "tests": tests, "worker": latest_worker_run(repo, number), "children": children}
+            "tests": tests, "worker": latest_worker_run(repo, number), "children": children,
+            "autopilot": agent.on_autopilot(repo, number)}
 
 
 def gallery(repo, out):

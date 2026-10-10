@@ -692,7 +692,7 @@ def render(rec, pr=None, plan=None, earlier=None):
     """The comment that carries a record, never repeating the card above it.
 
     One plain sentence saying what the run did, then only what that run changed, decided or raised; the long parts
-    in folds, the Stats fold, then the full record as JSON in the last fold. `pr` is the link of the worker's pull request, once it exists; `plan` is the plan a review
+    in folds, then the full record as JSON in the last fold, and the stats line last (#454). `pr` is the link of the worker's pull request, once it exists; `plan` is the plan a review
     judged, whose criteria its blockers fail; `earlier` is the issue's records before this one, oldest first, where
     answers find the raises they answer. A record holding a field retired by #300 keeps the comment it was posted with."""
     role, h = rec["role"], rec["handback"]
@@ -712,7 +712,7 @@ def render(rec, pr=None, plan=None, earlier=None):
                 else f"{name} run was cancelled before its agent started.")
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
         if rec.get("agent_started"):
-            lines += stats_fold(rec) + record_fold(rec)
+            lines += record_fold(rec) + stats_last(rec)
         else:
             lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
@@ -747,7 +747,7 @@ def render(rec, pr=None, plan=None, earlier=None):
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
     if passed and role != "worker":
         lines += answered_lines(repo, rec, earlier) + raised_lines(repo, rec, placed)
-    lines += details(rec) + stats_fold(rec) + record_fold(rec)
+    lines += details(rec) + record_fold(rec) + stats_last(rec)
     return "\n".join(lines) + "\n"
 
 
@@ -988,12 +988,22 @@ def run_report(path):
             "tokens_out": u.get("output_tokens")}
 
 
-def stats_fold(rec):
-    """The Stats fold right above the full record of every run comment.
+def stats_last(rec):
+    """The stats line: the last line of a run comment (#454).
 
-    Every run an agent ran in has one."""
+    Every run an agent ran in, and every filed split, has one. `with_next` puts the Next line right above it."""
     stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
-    return [""] + card.fold(f"{stats} Stats", [stats_line(rec)])
+    return ["", f"<sub>{stats} {stats_line(rec)}</sub>"]
+
+
+def with_next(comment, line):
+    """The run comment with its Next line right above its stats line (#454).
+
+    The stats line stays the last line. Every run comment ends with a stats line (`<sub>...</sub>`); one that does not gets its Next line at the end."""
+    head, _, last = comment.rstrip("\n").rpartition("\n")
+    if not (head and last.startswith("<sub>")):
+        return comment + "\n" + line + "\n"
+    return head.rstrip("\n") + "\n\n" + line + "\n\n" + last + "\n"
 
 
 def short(n):
@@ -2527,8 +2537,8 @@ def main(argv):
             at = text.find(fold)
             at = len(text.rstrip("\n")) if at < 0 else at
             open(os.path.join(out, "comment.md"), "w").write(text[:at] + "\n".join(filed) + "\n" + text[at:])
-        with open(os.path.join(out, "comment.md"), "a") as f:
-            f.write("\n" + next_line(step, owners) + "\n")
+        text = open(os.path.join(out, "comment.md")).read()
+        open(os.path.join(out, "comment.md"), "w").write(with_next(text, next_line(step, owners)))
         if step[3:] == ("autopilot",):
             # The line the owner would have typed `/work` in place of; the workflow posts it on the issue.
             open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")

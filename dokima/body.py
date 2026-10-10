@@ -1,9 +1,10 @@
 """The issue body: code's card above one marker, the owner's ask below, never rewritten.
 
-Once planned, every ask sits folded under Original issue (#373). While an issue has no plan, the owner's own ask
-shows open, with the card's Definition of Done after it, after its own marker (#371, #407); a split's story, quoted by
-code from the parent's approved plan, stays folded with the Definition of Done after the fold (#237). Reading accepts
-every layout, and the next redraw moves the ask to the one its card calls for.
+Once planned, every ask sits folded under Original issue (#373), with the card's Definition of Done after the fold, as
+the body's last line (#454). While an issue has no plan, the owner's own ask shows open, with the card's Definition of
+Done after it, after its own marker (#371, #407); a split's story, quoted by code from the parent's approved plan,
+stays folded with the Definition of Done after the fold (#237). Reading accepts every layout, and the next redraw
+moves the ask to the one its card calls for.
 
 Every code path that redraws an issue body (the card and the planner) saves it through `save`, which keeps the
 owner's part byte for byte or refuses, leaves the body as it was and says why in a comment on the issue.
@@ -16,6 +17,9 @@ FOLD_START = "\n<details><summary>Original issue</summary>\n\n"
 FOLD_END = "\n\n</details>"
 OPEN_START = "\n\n"
 DONE = "<!-- dokima-done -->"
+# A planned card ends with its Definition of Done right above its end marker; on the issue it goes below the fold (#454).
+CARD_END = "<!-- /dokima-card -->"
+DONE_HEAD = "**Definition of Done:**"
 TRAILER = "\n\n" + DONE + "\n"
 # The head of a split's story, as agent.story_body quotes it from the parent's approved plan.
 STORY = re.compile(r"<!-- dokima-card -->\n<!-- /dokima-card -->\n\n<details open><summary>From the approved plan of #\d+, ")
@@ -52,15 +56,30 @@ def ask(body):
     return below
 
 
+def planned_done(top):
+    """A planned card split from its Definition of Done, its last line (#454).
+
+    (the card without that line, the line), else (top, None)."""
+    card = top.rstrip("\n")
+    if not card.endswith(CARD_END):
+        return top, None
+    rest, _, last = card[:len(card) - len(CARD_END)].rstrip("\n").rpartition("\n")
+    if not last.startswith(DONE_HEAD):
+        return top, None
+    return rest.rstrip("\n") + "\n\n" + CARD_END, last
+
+
 def redraw(body, top):
     """The new body: `top` above the marker, the owner's part below; Refused if it changes.
 
     What `top` holds after its DONE marker (a card with no plan's Definition of Done) goes below the owner's part,
-    which then shows open unless it is a split's story (#407); with a plan, the owner's part is folded."""
+    which then shows open unless it is a split's story (#407). A planned card's Definition of Done, its last line
+    right above its end marker, goes below the owner's part, which stays folded (#454)."""
     body = body or ""
     owner = ask(body)
-    top, done = top.split(DONE, 1) if DONE in top else (top, None)
-    shown = OPEN_START + owner if done is not None and not STORY.match(owner) else FOLD_START + owner + FOLD_END
+    opened = DONE in top and not STORY.match(owner)
+    top, done = top.split(DONE, 1) if DONE in top else planned_done(top)
+    shown = OPEN_START + owner if opened else FOLD_START + owner + FOLD_END
     below = shown + ("" if done is None else TRAILER + done.strip("\n"))
     new = top.rstrip("\n") + "\n\n" + MARKER + below
     if ask(new) != ask(body) or new.split(MARKER, 1)[1] != below or (done is not None and not trailer(below)[1]):
