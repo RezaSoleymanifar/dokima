@@ -24,6 +24,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Wiki already up to date"
           else
-            git commit -m "Sync from ${GITHUB_SHA::7}"
+            git commit -m "Sync from ${GITHUB_SHA::7}" --trailer "Co-authored-by: Reza Soleymanifar <34189616+RezaSoleymanifar@users.noreply.github.com>"
             git push
           fi
