@@ -1,0 +1,49 @@
+name: playthrough
+run-name: "play-through of ${{ inputs.commit }}"
+# Plays one issue on the sandbox repo dokima-dev/card-gallery from opened to merged with the Dokima commit given, and
+# says after each step whether both cards showed what had just happened (dokima/playthrough.py). Stand-in agents
+# call no model. The play-through installs the commit on the sandbox with SANDBOX_TOKEN, its own key that can write
+# only to card-gallery; Dokima's app key is minted for card-gallery alone and never gets workflow write.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The Dokima commit to play
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: playthrough
+  cancel-in-progress: false
+jobs:
+  play:
+    environment: keys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: The Dokima commit to play, in a folder of its own
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit }}
+          path: played
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOKIMA_APP_ID }}
+          private-key: ${{ secrets.DOKIMA_APP_KEY }}
+          owner: dokima-dev
+          repositories: card-gallery
+      - name: Play one issue from opened to merged
+        env:
+          REPO: dokima-dev/card-gallery
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SANDBOX_TOKEN: ${{ secrets.SANDBOX_TOKEN }}
+          PLAYED: ${{ github.workspace }}/played
+          PLAYED_COMMIT: ${{ inputs.commit }}
+        run: python3 -m dokima.playthrough
