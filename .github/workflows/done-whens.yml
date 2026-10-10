@@ -18,16 +18,13 @@ jobs:
     steps:
       # Main's copy of Dokima's code: in the merge queue the default is the queued commit, so name main's branch.
       - uses: actions/checkout@v5
-<<<<<<< HEAD
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
       - name: Read the API budget before the run
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -m dokima.budget before github-token /tmp/budget.jsonl
-=======
-        with:
-          ref: ${{ github.event.merge_group.base_ref }}
->>>>>>> origin/main
       - id: m
         env:
           GH_TOKEN: ${{ github.token }}
