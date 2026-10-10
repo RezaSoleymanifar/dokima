@@ -49,11 +49,7 @@ def cards(**kw):
              "owners": {"boss"}, "tests": {}, "worker": None}
     issue_card = card.render(REPO, ISSUE, found, page="issue")
     drawn = card.render(REPO, ISSUE, dict(found, pr={"number": 5, "merged": False, "state": "open"}), page="pr")
-    try:
-        pr_card = card.pr_body(drawn, "Closes #40", "My ask.")
-    except TypeError:
-        # Before #373 pr_body took no ask; Scope and the folds are still checked on the card it draws.
-        pr_card = card.pr_body(drawn, "Closes #40")
+    pr_card = card.pr_body(drawn, "Closes #40", "My ask.", issue_url=SRC)
     return {"issue card": issue_card, "PR card": pr_card}
 
 
@@ -247,10 +243,22 @@ def draw_both(monkeypatch, github, current, pr_text, changed_only=False):
     return (github.saves[-1] if len(github.saves) > saves else None), (written[-1] if written else None)
 
 
-def assert_pr_folded(k, pr_text, top, ask, closes="Closes #40"):
+CLOSES_40 = f"Closes {SRC}"
+
+
+def on_pr(top):
+    """The issue's card as the PR shows it, with the issue's link back.
+
+    Since #452 only the PR's top row links the issue."""
+    return top.replace(f"https://github.com/o/r/pull/{PR}", f"{SRC} · https://github.com/o/r/pull/{PR}", 1)
+
+
+def assert_pr_folded(k, pr_text, top, ask, closes=CLOSES_40):
     """Fail naming criterion k unless the PR shows the card, the owner's fold, then its Closes line.
 
-    The owner's text must sit byte for byte in one closed Original issue fold, followed only by the closing line."""
+    `top` is the issue's card; the PR shows it with the issue's own link back in its top row (#452). The owner's text
+    must sit byte for byte in one closed Original issue fold, followed only by the closing line."""
+    top = on_pr(top)
     fold = FOLD_START + ask + FOLD_END
     assert pr_text is not None, f"{k}: the PR description was not written"
     assert pr_text.startswith(top.rstrip("\n")), f"{k}: the PR description does not open with the card:\n{pr_text!r}"
@@ -276,7 +284,8 @@ def test_the_pr_card_carries_the_same_original_issue_fold(record_property, monke
     Proves 373.3. Draws the card of an issue and its open PR for five asks (plain words, one full of Windows line ends
     and stray markup, an empty one, one with the owner's own fold and a split's quoted story), each fresh and open
     today, and checks the PR description is the card, then the owner's text byte for byte in one closed Original issue
-    fold, the very fold the issue shows, then the PR's Closes line; a PR with no Closes line ends at the fold."""
+    fold, the very fold the issue shows, then the PR's Closes line by the issue's full address; a PR with no Closes
+    line gains one (#452)."""
     record_property("proves", "373.3")
     for ask in ASKS + (QUOTED_STORY,):
         for current in (ask, open_body("old card", ask)):
@@ -288,7 +297,7 @@ def test_the_pr_card_carries_the_same_original_issue_fold(record_property, monke
             assert saved.split(body.MARKER, 1)[1] in pr_text, \
                 "373.3: the PR's Original issue fold is not the very fold the issue shows"
     saved, pr_text = draw_both(monkeypatch, github, "My ask.", "A PR with no closing line.")
-    assert_pr_folded("373.3", (pr_text or "") + "\n\nEND", saved.split(body.MARKER, 1)[0], "My ask.", closes="END")
+    assert_pr_folded("373.3", pr_text, saved.split(body.MARKER, 1)[0], "My ask.")
 
 
 def test_an_old_pr_card_gains_the_fold_on_its_next_redraw(record_property, monkeypatch, github):
@@ -301,7 +310,7 @@ def test_an_old_pr_card_gains_the_fold_on_its_next_redraw(record_property, monke
     saved, _ = draw_both(monkeypatch, github, "My ask.", "Closes #40")
     top = saved.split(body.MARKER, 1)[0].rstrip("\n")
     github.saves.clear()
-    _, pr_text = draw_both(monkeypatch, github, saved, top + "\n\nCloses #40", changed_only=True)
+    _, pr_text = draw_both(monkeypatch, github, saved, on_pr(top) + "\n\n" + CLOSES_40, changed_only=True)
     assert pr_text is not None, "373.3: an old PR card with no Original issue fold was not redrawn by the sweep"
     assert_pr_folded("373.3", pr_text, top, "My ask.")
     _, again = draw_both(monkeypatch, github, saved, pr_text, changed_only=True)
@@ -337,7 +346,8 @@ def test_agents_md_says_the_owners_text_is_folded(record_property):
 
 # 373.5: the owner's text on the PR never closes or links another issue
 
-KEYWORDS = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:[\w.-]+/[\w.-]+)?#\d+", re.I)
+KEYWORDS = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:(?:[\w.-]+/[\w.-]+)?#\d+"
+                      r"|https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+)", re.I)
 
 
 def test_the_owners_closing_words_on_the_pr_close_nothing(record_property, monkeypatch, github):
@@ -346,9 +356,9 @@ def test_the_owners_closing_words_on_the_pr_close_nothing(record_property, monke
     Proves 373.5. GitHub closes every issue a PR's description names after a closing keyword, and Dokima reads the
     PR's issue from its first one. Draws the PR of an ask that says "fixes #99", "Closes: #12", "resolved o/r#7"
     and plain "#5", twice, and checks the only closing reference on the PR, by GitHub's keywords and by Dokima's own
-    readers (card.CLOSES, agent.issue_of_pr), is the PR's own trailing Closes #40, that each `#` after a keyword is
-    written `&#35;` (which shows the same), that the plain #5 and the issue's own copy are untouched, and that a
-    second redraw keeps Closes #40."""
+    readers (agent.issue_of_pr), is the PR's own trailing Closes line, by the issue's full address since #452, that
+    each `#` after a keyword is written `&#35;` (which shows the same), that the plain #5 and the issue's own copy are
+    untouched, and that a second redraw keeps that Closes line."""
     record_property("proves", "373.5")
     ask = "This fixes #99.\nCloses: #12 and resolved o/r#7, see #5.\n"
     shown = "This fixes &#35;99.\nCloses: &#35;12 and resolved o/r&#35;7, see #5.\n"
@@ -357,9 +367,8 @@ def test_the_owners_closing_words_on_the_pr_close_nothing(record_property, monke
     top = saved.split(body.MARKER, 1)[0]
     assert_pr_folded("373.5", pr_text, top, shown)
     found = [m.group(0) for m in KEYWORDS.finditer(pr_text)]
-    assert found == ["Closes #40"], f"373.5: the PR's description holds closing references other than Closes #40: {found}"
-    assert card.CLOSES.search(pr_text).group(0) == "Closes #40", "373.5: the card reads another closing line first"
+    assert found == [CLOSES_40], f"373.5: the PR's description holds closing references other than {CLOSES_40}: {found}"
     assert agent.issue_of_pr("", pr_text) == "40", "373.5: Dokima reads the PR's issue from the owner's words"
     _, again = draw_both(monkeypatch, github, saved, pr_text)
-    assert again is not None and again.rstrip().endswith("Closes #40") and KEYWORDS.findall(again) == ["Closes #40"], \
-        f"373.5: a second redraw lost the PR's own Closes #40 or picked up the owner's:\n{again!r}"
+    assert again is not None and again.rstrip().endswith(CLOSES_40) and KEYWORDS.findall(again) == [CLOSES_40], \
+        f"373.5: a second redraw lost the PR's own Closes line or picked up the owner's:\n{again!r}"
