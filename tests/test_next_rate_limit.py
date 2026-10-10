@@ -40,22 +40,44 @@ STORY = {"kind": "user_story", "summary": "s", "user_story": "u",
          "non_functional": [], "scope": ["x.py"], "out_of_scope": [], "tests": {"57.1": ["tests/test_x.py::test_a"]}}
 PLANNER = {"role": "planner", "stage": None, "run_id": "1", "run": "https://github.com/o/r/actions/runs/1",
            "models": ["claude-opus-5-5"], "handback": STORY, "check": {"passed": True, "problems": []}}
+APPROVAL = {"verdict": "approve", "summary": "The plan proves every ask.", "raises": [], "answers": [],
+            "previous_step": {"did": ["Wrote a plan."], "decided": [], "open": []}}
+PLAN_REVIEW = {"role": "reviewer", "stage": "plan", "run_id": "2", "run": "https://github.com/o/r/actions/runs/2",
+               "models": ["claude-opus-5-5"], "handback": APPROVAL, "check": {"passed": True, "problems": []}}
+ISSUE_READ = ["api", f"repos/o/r/issues/{N}"]
+BLOCKED_BY_READ = ["api", f"repos/o/r/issues/{N}/dependencies/blocked_by"]
+
+
+def every_call(args):
+    """Every call GitHub may refuse: all of them."""
+    return True
+
+
+def only(read):
+    """GitHub refuses only this read, by its first two words, and answers the rest."""
+    return lambda args: [a for a in args if not a.startswith("-")][:2] == read
 
 
 class FakeGitHub:
     """GitHub for one `next` run: answers its reads, and fails as told."""
 
-    def __init__(self, failure, until):
-        """Calls fail with GitHub's words in failure while the fake clock is before until."""
+    def __init__(self, failure, until, failing=every_call, earlier=(), labels=()):
+        """Calls failing picks fail with failure's words while the clock is before until.
+
+        earlier are the records already posted after the planner's, and labels the issue's labels."""
         self.clock = NOW
         self.slept = []
         self.failure = failure
         self.until = until
+        self.failing = failing
         self.calls = []
         comments = [{"author": {"login": OWNER}, "body": "/plan", "createdAt": "2026-10-07T10:00:00Z"},
                     {"author": {"login": agent.BOT}, "body": agent.render(PLANNER), "createdAt": "2026-10-07T10:10:00Z"}]
+        comments += [{"author": {"login": agent.BOT}, "body": agent.render(r), "createdAt": "2026-10-07T10:20:00Z"}
+                     for r in earlier]
+        self.labels = [{"name": l} for l in labels]
         self.issue = {"number": int(N), "title": "Stuck issue", "body": "Fix it.", "comments": comments,
-                      "labels": []}
+                      "labels": self.labels}
 
     def time(self):
         """The fake clock, in epoch seconds."""
@@ -79,14 +101,14 @@ class FakeGitHub:
                                              "reset": CORE_RESET}}}
             limits["rate"] = limits["resources"]["core"]
             return self.shaped(args, limits)
-        if self.failure and self.clock < self.until:
+        if self.failure and self.clock < self.until and self.failing(args):
             raise subprocess.CalledProcessError(1, ["gh", *args], output="", stderr=f"{self.failure}\n")
         if args[:2] == ["issue", "view"]:
             return self.shaped(args, self.issue)
         if args[:2] == ["pr", "list"]:
             return self.shaped(args, [])
-        if args[:1] == ["api"] and any(a.strip("/").startswith(f"repos/o/r/issues/{N}") for a in args[1:]):
-            return self.shaped(args, {"number": int(N), "labels": []})
+        if args[:1] == ["api"] and any(a.split("?")[0].strip("/") == f"repos/o/r/issues/{N}" for a in args[1:]):
+            return self.shaped(args, {"number": int(N), "id": 5700, "state": "open", "labels": self.labels})
         return self.shaped(args, [])
 
     @staticmethod
@@ -100,15 +122,17 @@ class FakeGitHub:
         return json.dumps(value)
 
 
-def decide(tmp_path, monkeypatch, capsys, failure=None, until=0, name="out"):
-    """Run `next 57` on the passed planner record against the fake GitHub.
+def decide(tmp_path, monkeypatch, capsys, failure=None, until=0, name="out", rec=PLANNER, failing=every_call,
+           labels=()):
+    """Run `next 57` on the record rec, the passed planner's by default, against the fake.
 
-    Returns what it printed, the record's text, the board line, the fake and any GitHub error that escaped it."""
+    Returns what it printed, the record's text, the board line, the fake and any GitHub error that escaped it; the
+    fake's `autopilot` is the Autopilot line the run left for the workflow to post, empty when none."""
     out = tmp_path / name
     out.mkdir()
-    json.dump(PLANNER, open(out / "record.json", "w"))
-    (out / "comment.md").write_text(agent.render(PLANNER))
-    hub = FakeGitHub(failure, until)
+    json.dump(rec, open(out / "record.json", "w"))
+    (out / "comment.md").write_text(agent.render(rec))
+    hub = FakeGitHub(failure, until, failing, labels=labels)
     monkeypatch.setattr(agent, "gh", hub.gh)
     monkeypatch.setattr(time, "time", hub.time)
     monkeypatch.setattr(time, "sleep", hub.sleep)
@@ -124,6 +148,7 @@ def decide(tmp_path, monkeypatch, capsys, failure=None, until=0, name="out"):
     finally:
         monkeypatch.undo()
     board = (out / "board.txt").read_text().strip() if (out / "board.txt").exists() else ""
+    hub.autopilot = (out / "autopilot.md").read_text().strip() if (out / "autopilot.md").exists() else ""
     return capsys.readouterr().out.strip(), (out / "comment.md").read_text(), board, hub, escaped
 
 
@@ -228,3 +253,58 @@ def test_a_rate_limit_that_does_not_lift_waits_once_and_never_hangs(record_prope
     assert hub.clock <= GRAPHQL_RESET + 60, f"417.4: the run kept waiting, to {hub.clock - NOW} s, past the one reset"
     assert lines_with(text, GRAPHQL_LIMIT), f"417.4: the run that still failed after the reset did not say why:\n{text[-800:]}"
     assert printed == "stop", f"417.4: the run that still failed after the reset printed {printed!r}, not 'stop'"
+
+
+@pytest.mark.parametrize("read", [ISSUE_READ, BLOCKED_BY_READ], ids=["autopilot-label-read", "blocked-by-read"])
+def test_a_rate_limit_on_a_later_autopilot_read_waits_and_starts_the_worker(record_property, tmp_path, monkeypatch,
+                                                                            capsys, read):
+    """A rate limit after an approved plan on autopilot is waited out; the worker starts.
+
+    Proves 417.2.
+    The owner's 15:12Z case: a plan review approves the plan on an issue on autopilot. GitHub answers the issue and
+    its comments, then refuses one later read with its REST rate-limit words until the REST limit's reset: the
+    issue's labels (is it on autopilot?) or its blocked-by links (is it waiting on an open blocker?). The run must
+    wait until that reset, no more than a minute past it, then start the worker with the line
+    'Autopilot: plan approved, starting work', exactly as a run GitHub answered. Waiting only around the first read
+    of the issue, or stopping at once on these later reads as before #417, fails this test."""
+    record_property("proves", "417.2")
+    printed, text, board, hub, escaped = decide(tmp_path, monkeypatch, capsys, name="answered", rec=PLAN_REVIEW,
+                                                labels=[agent.AUTOPILOT])
+    assert escaped is None and printed == "start worker", \
+        f"417.2: with GitHub answering, an approved plan on autopilot printed {printed!r}, not 'start worker': {escaped}"
+    printed, text, board, hub, escaped = decide(tmp_path, monkeypatch, capsys, REST_LIMIT, until=CORE_RESET,
+                                                rec=PLAN_REVIEW, failing=only(read), labels=[agent.AUTOPILOT])
+    assert any(c[:2] == read for c in hub.calls), f"417.2: the run never made the read {' '.join(read)!r} this test refuses"
+    assert escaped is None, f"417.2: the rate-limited read {' '.join(read)!r} was never tried again; GitHub's error escaped: {escaped}"
+    assert printed == "start worker", (f"417.2: after GitHub's rate limit on {' '.join(read)!r} reset, the run printed "
+                                       f"{printed!r}, not 'start worker' (it waited {sum(hub.slept)} s for a reset "
+                                       f"{CORE_RESET - NOW} s away); its Next lines: {next_lines(text)!r}")
+    assert CORE_RESET <= hub.clock <= CORE_RESET + 60, (f"417.2: the run waited until {hub.clock - NOW} s, not until "
+                                                        f"the REST limit's reset at {CORE_RESET - NOW} s (within a minute)")
+    assert hub.autopilot == "Autopilot: plan approved, starting work", \
+        f"417.2: after the wait, the run left the Autopilot line {hub.autopilot!r}, not 'Autopilot: plan approved, starting work'"
+    assert next_lines(text) == ["**Next:** The worker starts now."], \
+        f"417.2: after the wait, the record's Next lines are {next_lines(text)!r}, not the worker starting"
+    assert board == "Work none", f"417.2: after the wait, the card is placed {board!r}, not in Work without Needs you"
+
+
+def test_a_later_autopilot_read_github_refuses_says_githubs_reason(record_property, tmp_path, monkeypatch, capsys):
+    """A refused autopilot read after a plan review puts GitHub's reason on the record.
+
+    Proves 417.1.
+    A plan review approves the plan on an issue on autopilot; GitHub answers the issue and its comments, then
+    answers the read of the issue's labels with "HTTP 502: Server Error" every time. Before #417 that read became
+    'Autopilot could not be read from GitHub' with no word of GitHub's reason. The record must now hold exactly one
+    line with GitHub's words, start no stage, leave no Autopilot line, and wait less than a minute, since a server
+    error is not the rate limit."""
+    record_property("proves", "417.1")
+    printed, text, board, hub, escaped = decide(tmp_path, monkeypatch, capsys, SERVER_ERROR, until=float("inf"),
+                                                rec=PLAN_REVIEW, failing=only(ISSUE_READ), labels=[agent.AUTOPILOT])
+    assert any(c[:2] == ISSUE_READ for c in hub.calls), "417.1: the run never read the issue's labels this test refuses"
+    said = lines_with(text, SERVER_ERROR)
+    assert len(said) == 1, (f"417.1: GitHub refused the autopilot read after a plan review, and the record holds "
+                            f"{len(said)} lines with GitHub's reason {SERVER_ERROR!r}, not one"
+                            f"{' (the error escaped the step: ' + escaped + ')' if escaped else ''}:\n{text[-1200:]}")
+    assert printed == "stop", f"417.1: a stage started though GitHub refused the autopilot read: {printed!r}"
+    assert hub.autopilot == "", f"417.1: the run left the Autopilot line {hub.autopilot!r} though the read failed"
+    assert sum(hub.slept) < 60, f"417.1: a server error on the autopilot read waited {sum(hub.slept)} s"
