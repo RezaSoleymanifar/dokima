@@ -334,7 +334,7 @@ jobs:
           if [ "$ROLE" = planner ]; then git add tests; else git add -A; fi
           if git diff --cached --quiet; then echo "Nothing to push."
           else
-            git commit -qm "$ROLE for #$N (run ${{ github.run_id }})"
+            git commit -qm "$ROLE for #$N (run ${{ github.run_id }})" --trailer "Co-authored-by: Reza Soleymanifar <34189616+RezaSoleymanifar@users.noreply.github.com>"
             git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:try/issue-$N"
           fi
           # A finished worker opens its pull request whether or not it pushed anything (the planner may have pushed it all).
