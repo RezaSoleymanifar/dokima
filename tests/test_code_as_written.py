@@ -66,6 +66,23 @@ REVIEW = {"verdict": "block", "summary": "Two proofs are weak.", "raises": [BLOC
 COMMENT_CODES = [INLINE, "pytest -k '<x>'", "dokima/<name>.py", "<a> & <b>"]
 RECORD_FOLD = "<details><summary>Full record</summary>"
 
+# Fences that never close, each where GitHub reads a line start: a whole text drawn at the start of a line (the plan's
+# summary is the card's first line) and the words right after a closed code block. A later text holds a closed code
+# block of HTML; if GitHub took an unclosed fence as an opening, its pairing would shift and that HTML would be drawn.
+EVIL = "<kbd>evil</kbd>"
+OPEN_TICKS, OPEN_TILDES = "``` open", "~~~ open"
+FENCE_PLAN = {**PLAN, "summary": OPEN_TICKS,
+              "acceptance_criteria": [{"text": f"First:\n```\nok\n```\n{OPEN_TILDES}", "source": SRC},
+                                      {"text": f"Then:\n```\n{EVIL}\n```", "source": SRC}],
+              "out_of_scope": [f"Later:\n~~~\n{EVIL}\n~~~"]}
+FENCE_REVIEW = {"verdict": "block", "summary": "One proof is weak.", "answers": [], "asks": [], "raises": [
+    {"kind": "blocker", "to": "worker", "label": "456.2", "text": f"Fails:\n```\nok\n```\n{OPEN_TICKS}",
+     "evidence": "Ran it.", "raised_by": "reviewer", "id": "R1"},
+    {"kind": "question", "to": "owner", "label": "Two readings", "text": f"Should it?\n```\nok\n```\n{OPEN_TILDES}",
+     "evidence": f"See:\n~~~\n{EVIL}\n~~~", "raised_by": "reviewer", "id": "R2"},
+    {"kind": "issue", "label": "Outside this issue", "text": f"Elsewhere:\n```\n{EVIL}\n```",
+     "evidence": "Seen.", "raised_by": "reviewer", "id": "R3"}]}
+
 
 def rec(role, stage, handback, n=1):
     """One agent record, as the record step builds it."""
@@ -82,16 +99,16 @@ def env(monkeypatch):
         monkeypatch.setenv(k, v)
 
 
-def the_card():
+def the_card(plan=PLAN):
     """A planned issue's card whose texts hold code and prose that tries HTML."""
-    found = {"recs": [rec("planner", None, PLAN, 11)], "pr": None, "check_runs": [], "reviews": [], "owners": {"boss"},
+    found = {"recs": [rec("planner", None, plan, 11)], "pr": None, "check_runs": [], "reviews": [], "owners": {"boss"},
              "tests": TESTS, "worker": None, "children": []}
     return card.render(REPO, {"number": 456, "url": SRC, "state": "open", "labels": []}, found)
 
 
-def the_comment():
+def the_comment(review=REVIEW):
     """A blocking code review's run comment whose blocker and question hold code."""
-    return agent.render(rec("reviewer", "pr", REVIEW, 14), plan=PLAN)
+    return agent.render(rec("reviewer", "pr", review, 14), plan=PLAN)
 
 
 def visible(comment):
@@ -214,3 +231,27 @@ def test_an_agents_words_outside_code_never_draw_html(record_property, env):
     for where, body in (("the card", text), ("the run comment", visible(the_comment()))):
         raw = [h for h in RAW_HTML if h in body]
         assert not raw, f"456.4: {where} writes an agent's HTML unescaped outside code: {raw}"
+
+
+@pytest.mark.parametrize("where", ["the card", "the run comment"])
+def test_a_fence_that_never_closes_at_a_line_start_draws_no_html(record_property, env, where):
+    """A fence an agent never closes, at a line start, never lets later text draw HTML.
+
+    Proves 456.4. On the card, the plan's summary is just ``` open and a criterion's words after its code block are
+    ~~~ open; in the run comment, a blocker's and a question's words after their code blocks are ``` open and ~~~ open.
+    Later texts hold closed code blocks of <kbd>evil</kbd>. As GitHub renders what the code writes (its answer recorded
+    for exactly that text), no <kbd> is drawn, each of those code blocks shows <kbd>evil</kbd> as written, and the
+    unclosed fences read as plain words."""
+    record_property("proves", "456.4")
+    text = the_card(FENCE_PLAN) if where == "the card" else the_comment(FENCE_REVIEW)
+    seen = github_html.page(github_html.rendered(text, "456.4"))
+    drawn = [t for t, a in seen.tags if t == "kbd"]
+    assert not drawn, (f"456.4: as GitHub renders {where}, a fence that never closes at a line start opens a code "
+                       f"block, and an agent's {EVIL} after it is drawn as HTML")
+    shown = [c for c in seen.codes if c.strip() == EVIL]
+    assert len(shown) == 2, (f"456.4: as GitHub renders {where}, the two code blocks of {EVIL} should each show it as "
+                             f"written, but {len(shown)} do; the code GitHub shows begins {[c[:60] for c in seen.codes]}")
+    words = "".join(t for t in seen.text if t not in seen.codes)
+    for fence in (OPEN_TICKS, OPEN_TILDES):
+        assert fence in words, (f"456.4: as GitHub renders {where}, the unclosed fence {fence!r} does not read as "
+                                "plain words")

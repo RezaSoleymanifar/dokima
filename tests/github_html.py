@@ -4,7 +4,7 @@ Tests use it to check how GitHub shows what code writes.
 
 Tests run in CI with no network and no secrets, so GitHub's answers from its markdown API (POST /markdown, gfm) are
 recorded once in dokima/github_rendering.json, as {"answers": [{"text": ..., "html": ...}, ...]}, and read back here.
-tests/github_rendering.json holds answers the planner recorded for what the code wrote before the work, in the same
+tests/github_code_rendering.json holds answers the planner recorded for what the code wrote before the work, in the same
 shape, so a test can show it fails today for the right reason on GitHub's real rendering.
 An answer counts only for the exact text it was recorded for: when the code writes anything else, the test fails and
 says how to record GitHub's answer for the new text, so a stale answer never passes.
@@ -28,7 +28,7 @@ import pytest
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 ANSWERS = os.path.join(ROOT, "dokima", "github_rendering.json")
-PLANNED = os.path.join(ROOT, "tests", "github_rendering.json")
+PLANNED = os.path.join(ROOT, "tests", "github_code_rendering.json")
 
 
 def ask_github(text):
