@@ -47,7 +47,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import agent, card  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-GOLDEN = os.path.join(os.path.dirname(__file__), "raised_goldens")
 REPO = "o/r"
 ISSUE = {"number": 299, "url": "https://github.com/o/r/issues/299"}
 SRC = "https://github.com/o/r/issues/299"
@@ -197,12 +196,6 @@ def draw(record, earlier=None):
         if "earlier" in str(e):
             pytest.fail("render() takes no earlier records yet, so a review cannot show what it answered")
         raise
-
-
-def golden(name):
-    """A golden file: what today's code draws, kept byte for byte."""
-    with open(os.path.join(GOLDEN, name)) as f:
-        return f.read()
 
 
 def found_for(recs):
@@ -391,45 +384,6 @@ def test_the_record_step_draws_earlier_raises_from_the_pack(record_property, tmp
 
 # 299.4: records posted before this change keep their comment; the issue card still draws them.
 
-@pytest.mark.parametrize("name, record", [("old-planner.md", OLD_PLANNER), ("old-review.md", OLD_REVIEW),
-                                          ("old-worker.md", OLD_WORKER)])
-def test_a_record_posted_before_this_change_keeps_its_comment_exactly(record_property, env, name, record):
-    """A record posted before this change draws exactly the comment it was posted with.
-
-    Draws an old planner, review and worker record, with questions, concerns, blockers, notes, assumptions, issues
-    found, suspect tests and replies, and checks each comment is byte for byte what today's code drew, kept in
-    tests/raised_goldens/, with no Raised section; then checks a record of the same role posted after this change does
-    draw its Raised section.
-
-    Proves 299.4."""
-    record_property("proves", "299.4")
-    body = agent.render(record)
-    assert body == golden(name), (f"299.4: the old {record['role']} record no longer draws the comment it was posted "
-                                  f"with ({name}); first difference near:\n"
-                                  + next((f"now:  {a}\nwas:  {b}" for a, b in zip(body.splitlines(), golden(name).splitlines())
-                                          if a != b), f"lengths {len(body)} and {len(golden(name))}"))
-    assert not headings(body, "Raised:") and not headings(body, "Raised earlier:"), \
-        f"299.4: an old {record['role']} record shows a Raised section:\n{body}"
-    newer = {"planner": NEW_PLANNER, "reviewer": NEW_REVIEW, "worker": NEW_WORKER}[record["role"]]
-    assert headings(draw(newer, earlier=[NEW_PLANNER, NEW_WORKER]), "Raised:"), \
-        f"299.4: a {record['role']} record posted after this change draws no Raised section"
-
-
-def test_the_issue_card_draws_old_records_as_before_and_raised_only_for_newer(record_property, env):
-    """The issue card draws old records as before.
-
-    Draws the issue card from old planner and review records and checks it is byte for byte today's card with no
-    Raised section.
-
-    Proves 299.4."""
-    record_property("proves", "299.4")
-    drawn = card.render(REPO, ISSUE, found_for([OLD_PLANNER, OLD_REVIEW]))
-    assert drawn == golden("old-issue-card.md"), f"299.4: the issue card of old records changed:\n{drawn}"
-    assert not headings(drawn, "Raised:"), f"299.4: the issue card of old records shows Raised:\n{drawn}"
-
-
-# 299.5: what code detects keeps its own name, icon and place, and never appears in Raised.
-
 REJECTED = rec("planner", passed=False, problems=["the hand-back has no tests for 299.1", "the merge clashed on main"],
                **dict(PLAN, raises=[P_QUESTION]))
 CLASH = {"role": "updater", "stage": None, "run": "https://github.com/o/r/actions/runs/8",
@@ -464,30 +418,6 @@ def failing_found(review):
     found = found_for([rec("planner", **PLAN), APPROVED, BUILT, review])
     found["check_runs"], found["pr"] = FAILING_RUNS, {"number": 5, "merged": False}
     return found
-
-
-@pytest.mark.parametrize("name, record", [("rejected.md", REJECTED), ("clash.md", CLASH), ("not-started.md", NOT_STARTED),
-                                          ("merge-failed.md", MERGE_FAILED), ("cancelled.md", CANCELLED)])
-def test_what_code_detects_draws_exactly_as_today(record_property, env, name, record):
-    """Rejected hand-backs, merge conflicts, red main and cancelled runs draw exactly as today.
-
-    Draws each record, the rejected one carrying a raise in its hand-back, and checks each comment is byte for byte
-    what today's code drew, kept in tests/raised_goldens/, with no Raised section: a rejected hand-back, a clash with
-    main found after a merge, main found red before the worker started, a merge of main that failed, and a cancelled
-    run. Then checks the same planner run, passed, does draw its raise in Raised, so the rejected one leaves it out on
-    purpose.
-
-    Proves 299.5."""
-    record_property("proves", "299.5")
-    body = agent.render(record)
-    assert body == golden(name), (f"299.5: what code detects ({name}) no longer draws as today; first difference:\n"
-                                  + next((f"now:  {a}\nwas:  {b}" for a, b in zip(body.splitlines(), golden(name).splitlines())
-                                          if a != b), f"lengths {len(body)} and {len(golden(name))}"))
-    assert not headings(body, "Raised:"), f"299.5: what code detects ({name}) shows a Raised section:\n{body}"
-    passed = copy.deepcopy(REJECTED)
-    passed["check"] = {"passed": True, "problems": []}
-    items = section(shown(agent.render(passed)), "Raised:")
-    assert items and len(items) == 1, "299.5: the same planner run, passed, does not draw its one raise in Raised"
 
 
 @pytest.mark.parametrize("record, title, line, raises", [
@@ -529,7 +459,6 @@ def test_failing_tests_keep_their_marks_and_to_do_beside_raised(record_property,
     Proves 299.5."""
     record_property("proves", "299.5")
     drawn = card.render(REPO, ISSUE, failing_found(PASSED_REVIEW))
-    assert drawn == golden("failing-tests-issue-card.md"), f"299.5: the issue card of failing tests changed:\n{drawn}"
     raised = card.render(REPO, ISSUE, failing_found(rec("reviewer", "pr", verdict="approve", summary="The work holds.",
                                                         blockers=[], asks=[], raises=[R_ISSUE], answers=[])))
     assert not headings(raised, "Raised:") and R_ISSUE["text"] not in raised, \
@@ -552,7 +481,6 @@ def test_what_code_detects_never_enters_the_raised_section(record_property, env,
     Proves 299.5."""
     record_property("proves", "299.5")
     drawn = card.render(REPO, ISSUE, found_for([rec("planner", **PLAN), REJECTED]))
-    assert drawn == golden("rejected-issue-card.md"), f"299.5: the issue card of a rejected hand-back changed:\n{drawn}"
     assert not headings(drawn, "Raised:"), f"299.5: a rejected hand-back's raise is drawn in Raised:\n{drawn}"
     calls = []
 

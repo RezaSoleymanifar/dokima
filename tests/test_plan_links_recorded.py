@@ -384,7 +384,7 @@ class Hub:
             nums = set()
             for line in top.splitlines():
                 if f"**{label}:**" in line:
-                    nums |= {int(x) for x in re.findall(r"#(\d+)", line.split(f"**{label}:**", 1)[1])}
+                    nums |= {int(x) for x in re.findall(r"(?:#|/issues/)(\d+)", line.split(f"**{label}:**", 1)[1])}
             found[kind] = nums
         return found
 

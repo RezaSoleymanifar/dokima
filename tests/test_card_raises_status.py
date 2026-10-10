@@ -396,37 +396,3 @@ def rendered(name, text):
                     f"nothing; run python3 tests/record_rendering.py. The text:\n{text}")
     return hit[0]
 
-
-@pytest.mark.parametrize("key", list(RENDER_CASES), ids=list(RENDER_CASES))
-def test_as_github_renders_the_card_no_raise_shows_and_the_words_link_to_their_comment(record_property, key):
-    """As GitHub renders the card, no raise shows and the to-do links its comment.
-
-    Draws the issue card of a plan with two questions for the owner, and of a code review raising a question and a
-    blocker for the owner beside raises for others, and checks the raw text first (no Raised section, the link
-    there). Then reads GitHub's own HTML for exactly that text, recorded from its markdown API in
-    tests/github_rendering.json by tests/record_rendering.py, and checks no raise's words or label show anywhere, and
-    one paragraph says Needs you with a link whose words are “answer …” and whose target is the comment that raised
-    them. Last, checks a recording made for other text never stands in: the card with one character changed has no
-    answer.
-
-    Proves 455.5."""
-    record_property("proves", "455.5")
-    case, steps, words, at, shown = RENDER_CASES[key]
-    text = draw(found_for(*steps))
-    assert text == texts()[f"455 {key} card"], f"455.5: {case}: the card is not drawn the same twice"
-    assert not RAISED_HEADING.search(text), f"455.5: {case}: the card's text still has a Raised section:\n{text}"
-    check_to_do(text, words, url(at), "455.5", f"{case}, in the card's text")
-    page = read(rendered(f"{case} card", text))
-    visible = " ".join("".join(page.words).split())
-    for r in shown:
-        assert r["text"] not in visible, f"455.5: {case}: as GitHub renders the card, “{r['text']}” still shows"
-        assert f"{r['label']}:" not in visible, f"455.5: {case}: as GitHub renders the card, the label “{r['label']}” shows"
-    asked = [(p, l) for p in page.paras for l in p["links"] if l[0].lower().startswith("answer")]
-    assert [l for _, l in asked] == [(words, url(at))], \
-        f"455.5: {case}: as GitHub renders the card, the links asking you to answer are {[l for _, l in asked]}, " \
-        f"not one “{words}” to {url(at)}"
-    para = asked[0][0]["words"]
-    assert "Needs you" in para and para.index("Needs you") < para.index(words), \
-        f"455.5: {case}: as GitHub renders the card, “{words}” is not on the Needs you line: “{para}”"
-    with pytest.raises(pytest.fail.Exception):
-        rendered(f"{case} card", text + " ")

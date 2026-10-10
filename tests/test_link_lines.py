@@ -127,7 +127,7 @@ def check_lines(text, links, k, where):
         assert files == [LINK_ICON[field]], \
             f"{k}: {where}'s {label} line draws the icons {files}, not only {LINK_ICON[field]}.svg: {line}"
         assert not VERDICT_ICONS & set(files), f"{k}: {where}'s {label} line carries a verdict or run icon: {line}"
-        numbers = sorted(int(x) for x in re.findall(r"#(\d+)\b", line))
+        numbers = sorted(int(x) for x in re.findall(r"/issues/(\d+)\b", line))
         assert numbers == sorted(links[kind]), \
             f"{k}: {where}'s {label} line shows issues {numbers}, not exactly {sorted(links[kind])}: {line}"
 

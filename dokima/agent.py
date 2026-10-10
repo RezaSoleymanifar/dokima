@@ -723,7 +723,7 @@ def render(rec, pr=None, plan=None, earlier=None):
                 else f"{name} run was cancelled before its agent started.")
         lines = [MARK, f"{icon(repo, 'cancelled')} {role_icon(repo, a, rec.get('stage'))}{what}"]
         if rec.get("agent_started"):
-            lines += stats_fold(rec) + record_fold(rec)
+            lines += record_fold(rec) + stats_tail(rec)
         else:
             lines += record_fold(rec) + ["", f"<sub>No agent ran · [run]({rec.get('run', '')})</sub>"]
         return "\n".join(lines) + "\n"
@@ -758,7 +758,7 @@ def render(rec, pr=None, plan=None, earlier=None):
         lines += ["", "Each story now goes through the flow on its own: comment `/plan` on it to start."]
     if passed and role != "worker":
         lines += answered_lines(repo, rec, earlier) + raised_lines(repo, rec, placed)
-    lines += details(rec) + stats_fold(rec) + record_fold(rec)
+    lines += details(rec) + record_fold(rec) + stats_tail(rec)
     return "\n".join(lines) + "\n"
 
 
@@ -999,12 +999,21 @@ def run_report(path):
             "tokens_out": u.get("output_tokens")}
 
 
-def stats_fold(rec):
-    """The Stats fold right above the full record of every run comment.
+STATS = "<!-- dokima-stats -->"
 
-    Every run an agent ran in has one."""
+
+def stats_tail(rec):
+    """The stats line, the last line of every run comment; `with_next` puts Next right above it."""
     stats = field_icon(os.environ.get("GITHUB_REPOSITORY", ""), "stats")
-    return [""] + card.fold(f"{stats} Stats", [stats_line(rec)])
+    return ["", STATS, f"{stats} {stats_line(rec)}"]
+
+
+def with_next(text, line):
+    """The comment with the Next line right above its stats line, which stays last."""
+    i = text.rfind(STATS)
+    if i < 0:
+        return text.rstrip("\n") + "\n\n" + line + "\n"
+    return text[:i].rstrip("\n") + "\n\n" + line + "\n\n" + text[i:].rstrip("\n") + "\n"
 
 
 def short(n):
@@ -1578,7 +1587,7 @@ def file_issues(repo, number, rec, recs):
             lines.append(f"- Not filed: {card.escape(title)} GitHub refused it: {card.escape(gh_reason(e))}")
             continue
         n = url.rstrip("/").rsplit("/", 1)[-1]
-        lines.append(f"- #{n} {card.escape(title)} · the reviewer confirmed it")
+        lines.append(f"- {card.ref(os.environ.get('GITHUB_REPOSITORY', ''), n)} · the reviewer confirmed it")
     return ["", f"{field_icon(os.environ.get('GITHUB_REPOSITORY', ''), 'issue found')} **Filed as issues:**", ""] + lines \
         if lines else []
 
@@ -2546,8 +2555,9 @@ def main(argv):
             at = text.find(fold)
             at = len(text.rstrip("\n")) if at < 0 else at
             open(os.path.join(out, "comment.md"), "w").write(text[:at] + "\n".join(filed) + "\n" + text[at:])
-        with open(os.path.join(out, "comment.md"), "a") as f:
-            f.write("\n" + next_line(step, owners) + "\n")
+        path = os.path.join(out, "comment.md")
+        text = open(path).read() if os.path.exists(path) else ""
+        open(path, "w").write(with_next(text, next_line(step, owners)) if text else "\n" + next_line(step, owners) + "\n")
         if step[3:] == ("autopilot",):
             # The line the owner would have typed `/work` in place of; the workflow posts it on the issue.
             open(os.path.join(out, "autopilot.md"), "w").write(AUTOPILOT_LINES[step[1]] + "\n")
