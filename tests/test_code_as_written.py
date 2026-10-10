@@ -255,3 +255,41 @@ def test_a_fence_that_never_closes_at_a_line_start_draws_no_html(record_property
     for fence in (OPEN_TICKS, OPEN_TILDES):
         assert fence in words, (f"456.4: as GitHub renders {where}, the unclosed fence {fence!r} does not read as "
                                 "plain words")
+
+
+# A backtick an agent writes where GitHub never pairs it with the next one: inside a link's address, which GitHub reads
+# first, and in a raise's label, drawn on the same line as its words. Code must not take either for the start of code
+# and leave the HTML after it unescaped.
+LINK_TEXT = f"See [the log](run`x) {EVIL} `"
+TICK_LABEL, TICK_WORDS = "`", f"` {EVIL} `"
+TICK_RAISE = {"kind": "question", "to": "owner", "label": TICK_LABEL, "text": TICK_WORDS,
+              "evidence": "Seen.", "raised_by": "planner", "id": "P1"}
+BARE_PLAN = {**PLAN, "user_story": "Owners read words.", "out_of_scope": ["Nothing."],
+             "acceptance_criteria": [{"text": "Words show.", "source": SRC}] * 2}
+TICK_TEXTS = {
+    ("the card", "a backtick inside a link's address"): lambda: the_card({**BARE_PLAN, "summary": LINK_TEXT}),
+    ("the card", "a raise's label that opens a backtick"): lambda: the_card({**BARE_PLAN, "raises": [TICK_RAISE]}),
+    ("the run comment", "a backtick inside a link's address"): lambda: the_comment(
+        {**FENCE_REVIEW, "raises": [{**TICK_RAISE, "label": "Two readings", "text": LINK_TEXT, "raised_by": "reviewer"}]}),
+    ("the run comment", "a raise's label that opens a backtick"): lambda: the_comment(
+        {**FENCE_REVIEW, "raises": [{**TICK_RAISE, "raised_by": "reviewer"}]}),
+}
+
+
+@pytest.mark.parametrize("where,case", list(TICK_TEXTS))
+def test_a_backtick_in_a_link_address_or_a_raise_label_draws_no_html(record_property, env, where, case):
+    """A backtick in a link address or raise label never lets words draw HTML.
+
+    Proves 456.4. On the card and in the run comment, writes words `See [the log](run`x) <kbd>evil</kbd> `` (GitHub reads
+    the backtick as part of the link's address, so it opens no code), and a raise whose label is a lone backtick and
+    whose words are `` ` <kbd>evil</kbd> ` `` (label and words share one line, so GitHub may pair the label's backtick
+    with the words'). As GitHub renders what the code writes (its answer recorded for exactly that text), no <kbd> is
+    drawn and <kbd>evil</kbd> reads as plain words."""
+    record_property("proves", "456.4")
+    text = TICK_TEXTS[(where, case)]()
+    seen = github_html.page(github_html.rendered(text, "456.4"))
+    drawn = [t for t, a in seen.tags if t == "kbd"]
+    assert not drawn, (f"456.4: as GitHub renders {where}, {case} lets an agent's {EVIL} draw HTML, because the code "
+                       "took that backtick for the start of code and left the words after it unescaped")
+    words = "".join(seen.text)
+    assert EVIL in words, f"456.4: as GitHub renders {where} with {case}, the agent's {EVIL} no longer reads as written"
