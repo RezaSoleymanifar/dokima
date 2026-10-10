@@ -361,10 +361,10 @@ def test_no_run_comment_links_an_issue_or_pr_under_words_of_its_own(record_prope
 
     Draws the planner's, the plan review's, the code review's, the worker's and the split's records, and checks no
     line of any of them links an issue, pull request or comment under words of its own, while each still names what
-    it names as a GitHub reference: the planner its related issues, the reviews the owner's comment, the worker its
-    pull request and the split each story it filed. Proves 359.5."""
+    it names as a GitHub reference: the reviews the owner's comment, the worker its pull request and the split each
+    story it filed. The planner's comment names no issue, since its link lines stay on the card (236.2). Proves 359.5."""
     record_property("proves", "359.5")
-    want = {"the planner's record": {50, 51, 52}, "the plan review's record": {40}, "the code review's record": {40},
+    want = {"the planner's record": set(), "the plan review's record": {40}, "the code review's record": {40},
             "the worker's record": {5}, "the split's record": {41, 42, 43}}
     for name, body in comments():
         lines = shown_lines(body)
