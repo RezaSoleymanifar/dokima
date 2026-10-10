@@ -15,12 +15,14 @@ import subprocess
 import sys
 import time
 
-from dokima import card, words
+from dokima import card, raises, words
 from dokima.card import field_icon, icon
 
 VERDICTS = {"approve", "block", "escalate"}
 FIXERS = {"worker", "planner"}
-ANSWERS = {"fixed", "disagree"}
+# The fields agents raised and answered through before #300; a hand-back holding any of them, even empty, is rejected.
+OLD_FIELDS = ("questions", "concerns", "replies", "suspect_tests", "outside_scope", "blockers", "notes", "assumptions",
+              "issues_found", "outside_plan", "resolved")
 
 
 def gh(*args):
@@ -128,26 +130,89 @@ def is_record(c, role=None, stage=None):
 
 
 def open_blockers(recs, stage):
-    """The blockers of the newest review at this stage, unless it approved; these must be answered by id."""
+    """The blockers of the newest review at this stage posted before #300, unless it approved."""
     for r in reversed(recs):
         if r.get("role") == "reviewer" and (r.get("stage") or "") == stage and r.get("check", {}).get("passed"):
             return [] if r["handback"].get("verdict") == "approve" else r["handback"].get("blockers", [])
     return []
 
 
-def blockers_for(recs, role):
-    """The blockers this role must answer by id. A planner answers the test blockers of a code review that sent the work
-    back to it, else the newest plan review's; a worker answers only the code blockers of the newest code review."""
-    if role == "worker":
-        return [b for b in open_blockers(recs, "pr") if not (isinstance(b, dict) and b.get("fixer") == "planner")]
-    for r in reversed(recs):
-        if r.get("role") == "reviewer" and r.get("check", {}).get("passed"):
-            if (r.get("stage") or "") == "pr" and r["handback"].get("verdict") == "block":
-                tests = [b for b in r["handback"].get("blockers", []) if isinstance(b, dict) and b.get("fixer") == "planner"]
-                if tests:
-                    return tests
-            break
-    return open_blockers(recs, "plan")
+def old_blocker(b, stage):
+    """An old review's blocker as the raise it stands for, under its old ID.
+
+    A plan review's blockers are the planner's; a code review's go to the fixer they name, else the worker."""
+    to = "planner" if stage == "plan" else b.get("fixer") if b.get("fixer") in FIXERS else "worker"
+    text = " ".join(str(b.get(k)) for k in ("problem", "fix") if filled(b.get(k)))
+    out = {"kind": "blocker", "to": to, "label": b.get("criterion"), "text": text, "evidence": b.get("evidence"),
+           "raised_by": "reviewer", "id": b.get("id")}
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def open_raises(recs):
+    """Every raise on the issue still open, oldest first, each as code stamped it.
+
+    A raise is open from the passed record that raised it until a passed record answers its ID. A record posted before
+    #300 still counts: the blockers of the newest review at each stage, unless it approved, are listed under their old
+    IDs, and an old reply by ID answers one."""
+    passed = [r for r in recs if r.get("role") in HANDBACK and (r.get("check") or {}).get("passed")
+              and isinstance(r.get("handback"), dict)]
+    answered = set()
+    for r in passed:
+        answered |= {a["raise"] for a in card.answers_of(r["handback"])}
+        answered |= {x.get("blocker") for x in r["handback"].get("replies") or [] if isinstance(x, dict)}
+    newest = {}
+    for i, r in enumerate(passed):
+        if r["role"] == "reviewer":
+            newest[r.get("stage") or ""] = i
+    out = []
+    for i, r in enumerate(passed):
+        h = r["handback"]
+        out += [x for x in card.raises_of(h) if x.get("id") and x["id"] not in answered]
+        stage = r.get("stage") or ""
+        old = h.get("blockers") if isinstance(h.get("blockers"), list) else []
+        if r["role"] == "reviewer" and newest.get(stage) == i and h.get("verdict") != "approve":
+            out += [old_blocker(b, stage) for b in old if isinstance(b, dict) and filled(b.get("id"))
+                    and b["id"] not in answered]
+    return out
+
+
+def raises_for(recs, role):
+    """The open raises this role must answer by ID, oldest first."""
+    return [r for r in open_raises(recs) if raises.sent_to(r) == role]
+
+
+def taken_ids(recs):
+    """Every raise ID already on the issue, old blocker IDs included."""
+    ids = set()
+    for r in recs:
+        h = r.get("handback") if isinstance(r, dict) else None
+        if not isinstance(h, dict):
+            continue
+        for field in ("raises", "blockers"):
+            ids |= {x.get("id") for x in h.get(field) or [] if isinstance(x, dict) and x.get("id")} \
+                if isinstance(h.get(field), list) else set()
+    return ids
+
+
+def stamp_record(rec, earlier):
+    """Stamp a record's raises with who raised them and an ID new on the issue."""
+    h = rec.get("handback")
+    if isinstance(h, dict) and isinstance(h.get("raises"), list) and rec.get("role") in HANDBACK:
+        kept = [r for r in h["raises"] if isinstance(r, dict)]
+        if len(kept) == len(h["raises"]):
+            h["raises"] = raises.stamp(rec["role"], kept, taken_ids(earlier))
+    return rec
+
+
+def owner_raises(h):
+    """The questions and blockers a hand-back raises for the owner."""
+    return [r for r in card.raises_of(h) if r.get("kind") in ("question", "blocker") and r.get("to") == "owner"]
+
+
+def for_planner(h):
+    """True when a review sends any blocker to the planner, new or old."""
+    return any(r.get("kind") == "blocker" and r.get("to") == "planner" for r in card.raises_of(h)) or \
+        any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers") or [])
 
 
 LINKS = ("blocked_by", "blocks", "relates_to")
@@ -199,30 +264,70 @@ def problems_links(h, pack_dir):
     return bad
 
 
+def pack_records(pack_dir):
+    """The readable earlier records in the pack's in/ folder, oldest first."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(pack_dir, "in", "*.json"))):
+        try:
+            r = json.load(open(path))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+def pack_issue(pack_dir):
+    """The issue number the pack's issue.md is about, or None."""
+    issue = os.path.join(pack_dir, "issue.md")
+    m = re.match(r"# Issue #(\d+)", open(issue).read()) if os.path.exists(issue) else None
+    return int(m.group(1)) if m else None
+
+
+def problems_for_owner(a, number, parent):
+    """Everything wrong with a reviewer's answer to a question for the owner.
+
+    Done needs the owner's words, where they said them, and whether the reading changes how the system works or what
+    it costs."""
+    rid, bad = a.get("raise"), []
+    if a.get("answer") != "done":
+        return bad
+    if not filled(a.get("words")):
+        bad.append(f"the answer to {rid}, a question for the owner, needs words: the owner's own words, word for word")
+    where = f"{issue_url(number)}, its parent {issue_url(parent)}, one of their comments' links" if parent \
+        else f"{issue_url(number)}, one of its comments' links"
+    if not filled(a.get("source")) or not owner_source(a["source"].strip(), number, parent):
+        bad.append(f"the answer to {rid}, a question for the owner, needs a source: {where}, or AGENTS.md")
+    if not isinstance(a.get("changes"), bool):
+        bad.append(f"the answer to {rid}, a question for the owner, needs changes: true or false, whether the reading "
+                   "changes how the system works or what it costs")
+    return bad
+
+
 def problems_round(role, h, pack_dir):
-    """Every open blocker of the newest review must be answered by id; the reviewer must resolve or keep each one, and
-    the planner's links must name open issues in the pack."""
+    """Everything wrong with how a hand-back answers the raises listed for its role.
+
+    The reviewer may also answer a question for the owner still open in the pack's records, with the owner's words,
+    where they said them and whether the reading changes anything; the planner's links must name open issues in the
+    pack."""
     path = os.path.join(pack_dir, "open_blockers.json")
-    blockers = {b.get("id") for b in (json.load(open(path)) if os.path.exists(path) else []) if isinstance(b, dict)}
-    bad = []
+    listed = json.load(open(path)) if os.path.exists(path) else []
+    listed = [r for r in listed if isinstance(r, dict)] if isinstance(listed, list) else []
+    answers = h.get("answers", [])
+    questions = []
     if role == "reviewer":
-        resolved, listed = h.get("resolved", []), h.get("blockers", [])
-        if not isinstance(resolved, list) or not all(isinstance(x, str) for x in resolved):
-            bad.append("resolved must be a list of blocker ids")
-            resolved = []
-        if not isinstance(listed, list) or not all(isinstance(b, dict) for b in listed):
-            bad.append("blockers must be a list of objects")
-            listed = listed if isinstance(listed, list) else []
-        carried = set(resolved) | {b.get("id") for b in listed if isinstance(b, dict)}
-        return bad + [f"earlier blocker {b} is neither resolved nor still listed" for b in sorted(blockers - carried)]
-    replies = h.get("replies", [])
-    if not isinstance(replies, list) or not all(isinstance(r, dict) for r in replies):
-        bad.append("replies must be a list of objects")
-        replies = replies if isinstance(replies, list) else []
-    replied = {r.get("blocker") for r in replies if isinstance(r, dict)}
+        questions = [r for r in open_raises(pack_records(pack_dir))
+                     if r.get("kind") == "question" and r.get("to") == "owner" and r.get("raised_by") == "planner"]
+    bad = raises.check_answers(role, answers, listed + questions)
+    if questions and isinstance(answers, list):
+        asked = {r["id"] for r in questions}
+        number, parent = pack_issue(pack_dir), pack_parent(pack_dir)
+        for a in answers:
+            if isinstance(a, dict) and a.get("raise") in asked:
+                bad += problems_for_owner(a, number, parent)
     if role == "planner":
         bad += problems_links(h, pack_dir)
-    return bad + [f"blocker {b} is not answered" for b in sorted(blockers - replied)]
+    return bad
 
 
 def story_body(parent, i, story, parent_title):
@@ -451,8 +556,10 @@ def opening(rec):
     if role == "reviewer":
         what = "the plan" if rec.get("stage") == "plan" else "the work"
         n = len({b.get("criterion") for b in h.get("blockers") or [] if isinstance(b, dict)})
+        k = sum(1 for r in card.raises_of(h) if r.get("kind") == "blocker")
+        blocked = f"with {k} blocker{'s' if k != 1 else ''}" if k and not n else f"on {n} criteri{'a' if n != 1 else 'on'}"
         return {"approve": f"The reviewer passed {what}.",
-                "block": f"The reviewer blocked {what} on {n} criteri{'a' if n != 1 else 'on'}.",
+                "block": f"The reviewer blocked {what} {blocked}.",
                 "escalate": f"The reviewer escalated {what} to you."}.get(h.get("verdict"), f"The reviewer judged {what}.")
     if role == "split":
         return f"Code filed the split as {len(h.get('stories') or [])} stories."
@@ -483,10 +590,14 @@ def raised_lines(repo, rec, earlier):
             word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
             lines.append(f"  - {word}: {escape_line(a.get('why'))}")
             if filled(a.get("words")) and filled(a.get("source")):
-                lines.append(f"  - Your words: [\"{escape_line(a['words']).replace(']', '\\]')}\"]({words_link(a['source'])})")
+                lines.append(f"  - Your words: {said(a['words'], a['source'])}")
     raised = card.raises_of(h)
     if raised:
-        lines += ["", "**Raised:**", ""] + [card.raise_line(repo, r) for r in raised]
+        lines += ["", "**Raised:**", ""]
+        for r in raised:
+            lines.append(card.raise_line(repo, r))
+            if filled(r.get("evidence")):
+                lines.append(f"  - Evidence: {card.escape(escape_line(r['evidence']))}")
     return lines
 
 
@@ -526,7 +637,7 @@ def render(rec, pr=None, plan=None, earlier=None):
     passed = rec["check"]["passed"]
     first = f"{icon(repo, 'passed' if passed else 'failed')} {role_icon(repo, role, rec.get('stage'))}{escape_line(opening(rec))}"
     if role == "worker" and pr:
-        first += f" ([pull request #{pr.rstrip('/').rsplit('/', 1)[-1]}]({pr}))"
+        first += f" {pr}"
     lines = [MARK, first]
     if not passed:
         lines += [""] + [f"- {p}" for p in rec["check"]["problems"]]
@@ -554,7 +665,7 @@ def render(rec, pr=None, plan=None, earlier=None):
             lines += ["", f"{field_icon(repo, 'question')} **Answered from your words:**"]
             for a in answered:
                 lines += [f"- {escape_line(a['question'])}", f"  - {escape_line(answers[a['question']])}",
-                          f"  - Your words: [\"{escape_line(a['matched']).replace(']', '\\]')}\"]({words_link(a['source'])})"]
+                          f"  - Your words: {said(a['matched'], a['source'])}"]
         judged = [a for a in judged if a not in answered]
         if judged:
             lines += ["", "**The plan's assumptions:**"]
@@ -587,6 +698,16 @@ def words_link(source):
     if source == "AGENTS.md":
         return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/blob/main/AGENTS.md"
     return source
+
+
+def said(words, source):
+    """The owner's quoted words, then where they said them.
+
+    An issue or comment follows the quote written out bare, so GitHub draws it as its own reference; words from
+    AGENTS.md, which is no issue or pull request, stay linked to it."""
+    if source == "AGENTS.md":
+        return f"[\"{escape_line(words).replace(']', '\\]')}\"]({words_link(source)})"
+    return f"\"{escape_line(words)}\" {source}"
 
 
 def escape_line(text):
@@ -715,7 +836,7 @@ def pack_parent(*dirs):
 
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
-    the newest passed plan, the issue's parent on GitHub (parent.json, naming none when it has none or GitHub cannot
+    the open raises this role must answer (open_blockers.json), the newest passed plan, the issue's parent on GitHub (parent.json, naming none when it has none or GitHub cannot
     say) and, for the planner, every open issue of the repo. The pull request review also gets the worker's session log from its run."""
     d, items = conversation(repo, number)
     recs = records(items)
@@ -724,8 +845,8 @@ def pack(repo, number, role, stage, dest):
     json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
-    answers = blockers_for(recs, role) if role != "reviewer" else open_blockers(recs, stage)
-    json.dump(answers, open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
+    # The open raises this agent must answer; the file keeps the name the workflows give it.
+    json.dump(raises_for(recs, role), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
     for i, r in enumerate(recs, 1):
         name = name_of(r, i)
@@ -742,31 +863,6 @@ def pack(repo, number, role, stage, dest):
     return bool(plan)
 
 
-QUESTION_SHAPE = '{"question": "...?", "assumption": "..."}'
-
-
-def problems_questions(qs):
-    """Everything wrong with the planner's questions for the owner: each is exactly a question (with a '?') and the
-    reading the plan assumed, nothing else."""
-    if not isinstance(qs, list):
-        return [f"questions must be a list, each {QUESTION_SHAPE}"]
-    bad = []
-    for i, q in enumerate(qs, 1):
-        if not isinstance(q, dict):
-            bad.append(f"question {i} must be a question and its assumption, {QUESTION_SHAPE}")
-            continue
-        extra = sorted(str(k) for k in q if k not in ("question", "assumption"))
-        if extra:
-            bad.append(f"question {i} has {', '.join(extra)}: a question is only the question and its assumption, "
-                       "never options or a recommendation")
-        for field in ("question", "assumption"):
-            if not filled(q.get(field)):
-                bad.append(f"question {i} has no {field}: it must be non-empty text")
-        if filled(q.get("question")) and "?" not in q["question"]:
-            bad.append(f"question {i} asks nothing: its question needs a '?'")
-    return bad
-
-
 def problems_review(r):
     """Everything wrong with a review.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -779,28 +875,12 @@ def problems_review(r):
         bad.append("previous_step must sum up what the planner or worker did, decided and left open")
     elif sum(len(prev.get(k) or []) for k in ("did", "decided", "open")) > 5:
         bad.append("previous_step holds at most five lines")
-    blockers = r.get("blockers", [])
-    if not isinstance(blockers, list):
-        bad.append("blockers must be a list")
-        blockers = []
-    ids = [b.get("id") for b in blockers if isinstance(b, dict)]
-    if len(ids) != len(set(ids)):
-        bad.append("blocker ids repeat")
-    for b in blockers:
-        for field in ("id", "criterion", "problem", "evidence", "fix"):
-            if not str((b or {}).get(field) or "").strip():
-                bad.append(f"blocker {(b or {}).get('id', '?')} has no {field}")
-    if r.get("verdict") == "approve" and blockers:
-        bad.append("an approve has no blockers")
-    if r.get("verdict") == "block" and not blockers:
-        bad.append("a block needs at least one blocker")
-    if len(r.get("notes", [])) > 3:
-        bad.append("at most three notes")
-    for i, f in enumerate(r.get("issues_found") or [], 1):
-        if not isinstance(f, dict) or not all(str(f.get(k, "")).strip() for k in ("title", "why", "evidence")):
-            bad.append(f"issue found {i} needs a title, why and evidence")
-    if "questions" in r:
-        bad.append("the reviewer never asks the owner; escalate on round three instead")
+    blocks = [x for x in r.get("raises") or [] if isinstance(x, dict) and x.get("kind") == "blocker"] \
+        if isinstance(r.get("raises"), list) else []
+    if r.get("verdict") == "approve" and blocks:
+        bad.append("an approve raises no blocker")
+    if r.get("verdict") == "block" and not blocks:
+        bad.append("a block needs at least one blocker in raises")
     return bad
 
 
@@ -824,10 +904,6 @@ def problems_asks(r, ids):
     return bad
 
 
-ASSUMPTION_SHAPE = ('{"question": "the plan\'s question", "accepted": true | false, "changes": true | false, '
-                    '"matched": "the owner\'s words", "source": "where they said them"} (or "why" when not accepted)')
-
-
 def issue_url(number):
     """The link of the issue on GitHub."""
     return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/issues/{number}"
@@ -841,47 +917,6 @@ def owner_source(source, number, parent=None):
                                         for n in ([number, parent] if parent else [number]))
 
 
-def problems_assumptions(r, plan, number, parent=None):
-    """Everything wrong with a plan review's judgements of the plan's questions: every question judged once, each
-    saying whether its assumption is accepted and whether it changes how the system works or what it costs; one
-    accepted never changes them and names the owner's words and where they said them; one not accepted says why."""
-    qs = [q.get("question") for q in plan.get("questions") or [] if isinstance(q, dict)]
-    judged = r.get("assumptions", [])
-    if not isinstance(judged, list):
-        return [f"assumptions must be a list, one per question of the plan, each {ASSUMPTION_SHAPE}"]
-    bad, seen = [], []
-    for i, a in enumerate(judged, 1):
-        if not isinstance(a, dict):
-            bad.append(f"assumptions item {i} must be an object, {ASSUMPTION_SHAPE}")
-            continue
-        q = a.get("question")
-        label = f"the assumption of \"{q}\""
-        if q not in qs:
-            bad.append(f"assumptions item {i} judges \"{q}\", which is not a question of the plan")
-            continue
-        seen.append(q)
-        if not isinstance(a.get("accepted"), bool):
-            bad.append(f"{label} needs accepted: true or false")
-        if not isinstance(a.get("changes"), bool):
-            bad.append(f"{label} needs changes: true or false, whether it changes how the system works or what it costs")
-        if a.get("accepted") is True:
-            if a.get("changes") is True:
-                bad.append(f"{label} is accepted though it changes how the system works or what it costs (changes is "
-                           "true): only the owner accepts such an assumption")
-            if not filled(a.get("matched")):
-                bad.append(f"{label} is accepted with no matched words: quote the owner's words it matches")
-            if not filled(a.get("source")) or not owner_source(a["source"].strip(), number, parent):
-                where = f"{issue_url(number)}, its parent {issue_url(parent)}, one of their comments' links" if parent \
-                    else f"{issue_url(number)}, one of its comments' links"
-                bad.append(f"{label} needs a source: {where}, or AGENTS.md")
-        elif a.get("accepted") is False and not filled(a.get("why")):
-            bad.append(f"{label} is not accepted and needs why")
-    for q in qs:
-        if seen.count(q) != 1:
-            bad.append(f"the assumption of \"{q}\" must be judged exactly once in assumptions, {ASSUMPTION_SHAPE}")
-    return bad
-
-
 def problems_work(w):
     """Everything wrong with a work.json, as plain sentences; empty when it is well formed."""
     bad = []
@@ -891,14 +926,22 @@ def problems_work(w):
         bad.append("criteria must give one line per criterion")
     if not str(w.get("evidence", "")).strip():
         bad.append("evidence is empty: name the last test command and its result line")
-    for r in w.get("replies", []):
-        if r.get("answer") not in ANSWERS or not str(r.get("why", "")).strip() or not r.get("blocker"):
-            bad.append(f"reply to {r.get('blocker', '?')} needs a blocker id, fixed or disagree, and why")
-    for s in w.get("suspect_tests", []):
-        if not s.get("test") or not str(s.get("evidence", "")).strip():
-            bad.append("every suspect test needs the test and the evidence")
-    if "questions" in w:
-        bad.append("the worker never asks the owner; the plan is the contract")
+    return bad
+
+
+def problems_old(h):
+    """Each field retired by #300 the hand-back still holds, even empty, named."""
+    return [f"{f} is a retired field: raise and answer only through raises and answers" for f in OLD_FIELDS if f in h]
+
+
+def problems_raised(role, h):
+    """Everything wrong with a hand-back's raises and answers, each raise checked against the table."""
+    bad = raises.check_raises(role, h["raises"]) if "raises" in h else []
+    if not isinstance(h.get("answers", []), list):
+        bad.append("the answers must be a list, each {\"raise\": ID, \"answer\": \"done\" or \"disagree\", \"why\": ...}")
+    else:
+        bad += [f"answer {i} is not an object with raise, answer and why"
+                for i, a in enumerate(h.get("answers", []), 1) if not isinstance(a, dict)]
     return bad
 
 
@@ -926,7 +969,7 @@ def problems_items(h, field, keys, name=None):
 
 def problems_shape(kind, h):
     """Everything missing, wrongly typed or wrongly shaped in a hand-back against its prompt's shape, each naming the field."""
-    bad = []
+    bad = problems_old(h) + problems_raised("reviewer" if kind == "review" else "worker", h)
     if kind == "review":
         prev = h.get("previous_step")
         if not isinstance(prev, dict):
@@ -937,18 +980,6 @@ def problems_shape(kind, h):
             bad.append("verdict must be approve, block or escalate")
         if not filled(h.get("summary")):
             bad.append("summary must be one non-empty sentence")
-        bad += problems_items(h, "blockers", ("id", "criterion", "problem", "evidence", "fix"), name="id")
-        for i, b in enumerate(h.get("blockers") if isinstance(h.get("blockers"), list) else [], 1):
-            if isinstance(b, dict) and ("test" not in b or not (b["test"] is None or isinstance(b["test"], str))):
-                bad.append(f"blockers item {i}" + (f" ({b.get('id')})" if filled(b.get("id")) else "") + " needs test: a test name, or null")
-            if isinstance(b, dict) and b.get("fixer") not in FIXERS:
-                bad.append(f"blockers item {i}" + (f" ({b.get('id')})" if filled(b.get("id")) else "") + " needs fixer: worker or planner")
-        bad += problems_items(h, "notes", ("text", "evidence"))
-        bad += problems_items(h, "outside_plan", ("file", "change"))
-        bad += problems_items(h, "issues_found", ("title", "why", "evidence"))
-        resolved = h.get("resolved", [])
-        if not isinstance(resolved, list) or not all(filled(x) for x in resolved):
-            bad.append("resolved must be a list of blocker ids")
         return bad
     if not filled(h.get("summary")):
         bad.append("summary must be one non-empty sentence")
@@ -959,12 +990,6 @@ def problems_shape(kind, h):
         bad += [f"criteria: the line for {k} must be non-empty text" for k, v in crit.items() if not filled(v)]
     if not filled(h.get("evidence")):
         bad.append("evidence must name the last test command and its result line")
-    bad += problems_items(h, "outside_scope", ("file", "why"))
-    bad += problems_items(h, "suspect_tests", ("test", "evidence"))
-    bad += problems_items(h, "replies", ("blocker", "answer", "why"), name="blocker")
-    for i, r in enumerate(h.get("replies") if isinstance(h.get("replies"), list) else [], 1):
-        if isinstance(r, dict) and filled(r.get("answer")) and r["answer"] not in ANSWERS:
-            bad.append(f"replies item {i}: answer must be fixed or disagree")
     return bad
 
 
@@ -978,8 +1003,7 @@ def plan_criteria(plan, number):
 
 
 def problems_plan(kind, h, plan, number):
-    """Everything in a hand-back that does not match the approved plan: a work line per criterion, exactly, and every
-    blocker on one of the plan's criteria, naming either no test or one of the plan's tests for that criterion."""
+    """Everything in a work.json that does not match the plan: one line per criterion."""
     ids = plan_criteria(plan, number)
     bad = []
     if kind == "work":
@@ -987,16 +1011,6 @@ def problems_plan(kind, h, plan, number):
         if isinstance(crit, dict):
             bad += [f"criteria has no line for {c}, a criterion of the plan" for c in ids if c not in crit]
             bad += [f"criteria gives a line for {c}, which the plan does not have" for c in crit if c not in ids]
-        return bad
-    tests = plan.get("tests") if isinstance(plan.get("tests"), dict) else {}
-    for b in h.get("blockers") if isinstance(h.get("blockers"), list) else []:
-        if not isinstance(b, dict) or not filled(b.get("criterion")):
-            continue
-        c, t = b["criterion"], b.get("test")
-        if c not in ids:
-            bad.append(f"blocker {b.get('id')} names {c}, which is not a criterion of the plan ({', '.join(ids) or 'none'})")
-        elif filled(t) and t not in (tests.get(c) or []):
-            bad.append(f"blocker {b.get('id')} names {t}, which is not one of the plan's tests for {c}")
     return bad
 
 
@@ -1038,8 +1052,6 @@ def check(kind, path, plan_path=None, number=None):
             bad += problems_plan(kind, data, plan, number)
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
-                parent = pack_parent(os.environ.get("PACK"), os.path.dirname(os.path.abspath(plan_path)))
-                bad += problems_assumptions(data, plan, number, parent)
     for line in listed + bad:
         print(line)
     return 1 if bad else 0
@@ -1549,9 +1561,9 @@ PASSING = {"success", "neutral", "skipped"}
 
 
 def approves_work(rec):
-    """True when a record is a code review, passed by code, that approves the pull request."""
+    """True when a passed code review approves the pull request, raising nothing for the owner."""
     return (rec.get("role") == "reviewer" and (rec.get("stage") or "") == "pr" and bool(rec.get("check", {}).get("passed"))
-            and (rec.get("handback") or {}).get("verdict") == "approve")
+            and (rec.get("handback") or {}).get("verdict") == "approve" and not owner_raises(rec.get("handback") or {}))
 
 
 def work_approved(recs):
@@ -1692,6 +1704,23 @@ def not_accepted(items, h, owners, body, number, parent=lambda: None):
     return [q for q in qs if q not in ok]
 
 
+def quoted(raised):
+    """The texts of raises, each in quotes, for a Next line."""
+    return " ".join(f"\"{r.get('text', '')}\"" for r in raised)
+
+
+def unanswered(asked, items, h, owners, body, number, parent=lambda: None):
+    """The plan's questions for the owner the review did not settle on their real words.
+
+    A question is settled when the review answers its ID done, says the reading changes neither how the system works
+    nor what it costs, and quotes words the owner really said where its source says."""
+    up = lambda a: None if owner_source((a.get("source") or "").strip(), number) else parent()
+    by = {a["raise"]: a for a in card.answers_of(h)}
+    ok = lambda a: a.get("answer") == "done" and a.get("changes") is False and \
+        said_there(a.get("words"), a.get("source"), items, body, owners, number, up(a))
+    return [r.get("text", "") for r in asked if not (r.get("id") in by and ok(by[r["id"]]))]
+
+
 def clash_pending(recs):
     """True when the newest clash record has no worker record after it.
 
@@ -1703,12 +1732,14 @@ def clash_pending(recs):
 def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number="", parent=lambda: None):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
-    A planner hands to the reviewer unless it has questions for the owner and the issue is not on autopilot. A worker
-    hands to the reviewer. A blocking review sends the work back, until three blocks in a row at that stage since the
-    owner last spoke; then it is the owner's call. On autopilot (`autopilot()` says, None when GitHub cannot), an
-    approved plan goes to the worker and an approved split is filed, each ("start", role, stage, "autopilot"), once
-    the plan reviewer accepted every question's assumption on the owner's real words, in the issue or, as `parent()`
-    gives them, its parent; a question not accepted stops.
+    The river routes by raises. A planner hands to the reviewer unless it raises a blocker for the owner, or has
+    questions for the owner and the issue is not on autopilot. A worker hands to the reviewer. A review raising a
+    question or a blocker for the owner stops. A blocking review sends the work back to the agent its blockers name
+    (any blocker for the planner sends it to the planner), until three blocks in a row at that stage since the owner
+    last spoke; then it is the owner's call. On autopilot (`autopilot()` says, None when GitHub cannot), an approved
+    plan goes to the worker and an approved split is filed, each ("start", role, stage, "autopilot"), once the plan
+    reviewer answered every question of the plan done, changing nothing, on the owner's real words, in the issue or,
+    as `parent()` gives them, its parent (a plan posted before #300: accepted every assumption); any other stops.
     Otherwise an approval, a question, an escalation or a hand-back code rejected always stops for the owner. A
     cancelled run starts nothing and mentions no one: whoever cancelled it knows."""
     role, stage, h = rec.get("role"), rec.get("stage") or "", rec.get("handback") or {}
@@ -1719,7 +1750,10 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     if not rec.get("check", {}).get("passed"):
         return ("stop", "The hand-back was rejected by code, see the problems above. Fix the cause, then start the stage again.")
     if role == "planner":
-        if h.get("questions"):
+        stops = [r for r in owner_raises(h) if r.get("kind") == "blocker"]
+        if stops:
+            return ("stop", "The planner raised a blocker for you: " + quoted(stops) + " Answer with `/plan` and your words.")
+        if h.get("questions") or owner_raises(h):
             asked = "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions."
             on = autopilot()
             if on is None:
@@ -1740,14 +1774,22 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         return ("stop", "")
     verdict = h.get("verdict")
     plan = (latest(records(items), "planner") or {}).get("handback") or {}
-    if stage == "plan" and verdict in ("approve", "block") and plan.get("questions"):
+    asked = [r for r in owner_raises(plan) if r.get("kind") == "question"]
+    if stage == "plan" and verdict in ("approve", "block") and (plan.get("questions") or asked):
         on = autopilot()
         if on is None:
             return ("stop", f"{UNREAD} The plan has questions for you. Answer with `/plan` and your words.")
-        left = not_accepted(items, h, owners, body, number, parent) if on else []
+        left = []
+        if on:
+            # A plan posted before #300 asks through its questions field, judged by the review's assumptions.
+            left = not_accepted(items, h, owners, body, number, parent) if plan.get("questions") else []
+            left += unanswered(asked, items, h, owners, body, number, parent)
         if left:
-            return ("stop", "The reviewer did not accept the plan's assumption for: " + " ".join(f"\"{q}\"" for q in left)
+            return ("stop", "The reviewer did not settle the plan's question for you: " + " ".join(f"\"{q}\"" for q in left)
                     + " Answer with `/plan` and your words" + (", or say `/work` to build it on its assumptions." if verdict == "approve" else "."))
+    mine = owner_raises(h)
+    if mine:
+        return ("stop", "The reviewer raised for you: " + quoted(mine) + " Answer with `/plan`, `/work` or `/review` and your words.")
     if verdict == "approve" and stage == "plan" and test_fix(items, owners):
         return ("start", "worker", "")
     if verdict == "approve" and stage == "plan":
@@ -1767,8 +1809,7 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     blocks = sum(1 for r in later if (r.get("handback") or {}).get("verdict") == "block") + 1
     if blocks >= rounds:
         return ("stop", f"{blocks} blocking reviews in a row without agreement. Your call: `/plan`, `/work` or `/review` with your words.")
-    to_planner = stage == "plan" or any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", []))
-    return ("start", "planner" if to_planner else "worker", "")
+    return ("start", "planner" if stage == "plan" or for_planner(h) else "worker", "")
 
 
 def waiting(items, owners, body, number):
@@ -1825,8 +1866,7 @@ def test_fix(items, owners):
         return False
     r = records([items[review]])[0]
     h = r.get("handback") or {}
-    if not r.get("check", {}).get("passed") or h.get("verdict") != "block" or \
-            not any(isinstance(b, dict) and b.get("fixer") == "planner" for b in h.get("blockers", [])):
+    if not r.get("check", {}).get("passed") or h.get("verdict") != "block" or not for_planner(h):
         return False
     replan = latest(records(items[review + 1:]), "planner")
     agreed = latest(records(items[:works[-1]]), "planner")
@@ -1902,7 +1942,15 @@ def main(argv):
                 "report": run_report(os.path.join(out, "claude.json")), "log": os.environ.get("LOG_URL"),
                 "run": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"}
         text = open(check_file).read() if os.path.exists(check_file) else ""
-        rec = build_record(role, stage, out, text, passed == "true", meta)
+        earlier = []
+        folder = os.path.join(os.environ.get("PACK", ""), "in")
+        for name in sorted(os.listdir(folder)) if os.environ.get("PACK") and os.path.isdir(folder) else []:
+            try:
+                earlier.append(json.load(open(os.path.join(folder, name))))
+            except (OSError, json.JSONDecodeError):
+                print(f"::warning title=Record not read::{name} in the pack could not be read")
+        # Code stamps each raise with who raised it and an ID no raise on the issue has yet.
+        rec = stamp_record(build_record(role, stage, out, text, passed == "true", meta), earlier)
         json.dump(rec, open(os.path.join(out, "record.json"), "w"), indent=1)
         reviewed = os.path.join(os.environ.get("PACK", ""), "plan.json")
         plan = None
@@ -1911,13 +1959,6 @@ def main(argv):
                 plan = json.load(open(reviewed))
             except (OSError, json.JSONDecodeError):
                 plan = None
-        earlier = []
-        folder = os.path.join(os.environ.get("PACK", ""), "in")
-        for name in sorted(os.listdir(folder)) if os.environ.get("PACK") and os.path.isdir(folder) else []:
-            try:
-                earlier.append(json.load(open(os.path.join(folder, name))))
-            except (OSError, json.JSONDecodeError):
-                print(f"::warning title=Record not read::{name} in the pack could not be read")
         open(os.path.join(out, "comment.md"), "w").write(render(rec, plan=plan if isinstance(plan, dict) else None,
                                                                 earlier=earlier))
         return 0

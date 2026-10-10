@@ -5,7 +5,7 @@
     python3 -m dokima.planner rejected N OUT  # say on issue N why the run was rejected
 
 The planner holds no GitHub key. It ends by writing one plan.json to OUT, of kind user_story or feature (see
-dokima/roles/planner.md), with its questions for the owner listed inside it, plus its tests in tests/. Every
+dokima/roles/planner.md), raising its questions for the owner in its raises, plus its tests in tests/. Every
 criterion's source is issue N, its parent issue named in the pack, or a comment on either; every test it names is in
 the repo, filed under one of the plan's criteria. Every older test it changes, renames or deletes needs a reason in
 test_changes. Every new test has a one-sentence summary, names each criterion it proves by number below it, and fails
@@ -27,7 +27,7 @@ import tempfile
 from dokima import body as issue_body
 from dokima import words
 from dokima.checks import PROVES, TEST_DEF
-from dokima.agent import pack_parent, problems_questions  # noqa: E402
+from dokima.agent import pack_parent, problems_old, problems_raised  # noqa: E402
 
 NEW_TEST_TIMEOUT = 60  # seconds one new test may run on today's code before it is stopped and rejected
 CRITERION_CAP = 25  # words in a criterion's first sentence
@@ -39,7 +39,7 @@ class Garbled(Exception):
 
 
 ALWAYS = ("the planner always hands back a plan, a plan.json of kind user_story or feature, "
-          "with its questions listed inside it")
+          "raising its questions for the owner in raises")
 
 
 def issue_link(number):
@@ -155,6 +155,9 @@ def from_kind(p, issue=None):
     the pair of it and its parent's link), every criterion's source must be one of them or one of their comment links.
     """
     kind = p["kind"]
+    bad = problems_old(p) + problems_raised("planner", p) if kind in ("feature", "user_story") else []
+    if bad:
+        raise Garbled("; ".join(bad))
     if kind in ("feature", "user_story") and (not isinstance(p.get("summary"), str) or not p["summary"].strip()):
         raise Garbled("plan.json needs a summary: one plain sentence saying what the issue is about")
     if kind == "feature":
@@ -162,9 +165,6 @@ def from_kind(p, issue=None):
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
         check_stories(stories, issue)
-        bad = problems_questions(p.get("questions", []))
-        if bad:
-            raise Garbled("; ".join(bad))
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
         raise Garbled(f"plan.json kind is {kind!r}: {ALWAYS}")
@@ -522,7 +522,6 @@ def main(argv):
             run_base = os.environ.get("PLANNER_RUN_BASE")
             own = changed_files(run_base) if run_base else files
             bad = problems(number, result, own, tc, result.get("declared")) + bad
-            bad += problems_questions(result["raw"].get("questions", []))
             more, too_long = docstring_caps(paths, read_at(base), read_now)
             listed, bad = listed + more, bad + too_long
             bad += unsummarized(tc["added"]) + unnumbered(tc["added"]) + passing_today(tc["added"], base)

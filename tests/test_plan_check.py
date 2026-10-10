@@ -111,18 +111,18 @@ def feature(change):
 def test_anything_but_a_story_or_a_feature_is_rejected_saying_the_planner_always_hands_back_a_plan(record_property, check, files):
     """A question.md, a plan.json with no kind or of kind question is rejected: the planner always hands back a plan.
 
-    First checks a good user_story, a good feature and a story carrying its questions all still pass. Then hands back
-    one of the wrong kinds, runs the check, and checks it fails with a reason that says the planner always hands back
-    a plan, a user_story or a feature, with its questions listed inside it.
+    First checks a good user_story, a good feature and a story raising a question for the owner all still pass. Then
+    hands back one of the wrong kinds, runs the check, and checks it fails with a reason that says the planner always
+    hands back a plan, a user_story or a feature.
     """
     record_property("proves", "154.1")
-    for good in (STORY, FEATURE, dict(STORY, questions=[{"question": "Should ids be numbers?", "assumption": "The plan assumes strings."}])):
+    for good in (STORY, FEATURE, dict(STORY, raises=[{"kind": "question", "to": "owner", "text": "Should ids be numbers? The plan assumes strings."}])):
         rc, why = check({"plan.json": good}, "154.1")
         assert rc == 0 and not why, f"154.1: a good {good['kind']} was rejected: {why!r}"
     rc, why = check(files, "154.1")
     assert rc == 1, f"154.1: {sorted(files) or 'an empty hand-back'} was accepted; only a user_story or a feature may pass"
-    for words in ("always hands back", "user_story", "feature", "questions"):
-        assert words in why, f"154.1: the reason does not say the planner always hands back a user_story or a feature with its questions inside ({words!r} missing): {why!r}"
+    for words in ("always hands back", "user_story", "feature"):
+        assert words in why, f"154.1: the reason does not say the planner always hands back a user_story or a feature ({words!r} missing): {why!r}"
 
 
 def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_property):
@@ -130,14 +130,16 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
 
     Reads dokima/roles/planner.md: every "kind" it shows is user_story or feature (both still shown), the line naming the
     kinds and the line saying how the planner ends never offer a question, no heading offers "one question" for the owner,
-    no line says a question is shown as handed back, and the questions list is still taught.
+    no line says a question is shown as handed back, and raising a question is still taught. The shared section on
+    raising and answering, whose example raises have kinds of their own, is left out of the kinds read.
     Reads .github/workflows/planner.yml and checks question.md and "one question for the owner" appear nowhere while
     plan.json is still shown.
     """
     record_property("proves", "154.1")
     text = open(os.path.join(ROOT, "dokima", "roles", "planner.md")).read()
     flat = " ".join(text.split())
-    shown = set(re.findall(r'"kind":\s*"(\w+)"', text))
+    own = re.sub(r"(?ms)^# Raising and answering\n.*?(?=^# |\Z)", "", text)
+    shown = set(re.findall(r'"kind":\s*"(\w+)"', own))
     assert shown == {"user_story", "feature"}, f"154.1: the prompt shows the kinds {sorted(shown)}, not exactly user_story and feature"
     kinds = re.search(r"Exactly one kind:[^.]*\.", flat)
     assert kinds and "question" not in kinds.group(0), f"154.1: the prompt still offers a question kind: {kinds and kinds.group(0)!r}"
@@ -146,7 +148,7 @@ def test_the_prompt_and_the_workflow_no_longer_offer_a_lone_question(record_prop
     headings = [line for line in text.splitlines() if line.startswith("#") and "one question" in line.lower()]
     assert not headings, f"154.1: the prompt still has a section offering one question for the owner: {headings}"
     assert "or a question is shown" not in flat, "154.1: the prompt still says a question is shown to the owner as handed back"
-    assert '"questions": [' in flat, "154.1: the prompt no longer teaches the plan's questions list"
+    assert '"raises"' in flat and "question" in flat, "154.1: the prompt no longer teaches raising a question for the owner"
     wf = open(os.path.join(ROOT, ".github", "workflows", "planner.yml")).read()
     assert "question.md" not in wf, "154.1: the planner workflow still looks for question.md"
     assert "one question for the owner" not in " ".join(wf.replace("#", " ").split()), "154.1: the planner workflow still says the planner may end with one question for the owner"

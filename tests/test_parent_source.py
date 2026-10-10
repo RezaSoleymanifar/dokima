@@ -249,17 +249,28 @@ def judged(**second):
     return {**tr.APPROVE, "assumptions": [tr.ACCEPT_1, {**tr.ACCEPT_2, **second}]}
 
 
-def check_review(tmp, review, parent):
-    """Run the plan review's code check on #57, the pack naming this parent."""
+def round_review(tmp, source, parent):
+    """Run the plan review's round check on #57, its answer citing this source.
+
+    The pack names this parent and holds #57's plan with one question for the owner."""
     t = str(tmp)
-    os.makedirs(t, exist_ok=True)
-    json.dump(review, open(f"{t}/review.json", "w"))
-    json.dump(tr.STORY_Q, open(f"{t}/plan.json", "w"))
+    os.makedirs(os.path.join(t, "in"), exist_ok=True)
+    question = {"kind": "question", "to": "owner", "text": "Should the card name the step that failed?",
+                "raised_by": "planner", "id": "P1"}
+    plan = {"role": "planner", "stage": None, "handback": {**ts.STORY, "raises": [question]},
+            "check": {"passed": True, "problems": []}}
+    json.dump(plan, open(os.path.join(t, "in", "01-planner.json"), "w"))
+    json.dump([], open(os.path.join(t, "open_blockers.json"), "w"))
+    open(os.path.join(t, "issue.md"), "w").write(f"# Issue #{N}: T\n\nFix it.\n\n## Comments\n")
     if parent is not None:
-        json.dump({"number": parent}, open(f"{t}/parent.json", "w"))
+        json.dump({"number": parent}, open(os.path.join(t, "parent.json"), "w"))
+    review = {**tr.APPROVE, "answers": [{"raise": "P1", "answer": "done", "why": "Your words settle it.",
+                                         "words": "names the step that failed", "source": source, "changes": False}]}
+    json.dump(review, open(os.path.join(t, "review.json"), "w"))
     env = {**os.environ, "STAGE": "plan", "PACK": t, "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
            "PYTHONPATH": ROOT}
-    p = subprocess.run([sys.executable, "-m", "dokima.agent", "check", "review", f"{t}/review.json", f"{t}/plan.json", str(N)],
+    env.pop("PYTHONSAFEPATH", None)
+    p = subprocess.run([sys.executable, "-m", "dokima.agent", "check-round", "reviewer", os.path.join(t, "review.json"), t],
                        cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
     return p.returncode, p.stdout + p.stderr
 
@@ -267,18 +278,19 @@ def check_review(tmp, review, parent):
 def test_the_plan_reviews_check_accepts_the_owners_words_in_the_parent(record_property, tmp_path):
     """A plan review may cite the owner's words in the parent issue or its comments.
 
-    Runs the real code check of a plan review of #57, whose pack names #56 as its parent. An accepted assumption
-    whose source is #56 or a comment on #56 must pass. One whose source is #58, a comment on #58, or #56 when the
-    pack names no parent must be rejected, the problem naming the source. Proves 334.3."""
+    Runs the real round check of a plan review of #57, whose pack names #56 as its parent, answering the plan's
+    question for the owner. An answer whose source is #56 or a comment on #56 must pass. One whose source is #58, a
+    comment on #58, or #56 when the pack names no parent must be rejected, the problem naming the question. Proves
+    334.3."""
     record_property("proves", "334.3")
     for case, source in (("the parent", url(PARENT)), ("a comment on the parent", url(PARENT) + "#issuecomment-501")):
-        code, out = check_review(tmp_path / case.replace(" ", "-"), judged(source=source), PARENT)
+        code, out = round_review(tmp_path / case.replace(" ", "-"), source, PARENT)
         assert code == 0, f"334.3 ({case}): the plan review's check rejected the owner's words sourced to {source}:\n{out}"
     for case, source, parent in (("another issue", url(OTHER), PARENT),
                                  ("a comment on another issue", url(OTHER) + "#issuecomment-581", PARENT),
                                  ("the parent link with no parent in the pack", url(PARENT), None)):
-        code, out = check_review(tmp_path / case.replace(" ", "-"), judged(source=source), parent)
-        assert code != 0 and "source" in out, \
+        code, out = round_review(tmp_path / case.replace(" ", "-"), source, parent)
+        assert code != 0 and "P1" in out, \
             f"334.3 ({case}): the plan review's check accepted words sourced to {source}:\n{out}"
 
 
