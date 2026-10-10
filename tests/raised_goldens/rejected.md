@@ -4,27 +4,9 @@
 - the hand-back has no tests for 299.1
 - the merge clashed on main
 
-<details><summary><b>Non-functional requirements</b></summary>
+<details><summary><b><img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/stats.svg" width="16" height="16" align="absmiddle" alt="stats"> Stats</b></summary>
 
-- Nothing leaks. (safety; Fail closed)
-
-</details>
-
-<details><summary><b>Scope</b></summary>
-
-- dokima/agent.py
-
-</details>
-
-<details><summary><b>Out of scope</b></summary>
-
-- The board.
-
-</details>
-
-<details><summary><b>Tests</b></summary>
-
-- 299.1: tests/test_a.py::test_one
+Opus 5.5 · 2.0 min · 9 turns · 1K tokens in, 200 out · $1.50 at API prices · [conversation](https://x/log) · [run](https://github.com/o/r/actions/runs/7)
 
 </details>
 
@@ -106,5 +88,3 @@
 ```
 
 </details>
-
-<sub><img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/stats.svg" width="16" height="16" align="absmiddle" alt="stats"> Opus 5.5 · 2.0 min · 9 turns · 1,000 tokens in, 200 out · $1.50 at API prices · [conversation](https://x/log) · [run](https://github.com/o/r/actions/runs/7)</sub>

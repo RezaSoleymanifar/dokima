@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from dokima import body, plan  # noqa: E402
+from dokima import body, plan, retry  # noqa: E402
 
 ALL_TESTS = "all tests"
 TODO = {"questions": "Answer the questions with /plan, or say /review",
@@ -320,7 +320,12 @@ def status(issue, found):
     rec = agent.records([items[at[-1]]])[0]
     if rec.get("role") == "split":
         return "Work", None
-    column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, found.get("owners") or set()))
+    owners = found.get("owners") or set()
+    # A build started since the newest record is Work, with nothing for the owner, as on the board.
+    begun = [s for s in (agent.started(c, owners) for c in items[at[-1] + 1:]) if s]
+    if begun and begun[-1] == "Work":
+        return "Work", None
+    column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, owners))
     # A pull request autopilot put in the merge queue is GitHub's to merge, so nothing is the owner's.
     needs = needs and not agent.queued_since(items, at[-1])
     return column, todo(issue, found, rec) if needs else None
@@ -817,14 +822,19 @@ def main():
         return
     repo = os.environ["REPO"]
     if not os.environ.get("ISSUE_NUMBER") and os.environ.get("GITHUB_EVENT_NAME") == "schedule":
-        sys.exit(1 if sweep(repo) else 0)
+        # A sweep or redraw the empty API budget stopped runs once more, from scratch, after the budget resets.
+        sys.exit(1 if retry.once_more("the card sweep", lambda: sweep(repo), failed=bool) else 0)
     number, pr_number = find_work(repo)
     if not number:
         print("No issue for this event; nothing to write.")
         return
-    cache = {}
-    before, now = draw(repo, number, pr_number, cache=cache)
-    if follow(repo, number, before, now, cache):
+
+    def redraw():
+        cache = {}
+        before, now = draw(repo, number, pr_number, cache=cache)
+        return follow(repo, number, before, now, cache)
+
+    if retry.once_more(f"the card of #{number}", redraw, failed=bool):
         sys.exit(1)
 
 

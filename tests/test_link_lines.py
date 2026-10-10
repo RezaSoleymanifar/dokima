@@ -6,8 +6,8 @@ This story draws them. Each kind with at least one link gets one line: its fixed
 of its label (Blocked by, Blocks, Relates to), then its issue numbers as #N. A kind with no links has no line, and an
 older plan with no links field draws exactly as one with three empty lists.
 
-The issue card (dokima/card.py render, on the issue and on its pull request) draws them from the newest plan; the
-planner's run comment (dokima/agent.py render) shows the very same lines, outside its folds, for a plan and for a split.
+The issue card (dokima/card.py render, on the issue and on its pull request) draws them from the newest plan. The
+planner's run comment no longer shows them: the owner keeps the links on the card at the top of the page (#236).
 """
 import json
 import os
@@ -185,38 +185,3 @@ def test_the_issue_card_shows_the_links_of_the_newest_plan(record_property):
         text = draw([with_links(STORY, older), with_links(STORY, newer)], page)
         check_lines(text, newer, "251.1", f"the {page} card after a re-plan")
         assert not re.search(r"#15\b", text), f"251.1: the {page} card still shows the older plan's link to #15:\n{text}"
-
-
-def test_the_planners_run_comment_shows_the_same_link_lines_as_the_card(record_property, env):
-    """The planner's run comment shows the same link lines as the issue card.
-
-    Proves 251.2. Builds the planner's run comment for a plan and for a split blocked by #12 and #13, blocking #15 and relating to
-    #18, removes every fold (the full record among them), and checks each kind is one line with its own icon, label and
-    numbers, and that its link lines are exactly the issue card's for the same plan."""
-    record_property("proves", "251.2")
-    for plan in (STORY, SPLIT):
-        h = with_links(plan, LINKS)
-        body = comment_for(h)
-        check_lines(body, LINKS, "251.2", f"the planner's run comment for a {plan['kind']}")
-        assert link_lines(body) == link_lines(draw([h])), \
-            (f"251.2: the run comment for a {plan['kind']} shows other link lines than the issue card:\n"
-             + "\n".join(link_lines(body)) + "\n---\n" + "\n".join(link_lines(draw([h]))))
-
-
-def test_the_planners_run_comment_shows_no_line_for_a_kind_with_no_links(record_property, env):
-    """A kind with no links has no line on the planner's run comment.
-
-    Proves 251.2. Builds the planner's run comment for a plan that only blocks #15 (only the Blocks line) and only relates to #18
-    (only Relates to), then for three empty lists and for a plan with no links field: those show no link line or
-    label, still show the plan, and are drawn alike."""
-    record_property("proves", "251.2")
-    for kind, n in (("blocks", 15), ("relates_to", 18), ("blocked_by", 12)):
-        links = dict(NONE, **{kind: [n]})
-        check_lines(comment_for(with_links(STORY, links)), links, "251.2", f"the run comment of a plan with only {kind}")
-    empty, old = comment_for(with_links(STORY, NONE)), comment_for(with_links(STORY, None))
-    for name, text in (("three empty lists", empty), ("no links field", old)):
-        assert "First thing works" in text, f"251.2: the run comment of a plan with {name} no longer shows the plan:\n{text}"
-        assert not link_lines(text), f"251.2: the run comment of a plan with {name} shows link lines: {link_lines(text)}"
-        for label in ("Blocked by", "Relates to"):
-            assert label not in text, f"251.2: the run comment of a plan with {name} says {label}:\n{text}"
-    assert empty == old, "251.2: the run comment of a plan with no links field differs from one with no links"
