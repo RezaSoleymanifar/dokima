@@ -261,7 +261,7 @@ def test_a_persons_comment_in_the_same_words_is_never_edited(record_property):
         f"408.5: the bot's own comment was not the one edited after the clean update: {said[0]['body']!r}"
 
 
-# 408.6: when GitHub cannot list a PR's comments, the others still go on and the run fails naming that PR
+# 408.6: when GitHub cannot list or change a PR's comments, the others still go on and the run fails naming that PR
 
 FAKE_GH = r'''#!PYTHON
 """A stand-in for `gh api`: answers from gh.json and logs every call as [method, path, fields]."""
@@ -302,19 +302,28 @@ m = re.fullmatch(f"repos/{repo}/issues/(\\d+)/comments", bare)
 if m and m[1] in d["broken"]:
     fail("Server Error", 502)
 if method == "GET" and m:
-    out([])
+    out(d["comments"].get(m[1], []) if "page=2" not in path and fields.get("page") not in ("2", 2) else [])
 if method == "POST" and m:
     out({"id": 1, "body": fields.get("body", "")})
+m = re.fullmatch(f"repos/{repo}/issues/comments/(\\d+)", bare)
+if m and method in ("PATCH", "DELETE"):
+    if m[1] in d["broken_edit"]:
+        fail("Server Error", 502)
+    out({"id": int(m[1]), "body": fields.get("body", "")} if method == "PATCH" else {})
 sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
 '''
 
 
-def run_module(tmp_path, broken):
+def run_module(tmp_path, broken, broken_edit=()):
     """Runs the real module with a fake gh: PR 91 refused, PR 92 updated.
 
-    The comments of every PR in `broken` answer 502."""
+    PR 91 already carries one refusal comment of the bot's, id 501. The comments of every PR in `broken` answer 502
+    when listed or posted; editing or deleting a comment whose id is in `broken_edit` answers 502."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    data = {"repo": REPO, "prs": [pr(91), pr(92)], "refuse": {"91": WORKFLOW_REFUSED}, "broken": broken}
+    mine = {"id": 501, "user": {"login": BOT, "type": "Bot"}, "body": legacy(M1, WORKFLOW_REFUSED),
+            "created_at": "2026-10-10T09:00:00Z"}
+    data = {"repo": REPO, "prs": [pr(91), pr(92)], "refuse": {"91": WORKFLOW_REFUSED}, "broken": list(broken),
+            "comments": {"91": [mine]}, "broken_edit": [str(c) for c in broken_edit]}
     (tmp_path / "gh.json").write_text(json.dumps(data))
     fake = tmp_path / "bin" / "gh"
     fake.parent.mkdir()
@@ -322,7 +331,7 @@ def run_module(tmp_path, broken):
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     log = tmp_path / "calls.jsonl"
     env = dict(os.environ, PATH=f"{fake.parent}{os.pathsep}{os.environ['PATH']}", GITHUB_REPOSITORY=REPO,
-               GITHUB_SHA=M1, GITHUB_REF_NAME="main", GITHUB_REF="refs/heads/main", GH_TOKEN="fake-token",
+               GITHUB_SHA=M2, GITHUB_REF_NAME="main", GITHUB_REF="refs/heads/main", GH_TOKEN="fake-token",
                PYTHONPATH=ROOT, FAKE_GH_JSON=str(tmp_path / "gh.json"), FAKE_GH_LOG=str(log))
     env.pop("PYTHONSAFEPATH", None)
     done = subprocess.run([sys.executable, "-m", "dokima.uptodate"], cwd=ROOT, env=env, capture_output=True,
@@ -331,21 +340,49 @@ def run_module(tmp_path, broken):
     return done, calls
 
 
+def errors_naming(done, n):
+    """The run's `::error::` lines that name PR n."""
+    return [line for line in (done.stdout + done.stderr).splitlines()
+            if line.startswith("::error::") and re.search(rf"#{n}\b", line)]
+
+
+def check_broken_run(done, calls, what):
+    """PR 92 still updates, and the run fails with an error naming #91."""
+    said = f"gh calls {calls}\noutput {done.stdout}{done.stderr}"
+    puts = [p for m, p, f in calls if m == "PUT" and "update-branch" in (p or "")]
+    assert any((p or "").rstrip("/").endswith("pulls/92/update-branch") for p in puts), \
+        f"408.6: PR 92 was not updated after PR 91's comments could not be {what}\n{said}"
+    assert done.returncode != 0, f"408.6: the run succeeded although PR 91's comments could not be {what}\n{said}"
+    assert errors_naming(done, 91), f"408.6: no ::error:: line names #91 after its comments could not be {what}\n{said}"
+
+
 def test_a_pr_whose_comments_github_cannot_list_fails_the_run_by_name(record_property, tmp_path):
     """When a PR's comments cannot be read, the others update and the run names it.
 
     Proves 408.6.
     Runs the real module as the workflow does, with a fake `gh`: GitHub refuses PR 91 and then answers 502 for its
-    comments, while PR 92 updates. PR 92 must still get its Update branch, and the run must exit non-zero with #91
-    in its output. The same run with PR 91's comments readable must exit 0."""
+    comments, while PR 92, after it, updates. PR 92 must still get its Update branch, and the run must exit non-zero
+    with an `::error::` line naming #91 (the `::warning::` line every refused PR already gets does not count). The
+    same run with PR 91's comments readable must exit 0 with no error line."""
     record_property("proves", "408.6")
     done, calls = run_module(tmp_path / "broken", ["91"])
-    said = f"gh calls {calls}\noutput {done.stdout}{done.stderr}"
-    puts = [p for m, p, f in calls if m == "PUT" and "update-branch" in (p or "")]
-    assert any((p or "").rstrip("/").endswith("pulls/92/update-branch") for p in puts), \
-        f"408.6: PR 92 was not updated after PR 91's comments could not be read\n{said}"
-    assert done.returncode != 0, f"408.6: the run succeeded although PR 91's comments could not be read\n{said}"
-    assert "#91" in done.stdout + done.stderr, f"408.6: the failed run does not name #91\n{said}"
+    check_broken_run(done, calls, "listed")
     done, calls = run_module(tmp_path / "fine", [])
-    assert done.returncode == 0, \
-        f"408.6: with every comment readable the run failed\ngh calls {calls}\noutput {done.stdout}{done.stderr}"
+    said = f"gh calls {calls}\noutput {done.stdout}{done.stderr}"
+    assert done.returncode == 0 and not errors_naming(done, 91), \
+        f"408.6: with every comment readable the run failed or named #91 in an error\n{said}"
+
+
+def test_a_pr_whose_refusal_comment_github_cannot_edit_fails_the_run_by_name(record_property, tmp_path):
+    """When a refusal comment cannot be edited, the others update and the run names it.
+
+    Proves 408.6.
+    Runs the real module with a fake `gh`: PR 91 already carries the bot's refusal comment, GitHub refuses PR 91
+    again and answers 502 to every edit or delete of that comment, while PR 92, after it, updates. The module must
+    try to change that comment, PR 92 must still get its Update branch, and the run must exit non-zero with an
+    `::error::` line naming #91."""
+    record_property("proves", "408.6")
+    done, calls = run_module(tmp_path / "edit", [], broken_edit=[501])
+    tried = [(m, p) for m, p, f in calls if m in ("PATCH", "DELETE") and (p or "").rstrip("/").endswith("issues/comments/501")]
+    assert tried, f"408.6: the bot's refusal comment on PR 91 was never edited, so its failure was never met\ngh calls {calls}"
+    check_broken_run(done, calls, "changed")
