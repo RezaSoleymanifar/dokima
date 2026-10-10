@@ -1698,19 +1698,61 @@ def open_pr(repo, number):
               "-q", ".[0].number").strip()
 
 
+AUTOPILOT_MERGE = {"merged": "Autopilot: merged PR #{pr}", "queued": "Autopilot: PR #{pr} joined the merge queue",
+                   "waits": "Autopilot: PR #{pr} waits for your approval before it merges"}
+
+
+def merge_outcome(repo, pr):
+    """What GitHub reports after a merge it took, read from the pull request.
+
+    ("merged" | "queued" | "waits", "") or ("unconfirmed", why, in GitHub's words when it gave any). `gh pr merge` exits 0 when it only queues the pull request or turns on
+    auto-merge, so only GitHub's own state says whether it merged."""
+    try:
+        st = json.loads(gh("pr", "view", str(pr), "-R", repo, "--json",
+                           "state,isInMergeQueue,autoMergeRequest,reviewDecision,mergeStateStatus"))
+    except subprocess.CalledProcessError as e:
+        return "unconfirmed", f"GitHub could not say whether it merged: {gh_reason(e)}"
+    except (json.JSONDecodeError, TypeError) as e:
+        return "unconfirmed", f"GitHub's answer on whether it merged could not be read: {e}"
+    if not isinstance(st, dict):
+        return "unconfirmed", "GitHub's answer on whether it merged could not be read"
+    if st.get("state") == "MERGED":
+        return "merged", ""
+    if st.get("isInMergeQueue"):
+        return "queued", ""
+    if st.get("autoMergeRequest") and st.get("reviewDecision") == "REVIEW_REQUIRED":
+        return "waits", ""
+    return "unconfirmed", (f"GitHub took the merge but reports it {str(st.get('state') or 'unknown').lower()}, "
+                           f"not merged, not in the merge queue and not waiting on a review "
+                           f"(merge state {st.get('mergeStateStatus') or 'unknown'})")
+
+
 def automerge(repo, number):
-    """On autopilot, merge the open pull request built for the issue; when it merges, the issue gets one Autopilot
-    line. Returns (pull request or '', merged, why)."""
+    """On autopilot, merge the open pull request built for the issue.
+
+    Once GitHub reports it merged, queued or waiting for the owner's approval, the issue gets that one Autopilot line. Returns (pull request or '', how, why): how is
+    "merged", "queued" or "waits"; "unconfirmed" when GitHub took the merge but cannot confirm it, or '' when the
+    merge was not made, each with why."""
     try:
         pr = open_pr(repo, number)
     except subprocess.CalledProcessError as e:
-        return "", False, " ".join((e.stderr or str(e)).split())
+        return "", "", " ".join((e.stderr or str(e)).split())
     if not pr:
-        return "", False, "there is no open pull request built for it"
-    merged, why = try_merge(repo, pr)
-    if merged:
-        gh("issue", "comment", str(number), "-R", repo, "--body", f"Autopilot: merged PR #{pr}")
-    return pr, merged, why
+        return "", "", "there is no open pull request built for it"
+    asked, why = try_merge(repo, pr)
+    if not asked:
+        return pr, "", why
+    how, why = merge_outcome(repo, pr)
+    if how in AUTOPILOT_MERGE:
+        gh("issue", "comment", str(number), "-R", repo, "--body", AUTOPILOT_MERGE[how].format(pr=pr))
+    return pr, how, why
+
+
+def unconfirmed_comment(repo, pr, why, mention):
+    """Says on the pull request that autopilot cannot confirm its merge, mentioning the owner."""
+    gh("pr", "comment", str(pr), "-R", repo, "--body",
+       f"Autopilot could not confirm this pull request merged: {why}. {mention} Check it on GitHub and merge it if it "
+       f"did not merge.".replace("  ", " "))
 
 
 def merge_tree(repo, number, owners):
@@ -1720,10 +1762,12 @@ def merge_tree(repo, number, owners):
     for n in issue_tree(repo, number):
         if not open_pr(repo, n) or not work_approved(records(conversation(repo, n)[1])):
             continue
-        pr, merged, why = automerge(repo, n)
-        if merged:
+        pr, how, why = automerge(repo, n)
+        if how == "merged":
             done.append((n, pr))
-        elif pr:
+        elif how == "unconfirmed":
+            unconfirmed_comment(repo, pr, why, mention)
+        elif pr and not how:
             gh("pr", "comment", pr, "-R", repo, "--body",
                f"Autopilot did not merge this pull request: {why}. {mention} It waits for you to merge it.".replace("  ", " "))
     return done
@@ -1903,6 +1947,15 @@ def waiting(items, owners, body, number):
     return step[1]
 
 
+def queued_since(items, at):
+    """True when the bot said, after record `at`, the pull request joined the merge queue.
+
+    The merge is GitHub's to finish then, so nothing waits on the owner."""
+    line = re.compile(re.escape(AUTOPILOT_MERGE["queued"]).replace(r"\{pr\}", r"\d+"))
+    return any((c.get("author") or {}).get("login") in (BOT, f"{BOT}[bot]") and line.fullmatch((c.get("body") or "").strip())
+               for c in items[at + 1:])
+
+
 def waits_on_owner(items, owners, autopilot, body="", number=""):
     """True when the issue waits on the owner.
 
@@ -1912,7 +1965,7 @@ def waits_on_owner(items, owners, autopilot, body="", number=""):
     if at is None:
         return False
     rec = records([items[at]])[0]
-    if rec.get("role") == "split":
+    if rec.get("role") == "split" or queued_since(items, at):
         return False
     if any((c.get("author") or {}).get("login") in owners and command_of(c.get("body"))
            and not (c.get("where") or "").endswith("review (approved)") for c in items[at + 1:]):
@@ -1977,7 +2030,7 @@ def next_line(step, owners):
     if step[0] == "start":
         who = {"planner": "The planner", "worker": "The worker", "reviewer": "The reviewer"}[step[1]]
         return f"**Next:** {who} starts now."
-    if step[0] in ("cancelled", "merged", "waiting"):
+    if step[0] in ("cancelled", "merged", "waiting", "queued"):
         return f"**Next:** {step[1]}"
     mention = " ".join(f"@{o}" for o in owners)
     return f"**Next:** {mention} {step[1]}".strip()
@@ -2141,10 +2194,21 @@ def main(argv):
             if on is None:
                 step = ("stop", f"{UNREAD} {step[1]}")
             elif on:
-                pr, merged, why = automerge(repo, number)
-                step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.") if merged else \
-                    ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or review it "
-                             "with a command to send it back.")
+                pr, how, why = automerge(repo, number)
+                if how == "merged":
+                    step = ("merged", f"Autopilot merged PR #{pr}; what it unblocks starts when the issue closes.")
+                elif how == "queued":
+                    step = ("queued", f"PR #{pr} is in the merge queue; GitHub merges it when the queue's checks pass.")
+                elif how == "waits":
+                    step = ("stop", f"PR #{pr} waits for your approval before it merges. Approve it on GitHub, or "
+                                    "review it with a command to send it back.")
+                elif how == "unconfirmed":
+                    unconfirmed_comment(repo, pr, why, " ".join(f"@{o}" for o in owners))
+                    step = ("stop", f"Autopilot could not confirm PR #{pr} merged: {why}. Check it on GitHub and merge "
+                                    "it if it did not merge.")
+                else:
+                    step = ("stop", f"Autopilot did not merge the pull request: {why}. It waits for you: merge it, or "
+                                    "review it with a command to send it back.")
         if rec.get("role") == "reviewer" and (rec.get("stage") or "") == "plan" and rec.get("check", {}).get("passed") \
                 and (rec.get("handback") or {}).get("verdict") == "approve":
             # Code records the approved plan's links on GitHub and redraws the cards they touch; anything that keeps

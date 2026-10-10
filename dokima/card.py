@@ -321,6 +321,8 @@ def status(issue, found):
     if rec.get("role") == "split":
         return "Work", None
     column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, found.get("owners") or set()))
+    # A pull request autopilot put in the merge queue is GitHub's to merge, so nothing is the owner's.
+    needs = needs and not agent.queued_since(items, at[-1])
     return column, todo(issue, found, rec) if needs else None
 
 
