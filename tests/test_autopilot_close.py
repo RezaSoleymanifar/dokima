@@ -37,6 +37,10 @@ from test_start import N, OWNER, Ctx, evaluate, condition
 LABEL = "autopilot"
 LINE = "Autopilot: blockers merged, starting plan"
 WORKFLOWS = os.path.join(ts.ROOT, ".github", "workflows")
+# Workflows a close starts that this harness leaves out, with why. card.yml (#254) redraws cards on every issue event;
+# it changes nothing autopilot reads, needs a fake GitHub for the card's own calls, and its start on a close is proven
+# in tests/test_hand_links.py.
+NOT_RUN_HERE = {"card.yml": "redraws cards only; proven in tests/test_hand_links.py"}
 
 TREE_GH = r'''
 def jload(name, default):
@@ -331,7 +335,7 @@ class Repo(ts.Machine):
         open(f"{self.tmp}/event.json", "w").write(json.dumps(github["event"]))
         ran = []
         for fname in sorted(os.listdir(WORKFLOWS)):
-            if not fname.endswith((".yml", ".yaml")):
+            if not fname.endswith((".yml", ".yaml")) or fname in NOT_RUN_HERE:
                 continue
             wf = ts.load_yaml(open(os.path.join(WORKFLOWS, fname)).read())
             if not closes_on_issue_close(wf):
@@ -559,12 +563,12 @@ def test_autopilot_goes_off_for_the_whole_tree_when_it_is_done(record_property, 
 
 
 def test_a_close_off_autopilot_does_nothing(record_property, tmp_path):
-    """Off autopilot a close starts no sibling, closes no parent and posts no Autopilot line; on autopilot the same close does.
+    """Off autopilot a close starts no sibling and posts no Autopilot line.
 
     The same two trees as above, once with no issue on autopilot and once with all of them on. Tree one: #57 with #101
     and #102, #102 blocked by #101. Tree two: #57 with #101 and #102, #102 already closed. Closing #101 off autopilot
-    must start no planner, post no comment starting 'Autopilot:', leave #57 open with no new comment, and fail no
-    workflow. On autopilot, the same close starts #102 in tree one and closes #57 in tree two."""
+    must start no planner, post no comment starting 'Autopilot:' and fail no workflow; #57 in tree two still closes,
+    on autopilot or not (#367). On autopilot, the same close starts #102 in tree one."""
     record_property("proves", "213.4")
     for on in (False, True):
         case = "on autopilot" if on else "off autopilot"
@@ -582,11 +586,9 @@ def test_a_close_off_autopilot_does_nothing(record_property, tmp_path):
         m = Repo(tmp_path / f"last-{on}", {57: [101, 102]}, labels, closed=[102])
         m.close(101)
         assert not m.failed, f"213.4 ({case}, parent): a workflow failed when #101 closed: {m.failures}\n{m.tail()}"
-        if on:
-            assert m.state(57)[0] == "closed", f"213.4 ({case}, parent): #57 did not close with its last sub-issue\n{m.tail()}"
-        else:
-            assert m.state(57)[0] == "open", f"213.4 ({case}, parent): #57 closed though it is not on autopilot"
-            assert m.new_comments(57) == [], f"213.4 ({case}, parent): #57 got comments: {m.new_comments(57)}"
+        # Since #367 a parent closes with its last sub-issue on autopilot or not; off autopilot it posts no Autopilot line.
+        assert m.state(57)[0] == "closed", f"213.4 ({case}, parent): #57 did not close with its last sub-issue\n{m.tail()}"
+        if not on:
             assert m.any_autopilot_line() == [], f"213.4 ({case}, parent): Autopilot lines were posted: {m.any_autopilot_line()}"
 
 

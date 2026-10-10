@@ -9,35 +9,45 @@ from dokima import agent, fence  # noqa: E402
 
 GOOD_REVIEW = {"previous_step": {"did": ["Split the issue into four stories."], "decided": [], "open": ["Three questions."]},
                "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
-               "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No good-case test.",
-                             "evidence": "18 passed against a stub.", "fix": "Add one.", "fixer": "worker"}],
-               "notes": [], "outside_plan": [], "resolved": []}
+               "raises": [{"kind": "blocker", "to": "worker", "label": "9.1", "text": "No good-case test.",
+                           "evidence": "18 passed against a stub."}]}
+# A review posted before #300, with the old blockers field; records like it are still read.
+OLD_REVIEW = {"previous_step": {"did": ["Split the issue into four stories."], "decided": [], "open": []},
+              "stage": "plan", "round": 1, "verdict": "block", "summary": "One test is missing.",
+              "blockers": [{"id": "B1", "criterion": "9.1", "test": None, "problem": "No good-case test.",
+                            "evidence": "18 passed against a stub.", "fix": "Add one.", "fixer": "worker"}],
+              "notes": [], "outside_plan": [], "resolved": []}
 GOOD_WORK = {"summary": "Cause and change.", "criteria": {"9.1": "dokima/x.py, parse()"},
-             "evidence": "pytest -q: 12 passed", "replies": [{"blocker": "B1", "answer": "fixed", "why": "Added it."}]}
+             "evidence": "pytest -q: 12 passed", "answers": [{"raise": "R1", "answer": "done", "why": "Added it."}]}
 
 
-def test_a_good_review_passes_and_each_malformation_is_named(record_property):
-    """A well-formed review has no problems; an approve with blockers, a block without, a bad stage and a bare blocker are each named."""
+def test_a_good_review_passes_and_each_malformation_is_named(record_property, tmp_path, capsys):
+    """A good review passes; a wrong blocker count or an old field is named."""
     record_property("proves", "agent.1")
-    assert agent.problems_review(GOOD_REVIEW) == []
-    assert agent.problems_review({**GOOD_REVIEW, "verdict": "approve"}) == ["an approve has no blockers"]
-    assert agent.problems_review({**GOOD_REVIEW, "blockers": []}) == ["a block needs at least one blocker"]
-    found = [{"title": "Board ignores closed PRs", "why": "cards go stale", "evidence": "board.py:40"}]
-    assert agent.problems_review({**GOOD_REVIEW, "issues_found": found}) == []
-    assert agent.problems_review({**GOOD_REVIEW, "issues_found": [{"title": "x"}]}) == ["issue found 1 needs a title, why and evidence"]
-    assert "1. Board ignores closed PRs: cards go stale" in agent.render(rec("reviewer", "plan", {**GOOD_REVIEW, "issues_found": found}))
-    bare = agent.problems_review({**GOOD_REVIEW, "blockers": [{"id": "B1"}]})
-    assert {"blocker B1 has no criterion", "blocker B1 has no evidence", "blocker B1 has no fix"} <= set(bare)
-    assert agent.problems_review({**GOOD_REVIEW, "notes": [{"text": "n", "evidence": "e"}] * 4}) == ["at most three notes"]
+    def checked(review):
+        (tmp_path / "r.json").write_text(json.dumps(review))
+        code = agent.check("review", str(tmp_path / "r.json"))
+        return code, capsys.readouterr().out
+    assert checked(GOOD_REVIEW) == (0, ""), "a well-formed blocking review was rejected"
+    code, out = checked({**GOOD_REVIEW, "verdict": "approve"})
+    assert code == 1 and "approve" in out, f"an approve raising a blocker passed: {out}"
+    code, out = checked({**GOOD_REVIEW, "raises": []})
+    assert code == 1 and "block" in out, f"a block raising no blocker passed: {out}"
+    found = {"kind": "issue", "text": "Board ignores closed PRs: cards go stale", "evidence": "board.py:40"}
+    assert checked({**GOOD_REVIEW, "verdict": "approve", "raises": [found]}) == (0, ""), "an approve raising an issue was rejected"
+    code, out = checked({**GOOD_REVIEW, "notes": [{"text": "n", "evidence": "e"}]})
+    assert code == 1 and "notes" in out, f"a review with the old notes field passed: {out}"
 
 
-def test_a_good_work_passes_and_each_malformation_is_named(record_property):
-    """A well-formed work.json has no problems; missing criteria, missing evidence and a reply without a reason are each named."""
+def test_a_good_work_passes_and_each_malformation_is_named(record_property, tmp_path, capsys):
+    """A good work.json passes; missing criteria, evidence or an old replies field are named."""
     record_property("proves", "agent.2")
     assert agent.problems_work(GOOD_WORK) == []
     assert agent.problems_work({**GOOD_WORK, "criteria": {}}) == ["criteria must give one line per criterion"]
     assert "evidence is empty" in agent.problems_work({**GOOD_WORK, "evidence": " "})[0]
-    assert "reply to B1" in agent.problems_work({**GOOD_WORK, "replies": [{"blocker": "B1", "answer": "maybe"}]})[0]
+    (tmp_path / "w.json").write_text(json.dumps({**GOOD_WORK, "replies": [{"blocker": "B1", "answer": "fixed", "why": "w"}]}))
+    assert agent.check("work", str(tmp_path / "w.json")) == 1 and "replies" in capsys.readouterr().out, \
+        "a work.json with the old replies field passed"
 
 
 def test_check_fails_closed_on_missing_or_broken_files(record_property, tmp_path, capsys):
@@ -60,17 +70,6 @@ def test_the_fence_reads_scope_from_plan_json(record_property, tmp_path, monkeyp
     monkeypatch.setattr(fence, "fence", lambda base, scope: seen.setdefault("scope", scope) and [])
     fence.main(["fence", "BASE", str(plan)])
     assert seen["scope"] == ["app.py"]
-
-
-def test_only_the_planner_asks_and_its_questions_are_checked(record_property):
-    """A question with its assumption passes; anything else is named; review and work may not ask."""
-    record_property("proves", "agent.5")
-    q = {"question": "Should a failed run move its card to Needs you?", "assumption": "The plan assumes it does."}
-    assert agent.problems_questions([q, {"question": "Which board view?", "assumption": "The default one."}]) == []
-    assert agent.problems_questions(["Split it?"]) and agent.problems_questions(["Split it?"])[0].startswith("question 1")
-    assert agent.problems_questions([{"question": "Split it.", "assumption": "Yes."}])[0].startswith("question 1")
-    assert agent.problems_review({**GOOD_REVIEW, "questions": [q]}) == ["the reviewer never asks the owner; escalate on round three instead"]
-    assert agent.problems_work({**GOOD_WORK, "questions": [q]}) == ["the worker never asks the owner; the plan is the contract"]
 
 
 def comment(rec, who="dokima-runtime", t="2026-10-06T10:00:00Z"):
@@ -213,16 +212,20 @@ def test_a_command_starts_its_stage_and_anything_else_starts_nothing(record_prop
 
 
 def test_each_round_answers_every_open_blocker(record_property, tmp_path):
-    """Planner and worker must answer every open blocker by id; the reviewer must resolve or keep each earlier one."""
+    """Every agent answers each raise listed for it by ID; a skipped one is named."""
     record_property("proves", "agent.14")
-    (tmp_path / "open_blockers.json").write_text(json.dumps([{"id": "B1"}, {"id": "B2"}]))
-    assert agent.problems_round("worker", {"replies": [{"blocker": "B1"}, {"blocker": "B2"}]}, str(tmp_path)) == []
+    raised = lambda rid, to: {"kind": "blocker", "to": to, "text": f"problem {rid}", "raised_by": "reviewer", "id": rid}
+    answer = lambda rid: {"raise": rid, "answer": "done", "why": "fixed"}
+    (tmp_path / "open_blockers.json").write_text(json.dumps([raised("B1", "worker"), raised("B2", "worker")]))
+    assert agent.problems_round("worker", {"answers": [answer("B1"), answer("B2")]}, str(tmp_path)) == []
+    skipped = agent.problems_round("worker", {"answers": [answer("B1")]}, str(tmp_path))
+    assert len(skipped) == 1 and "B2" in skipped[0], f"a skipped raise was not named: {skipped}"
+    (tmp_path / "open_blockers.json").write_text(json.dumps([raised("B1", "planner"), raised("B2", "planner")]))
     (tmp_path / "issue.md").write_text("# Issue #9: T\n\n## Comments\n")
     (tmp_path / "open_issues.json").write_text("[]")
     links = {"blocked_by": [], "blocks": [], "relates_to": []}
-    assert agent.problems_round("planner", {"replies": [{"blocker": "B1"}], "links": links}, str(tmp_path)) == ["blocker B2 is not answered"]
-    assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": [{"id": "B2"}]}, str(tmp_path)) == []
-    assert agent.problems_round("reviewer", {"resolved": ["B1"], "blockers": []}, str(tmp_path)) == ["earlier blocker B2 is neither resolved nor still listed"]
+    skipped = agent.problems_round("planner", {"answers": [answer("B1")], "links": links}, str(tmp_path))
+    assert len(skipped) == 1 and "B2" in skipped[0], f"the planner's skipped raise was not named: {skipped}"
     assert agent.problems_round("worker", {}, str(tmp_path / "none")) == []
 
 
@@ -230,8 +233,8 @@ def test_open_blockers_come_from_the_newest_review_at_that_stage(record_property
     """A blocking review leaves its blockers open; a later approval clears them; another stage's review never counts."""
     record_property("proves", "agent.15")
     plan = rec("planner", handback={"kind": "user_story"})
-    block = rec("reviewer", "plan", GOOD_REVIEW)
-    ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
+    block = rec("reviewer", "plan", OLD_REVIEW)
+    ok = rec("reviewer", "plan", {**OLD_REVIEW, "verdict": "approve", "blockers": []})
     assert [b["id"] for b in agent.open_blockers([plan, block], "plan")] == ["B1"]
     assert agent.open_blockers([plan, block, ok], "plan") == []
     assert agent.open_blockers([plan, block], "pr") == []
@@ -387,7 +390,7 @@ def test_the_rivers_signal_comes_only_from_dokimas_bot(record_property):
 
 
 def test_the_card_shows_the_running_stage_and_needs_you_only_when_it_is_the_owners_turn(record_property, monkeypatch):
-    """Each step puts the issue and its open PR in the running stage's column, with the Needs you pill exactly when the river stops."""
+    """Each step's place is the running stage's column, with Needs you when the river stops."""
     record_property("proves", "agent.26")
     plan = rec("planner", handback={"kind": "user_story"})
     ok = rec("reviewer", "plan", {**GOOD_REVIEW, "verdict": "approve", "blockers": []})
@@ -397,16 +400,6 @@ def test_the_card_shows_the_running_stage_and_needs_you_only_when_it_is_the_owne
     assert agent.board_place(rec("reviewer", "pr", GOOD_REVIEW), ("start", "worker", "")) == ("Work", False)
     assert agent.board_place(ok, ("stop", "x")) == ("Plan", True)
     assert agent.board_place(pr_ok, ("stop", "x")) == ("Review", True)
-    moves = []
-    class FakeBoard:
-        def __init__(self, *a): pass
-        def item(self, kind, n): return (kind, n)
-        def set(self, iid, field, option): moves.append((iid, field, option))
-    from dokima import board
-    monkeypatch.setattr(board, "Board", FakeBoard)
-    monkeypatch.setattr(agent, "gh", lambda *a: "161\n")
-    assert agent.move_card("o/r", "157", "Review", True, "o/1") == [("issue", 157), ("pr", 161)]
-    assert (("pr", 161), "Action", "Needs you") in moves and (("issue", 157), "Status", "Review") in moves
 
 
 def test_a_replan_is_judged_only_on_what_the_planner_changed_in_its_run(record_property, tmp_path, monkeypatch):

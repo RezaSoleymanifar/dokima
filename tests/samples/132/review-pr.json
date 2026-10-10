@@ -10,15 +10,5 @@
   "open": []
  },
  "verdict": "approve",
- "summary": "A failed run now always leaves its card, and its open pull request's, in its stage's column with Needs you.",
- "blockers": [],
- "notes": [
-  {
-   "text": "The new fallback also catches a damaged board.txt (wrong number of words), not only a missing one, and treats it as a stop for the owner. That fits failing closed but no test covers it.",
-   "evidence": "dokima/agent.py main() 'board': except (OSError, ValueError)."
-  }
- ],
- "outside_plan": [],
- "resolved": [],
- "issues_found": []
+ "summary": "A failed run now always leaves its card, and its open pull request's, in its stage's column with Needs you."
 }

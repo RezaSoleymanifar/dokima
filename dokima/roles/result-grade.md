@@ -30,6 +30,6 @@ Blockers: a pull request that fails any of 1 to 7 goes back to the worker (or, f
    only the owner's own Approve accepts it.
 6. Every failure path the criteria imply says why, on the issue or in the output; nothing fails silently.
 7. Now that code exists, a test is shown to be too weak: the code passes it while a criterion is still wrong or partial.
-   That is a blocker for the plan: set its `"fixer": "planner"`, and it goes back to the planner for a stronger test
-   before the work can merge. Every other blocker has `"fixer": "worker"`.
-Notes, never blockers: readability, naming, docstrings, simpler ways to the same result. At most three.
+   That is a blocker for the plan: raise it for the planner, and it goes back to the planner for a stronger test
+   before the work can merge. Every other blocker is raised for the worker.
+Never blockers: readability, naming, docstrings, simpler ways to the same result.

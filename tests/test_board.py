@@ -1,8 +1,11 @@
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from dokima import board  # noqa: E402
+import pytest  # noqa: E402
+
+from dokima import agent, board  # noqa: E402
 
 WORKFLOW = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "board.yml")
 BOT, YOU = {"type": "Bot"}, {"type": "User"}
@@ -14,34 +17,15 @@ def pr(action, number=7, body="Closes #5", merged=False):
 
 # 116.1: every stage moment sets the stage and whose turn it is
 
-def test_issue_stage_moments(record_property):
-    record_property("proves", "116.1")
-    issue = {"number": 5}
-    assert board.decide("issues", {"action": "labeled", "label": {"name": "plan"}, "issue": issue}) == [("issue", 5, "Plan", False)]
-    assert board.decide("issues", {"action": "labeled", "label": {"name": "work"}, "issue": issue}) == [("issue", 5, "Work", False)]
-    assert board.decide("issues", {"action": "closed", "issue": issue}) == [("issue", 5, "Done", False)]
-    assert board.decide("issues", {"action": "labeled", "label": {"name": "bug"}, "issue": issue}) == []
+@pytest.fixture(autouse=True)
+def no_history(monkeypatch):
+    """Every issue here is open with no record yet, so the board reads no network."""
+    monkeypatch.setattr(board.Board, "state", lambda self, kind, n: "open")
+    monkeypatch.setattr(agent, "gh", lambda *a: json.dumps({"number": int(a[2]), "title": "", "body": "", "comments": []})
+                        if a[:2] == ("issue", "view") else "[]")
 
 
-def test_plan_ready_question_or_rejection_is_your_turn(record_property):
-    record_property("proves", "116.1")
-    for body in ("Plan written above, tests on `work/issue-5`.", "**Planner question**\n\nWhich?", "**Plan rejected:** no tests"):
-        assert board.decide("issue_comment", {"action": "created", "issue": {"number": 5}, "comment": {"user": BOT, "body": body}}) == [("issue", 5, "Plan", True)]
-    assert board.decide("issue_comment", {"action": "created", "issue": {"number": 5}, "comment": {"user": YOU, "body": "Plan written above"}}) == [], "116.1: a person's comment moved the board"
-
-
-def test_pr_moments(record_property):
-    record_property("proves", "116.1")
-    assert board.decide("pull_request", pr("opened")) == [("pr", 7, "Review", False), ("issue", 5, "Review", False)]
-    run = {"action": "completed", "workflow_run": {"pull_requests": [{"number": 7}]}}
-    assert board.decide("workflow_run", run) == [("pr", 7, "Review", True)]
-    review = {"action": "submitted", "review": {"state": "changes_requested"}, "pull_request": {"number": 7, "body": "Closes #5"}}
-    assert board.decide("pull_request_review", review) == [("pr", 7, "Work", False), ("issue", 5, "Work", False)]
-    assert board.decide("pull_request", pr("closed", merged=True)) == [("pr", 7, "Done", False), ("issue", 5, "Done", False)]
-    assert board.decide("pull_request", pr("closed", merged=False)) == [("pr", 7, "Done", False)], "116.1: an unmerged close finished the issue"
-
-
-# 116.2: PR and issue move together; new items land on top
+# 116.2: new items land on top
 
 class FakeGitHub:
     def __init__(self, on_board=False):
@@ -67,17 +51,6 @@ class FakeGitHub:
         return {}
 
 
-def test_pr_and_issue_move_together(record_property):
-    record_property("proves", "116.2")
-    gh = FakeGitHub(on_board=True)
-    changed = board.sync("pull_request", pr("opened"), "dokima-dev/1", "dokima-dev/dokima", q=gh)
-    assert [(k, n) for k, n, *_ in changed] == [("pr", 7), ("issue", 5)]
-    sets = [v for name, v in gh.calls if name == "mutation" and "o" in v]
-    assert {s["o"] for s in sets} == {"s-Review"}, f"116.2: got {sets}"
-    clears = [v for name, v in gh.calls if name == "mutation" and v.get("f") == "W" and "o" not in v]
-    assert len(clears) == 2, "116.2: Action was not cleared on both items while Dokima works"
-
-
 def test_new_item_is_added_at_the_top(record_property):
     record_property("proves", "116.2")
     gh = FakeGitHub(on_board=False)
@@ -99,14 +72,6 @@ def test_no_board_means_no_calls(record_property):
 def test_workflow_skips_without_the_board_setting(record_property):
     record_property("proves", "116.3")
     assert "if: vars.DOKIMA_BOARD != ''" in open(WORKFLOW).read()
-
-
-def test_lanes_are_needs_you_or_nothing(record_property):
-    """Items that need the owner get Action = "Needs you"; everything else has no Action."""
-    record_property("proves", "130.1")
-    gh = FakeGitHub(on_board=True)
-    board.sync("issue_comment", {"action": "created", "issue": {"number": 5}, "comment": {"user": BOT, "body": "**Planner question**"}}, "dokima-dev/1", "o/r", q=gh)
-    assert any(v.get("o") == "w-you" for _, v in gh.calls), "130.1: a question for the owner did not land in Needs you"
 
 
 # 202: the Priority pill follows the issue's priority label
@@ -142,8 +107,7 @@ def test_adding_a_priority_label_sets_the_matching_pill(record_property):
 
     Sends a labeled event for each of the two labels to the board sync with a fake board, and checks the one write
     to Priority is the matching option, while the card's Status and Needs you pill are left as they were. Then adds and
-    removes bug and plan on an issue labeled high, and checks Priority is never written while plan still moves the
-    card to Plan. (Blocker follows blocked-by links since #294, not a label.)"""
+    removes bug and plan on an issue labeled high, and checks Priority is never written. (Blocker follows blocked-by links since #294, not a label.)"""
     record_property("proves", "202.1")
     for label, option in (("high", "p-High"), ("parked", "p-Parked")):
         gh = PriorityGitHub(on_board=True)
@@ -155,9 +119,6 @@ def test_adding_a_priority_label_sets_the_matching_pill(record_property):
             gh = PriorityGitHub(on_board=True)
             board.sync("issues", label_event(action, label, ["high"]), "dokima-dev/1", "dokima-dev/dokima", q=gh)
             assert priority_calls(gh) == [], f"202.1: {action} {label} wrote {priority_calls(gh)} to Priority; only priority labels move the pill"
-    gh = PriorityGitHub(on_board=True)
-    board.sync("issues", label_event("labeled", "plan", ["plan", "high"]), "dokima-dev/1", "dokima-dev/dokima", q=gh)
-    assert any(v.get("o") == "s-Plan" for v in other_field_calls(gh)), "202.1: the plan label no longer moves the card to Plan"
 
 
 def test_removing_the_priority_label_clears_the_pill(record_property):

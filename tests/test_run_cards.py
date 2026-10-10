@@ -183,6 +183,14 @@ def test_the_planner_card_shows_the_plan_or_its_questions_or_the_split_on_top(re
 PR = "https://github.com/o/r/pull/7"
 
 
+def names_pr(line):
+    """The line names the pull request as GitHub's own reference.
+
+    Its link is written out bare, inside no link (#359)."""
+    return (re.search(r"(?<![\w/\"=\[<])" + re.escape(PR) + r"(?![\w/#-])", line) is not None
+            and f"]({PR})" not in line and f'href="{PR}"' not in line)
+
+
 def shown(body):
     """The lines of the short part on top, below the record marker, that hold any words."""
     return [l for l in top(body).split(agent.MARK, 1)[-1].splitlines() if l.strip()]
@@ -213,7 +221,7 @@ def test_the_worker_card_shows_one_sentence_with_its_pull_request_and_no_test_re
             assert unsaid not in words, f"182.3: the worker card's sentence holds the cause, not only what it changed: {words!r}"
         assert not re.search(r"\bbuilt\b", words, re.I), \
             f"182.3: the worker card's sentence is a generic line from code, not the worker's own words: {words!r}"
-        assert f"]({PR})" in lines[0], f"182.3: the worker card's sentence does not link its pull request {PR}:\n{lines[0]}"
+        assert names_pr(lines[0]), f"182.3: the worker card's sentence does not name its pull request {PR}:\n{lines[0]}"
         assert not re.search(r"\b(passed|failed|tests?)\b|\d+ passed", words, re.I), \
             f"182.3: the worker card shows a test result on top; the criteria and their verdicts belong on the main card:\n{top(body)}"
         assert "12 passed in 3.1s" in folds(body), f"182.3: the worker's own test run is in no fold:\n{body}"
@@ -261,7 +269,7 @@ def test_the_worker_card_links_the_pull_request_code_opened_after_the_run(record
     agent.main(["agent", "next", "9", str(tmp_path)])
     body = (tmp_path / "comment.md").read_text()
     lines = shown(body)
-    assert lines and f"]({PR})" in lines[0], f"182.3: after the run the worker card's sentence does not link pull request #7:\n{body}"
+    assert lines and names_pr(lines[0]), f"182.3: after the run the worker card's sentence does not name pull request #7:\n{body}"
     assert body.rstrip().splitlines()[-1].startswith("**Next:**"), f"182.3: the worker card lost its Next line:\n{body}"
     got = agent.records([{"author": {"login": agent.BOT}, "body": body, "createdAt": "2026-10-08T10:00:00Z"}])
     assert got == [r], f"182.3: the worker card no longer reads back as its record: {got}"

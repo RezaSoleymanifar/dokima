@@ -342,17 +342,17 @@ def test_an_issue_with_no_records_is_in_backlog_and_a_filed_split_is_in_work(rec
 
 
 def test_the_card_opens_with_the_status_line_when_there_is_no_plan(record_property):
-    """With no plan yet, the card opens with the status line and says there is no plan yet.
+    """With no plan yet, the card opens with the status line.
 
     Draws the card with no records and with only a rejected plan, and checks the first line is the status line
-    (no heading) and that the card says it has no plan yet."""
+    (no heading). Since #371 the card no longer says it has no plan yet: it shows the Definition of Done instead."""
     record_property("proves", "181.2")
     for steps in ([], [REJECTED]):
         text = draw(found_for(steps))
         first = lines_of(text)[0]
         assert not first.startswith("#") and any(bare(first).startswith(s) for s in STAGES), \
             f"181.2: the card with no plan does not open with its status line: “{first}”"
-        assert "no plan yet" in text, "181.2: the card with no plan does not say so"
+        assert "Definition of Done" in text, "181.2: the card with no plan does not show its Definition of Done"
 
 
 # 181.3: a split lists each child with its link and its current stage
@@ -377,14 +377,14 @@ def test_a_split_lists_each_child_with_its_link_and_stage(record_property):
     """A split's card lists every child, in order, each with a link to its issue and its own current stage.
 
     Draws the card of a parent whose split was filed into three children at three different stages, and checks
-    each child has one line with its link, its title and its own stage, in the split's order; the card of a story
+    each child has one line with its link (GitHub draws its title) and its own stage, in the split's order; the card of a story
     that was not split links no other issue."""
     record_property("proves", "181.3")
     text = draw(found_for([FEATURE, PLAN_OK, "/work", SPLIT], children=CHILDREN))
     at = []
     for c in CHILDREN:
         line = child_line(text, c["number"], "181.3")
-        assert c["title"] in line, f"181.3: child #{c['number']}'s line does not show its title: “{line}”"
+        # The title is not written out: GitHub draws it from the child's bare link (#359).
         words = re.findall(r"\b(" + "|".join(STAGES) + r"|unknown)\b", bare(line))
         assert words == [c["stage"]], f"181.3: child #{c['number']} should show {c['stage']}, shows {words}: “{line}”"
         at.append(lines_of(text).index(line))
@@ -574,6 +574,7 @@ def test_merged_once_the_pr_is_merged(record_property):
     Merged with no to-do and no Ready for approval; then with the PR open and closed unmerged, and checks neither says
     Merged."""
     record_property("proves", "181.4")
+    record_property("proves", "344.2")
     f = found_for(APPROVED_WORK, pr=dict(PR, merged=True, state="closed"), check_runs=swap("40.2", conclusion="failure"))
     assert status(f, "181.4") == ("Merged", None), f"181.4: a merged PR shows {status(f, '181.4')}, not Merged"
     line = status_line(draw(f))
@@ -618,7 +619,7 @@ def test_the_gallery_draws_every_situation_for_the_owner_to_look_at(record_prope
         "181.5: the checks-failing card shows no failed check, or says Ready for approval"
     assert "Ready for approval" in line("ready"), f"181.5: the ready card's status is “{line('ready')}”"
     assert line("merged").startswith("Merged"), f"181.5: the merged card's status is “{line('merged')}”"
-    assert "no plan yet" in cards["no-plan"], "181.5: the no-plan card does not say there is no plan yet"
+    assert "Definition of Done" in cards["no-plan"], "181.5: the no-plan card does not show its Definition of Done"
     kids = [l for l in lines_of(cards["split"]) if re.search(r"https://github\.com/[^/]+/[^/]+/issues/\d+", l)]
     stages = {w for l in kids for w in re.findall(r"\b(" + "|".join(STAGES) + r")\b", bare(l))}
     assert len(kids) >= 2 and len(stages) >= 2, f"181.5: the split card does not list children at different stages: {kids}"

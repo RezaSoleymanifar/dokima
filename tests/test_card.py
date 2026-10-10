@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dokima import card, plan  # noqa: E402
+from test_start import load_yaml  # noqa: E402
 
 REPO = "o/r"
 BODY = ("- [ ] Goal: show a card\n"
@@ -70,8 +71,9 @@ def test_title_asks_for_approval_when_all_checks_passed(record_property):
 
 def test_links_row():
     # The field icons code draws in front of a field (issue #234) are not part of the links.
-    assert re.sub(r"<img [^>]*>\s*", "", links(render())) == ("[latest run](https://github.com/o/r/actions/runs/1) · [issue #40](https://github.com/o/r/issues/40)"
-                                        " · [PR #5](https://github.com/o/r/pull/5)"
+    # The issue and the PR are written out bare, so GitHub draws them as references with their icon and title (#359).
+    assert re.sub(r"<img [^>]*>\s*", "", links(render())) == ("[latest run](https://github.com/o/r/actions/runs/1) · https://github.com/o/r/issues/40"
+                                        " · https://github.com/o/r/pull/5"
                                         " · [files changed](https://github.com/o/r/pull/5/files)")
 
 
@@ -114,9 +116,18 @@ def test_card_says_criteria_and_is_read_back_as_the_plan(record_property):
 def test_same_card_on_issue_and_pr_and_only_icons_change(record_property):
     record_property("proves", "67.6")
     assert render(checks=[], pr=None) != render()
-    assert card.pr_body(render(), "Closes #40.\n\nSome prose.") == render() + "\n\nCloses #40"
+    # Since #373 the PR also carries the owner's text in a closed Original issue fold between the card and Closes #40.
+    pr = card.pr_body(render(), "Closes #40.\n\nSome prose.", "My ask.")
+    assert pr.startswith(render()) and pr.endswith("\n\nCloses #40") and "Some prose." not in pr
+    assert "\n<details><summary>Original issue</summary>\n\nMy ask.\n\n</details>" in pr
     src = open(os.path.join(os.path.dirname(__file__), "..", "dokima", "card.py")).read()
     assert 'f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md"' in src
     yml = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "card.yml")).read()
-    assert "types: [opened, edited]" in yml and "github.event.sender.type != 'Bot'" in yml
+    on = load_yaml(yml)["on"]
+    issues = on.get("issues") if isinstance(on, dict) else None
+    types = (issues or {}).get("types") if isinstance(issues, dict) else None
+    types = [types] if isinstance(types, str) else types
+    assert isinstance(on, dict) and "issues" in on, "67.6: card.yml no longer starts on issue events"
+    assert not types or {"opened", "edited"} <= set(types), f"67.6: card.yml no longer starts when an issue is opened or edited: {types}"
+    assert "github.event.sender.type != 'Bot'" in yml
 
