@@ -169,6 +169,38 @@ def test_a_confirmed_raise_starts_the_planner_even_when_the_code_is_approved(rec
         f"301.1: a blocking review that confirmed the worker's raise should start the planner, river says {step(earlier, block)}"
 
 
+def test_a_confirmed_raise_reaches_the_planner_beside_the_reviews_own_blocker_for_it(record_property):
+    """A confirmed worker raise reaches the planner even when the review also blocks for it.
+
+    The review answers the worker's raise done and raises a blocker of its own for the planner, once blocking and once
+    approving. Each time the planner starts next and its pack lists both: the review's own blocker and the worker's
+    raise as the reviewer's blocker, with the worker's words, under an ID of its own; the planner's hand-back is
+    rejected unless it answers both. Proves 301.1."""
+    record_property("proves", "301.1")
+    earlier = [plan_rec(), plan_review_rec(), work_rec([worker_raise()])]
+    own = {"kind": "blocker", "to": "planner", "label": "301.2", "text": "The second test proves a neighbour of the promise.",
+           "raised_by": "reviewer", "id": "R1"}
+    for verdict in ("block", "approve"):
+        review = code_review_rec(verdict, [answer("W1", "done", WHY_YES)], [own])
+        assert step(earlier, review)[:3] == ("start", "planner", ""), \
+            f"301.1: a {verdict} review confirming the worker's raise and blocking for the planner should start the planner, river says {step(earlier, review)}"
+        mine = listed(earlier + [review], "planner")
+        ids = [r.get("id") for r in mine]
+        assert "R1" in ids, f"301.1: the planner lost the review's own blocker R1 ({verdict} review): {mine}"
+        passed_on = [r for r in mine if r.get("id") != "R1"]
+        assert len(passed_on) == 1, \
+            f"301.1: the planner should get the confirmed worker raise beside the review's own blocker ({verdict} review), gets {mine}"
+        r = passed_on[0]
+        assert r.get("kind") == "blocker" and r.get("to") == "planner" and r.get("raised_by") == "reviewer" \
+            and TEST_BROKEN in (r.get("text") or "") and r.get("id") and r.get("id") != "W1", \
+            f"301.1: the confirmed raise should reach the planner as the reviewer's blocker with the worker's words, reaches it as {r}"
+        skipped = raises.check_answers("planner", [answer("R1", "done", "Fixed the second test.")], mine)
+        assert any(r["id"] in p for p in skipped), \
+            f"301.1: a planner hand-back answering only R1 was not rejected for skipping {r['id']}: {skipped}"
+        assert listed(earlier + [review], "worker") == [], \
+            f"301.1: the worker was handed a raise meant for the planner: {listed(earlier + [review], 'worker')}"
+
+
 def test_the_planner_must_answer_the_confirmed_raise_and_answering_closes_it(record_property):
     """The planner must answer the confirmed raise, and once it does, nobody is asked again.
 
