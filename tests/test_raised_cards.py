@@ -29,10 +29,6 @@ How the tests read a card:
   markdown link whose text holds the owner's words and whose target is where they said them.
 - The full record fold, "<details><summary>Full record</summary>...</details>", is the record itself and is not
   read as the card.
-
-The golden files in tests/raised_goldens/ are what today's code draws for records posted before this change and for
-what code detects (a rejected hand-back, a clash with main, red main, a failed merge of main, a cancelled run, and the
-issue card of failing tests); they must stay byte for byte the same.
 """
 import copy
 import json
@@ -452,7 +448,7 @@ def test_failing_tests_keep_their_marks_and_to_do_beside_raised(record_property,
     """Failing tests keep their red marks and to-do, and stay out of Raised.
 
     Draws the issue card of a pull request whose code review passed but whose criterion check and All tests failed,
-    and checks it is byte for byte today's card, kept in tests/raised_goldens/, with the failed marks and Needs you:
+    and checks it shows the failed marks and Needs you:
     See why not every check passed. Then draws it again with the review raising one issue, and checks the card
     shows no Raised section and not that issue (#455), while the failed marks and the to-do stay as they were.
 
