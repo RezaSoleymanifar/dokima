@@ -117,19 +117,18 @@ def test_every_run_comment_opens_with_one_plain_sentence_saying_what_the_run_did
 
 
 def test_the_long_parts_of_every_run_comment_are_folded(record_property):
-    """The long parts of every run comment are folded, never on top.
+    """Test changes, notes and details are folded on every run comment, never on top.
 
-    The long parts are non-functional requirements, test changes, the worker's findings and changes outside the plan.
     Draws a plan, a build and a review full of long parts, and checks each long part's words are absent from the
-    short part on top and present inside a fold other than the full record."""
+    short part on top and present inside a fold other than the full record. The plan's non-functional requirements,
+    scope and out of scope are on the issue card, and its run comment no longer repeats them (#236)."""
     record_property("proves", "182.1")
-    cases = [("plan", rec("planner", handback=PLAN),
-              ["Jobs survive a restart-zq.", "Calls are async now-zq.", "dokima/jobs_zq.py", "Cancelling a job-zq."]),
+    cases = [("plan", rec("planner", handback=PLAN), ["Calls are async now-zq."]),
              ("work", rec("worker", handback=WORK),
               ["submit() returns the id-zq", "A shared helper needed one line-zq.",
                "It waits a real day-zq.", "The id is returned in 0.1 s-zq."]),
              ("review", rec("reviewer", "pr", BLOCK),
-              ["one helper line-zq"])]
+              ["A note on naming-zq.", "one helper line-zq", "Built the jobs queue-zq.", "ask 1-zq", "evidence of B1-zq"])]
     for name, r, long_parts in cases:
         body = agent.render(r)
         for part in long_parts:
@@ -161,16 +160,13 @@ def test_run_comments_fold_with_the_same_code_as_the_issue_card(record_property,
 
 
 def test_the_planner_card_shows_the_plan_or_its_questions_or_the_split_on_top(record_property):
-    """The planner's card shows on top the plan, or its questions beside the plan, or the proposed split.
+    """The planner's card shows on top its questions beside the plan, or the proposed split.
 
-    Draws a plan's comment and checks its user story and both acceptance criteria are in the short part on top. Then
-    draws a plan with a question and checks the question and its assumption share a line on top, beside the plan's
-    criteria; then a split, and checks the feature and both story titles are on top. Last, a rejected plan's card
-    shows why it was rejected."""
+    Draws a plan posted with a question in the field #300 retired, which keeps the comment it was posted with (#299),
+    and checks the question and its assumption share a line on top, beside the plan's criteria; then a split, and
+    checks the feature and both story titles are on top. Last, a rejected plan's card shows why it was rejected. A plan
+    of today's shape no longer repeats the issue card on its run comment (#236)."""
     record_property("proves", "182.2")
-    short = top(agent.render(rec("planner", handback=PLAN)))
-    for text in [PLAN["user_story"]] + [c["text"] for c in PLAN["acceptance_criteria"]]:
-        assert text in short, f"182.2: the planner card does not show {text!r} on top:\n{short}"
     short = top(agent.render(rec("planner", handback=dict(PLAN, questions=QUESTIONS))))
     q = QUESTIONS[0]
     assert any(q["question"] in l and q["assumption"] in l for l in short.splitlines()), \
@@ -286,25 +282,24 @@ def test_the_worker_card_folds_what_it_built_found_and_raised(record_property):
 
 
 def test_the_reviewer_card_shows_pass_or_only_the_criteria_it_blocks_on(record_property):
-    """The reviewer's card says it passed, or shows why it blocks, and its proposed issues.
+    """The reviewer's card says it passed, or lists only the criteria it blocks on with their notes, and its proposed issues.
 
     Draws a plan review that approves, with asks on 9.1 to 9.4 and one proposed issue, and checks the short part on top
-    says pass in words and names no criterion, and the proposed issue shows outside every fold (after the change
-    outside the plan, in the owner's order of issue #236). Then draws a code review that blocks on 9.2
-    and 9.3 with the same asks, and checks the top shows each blocker's problem and never a criterion number or a
-    blocker code (issue #236)."""
+    says pass in words, names no criterion and shows the proposed issue. Then draws a code review that blocks on 9.2
+    and 9.3 with the same asks, and checks the top names 9.2 and 9.3, each on a line with its blocker's problem, and
+    never names 9.1 or 9.4, which pass."""
     record_property("proves", "182.4")
     short = top(agent.render(rec("reviewer", "plan", APPROVE)))
     words = re.sub(r"<[^>]+>", "", short)
     assert re.search(r"\bpass", words, re.I), f"182.4: the passing reviewer card does not say pass on top, in words:\n{short}"
     assert not re.search(r"\b9\.\d\b", short), f"182.4: the passing reviewer card lists criteria on top:\n{short}"
-    unfolded = FOLD.sub("", agent.render(rec("reviewer", "plan", APPROVE)))
-    assert "1. Board ignores closed PRs: cards go stale" in unfolded, \
-        f"182.4: the reviewer card does not show its proposed issue outside its folds:\n{unfolded}"
+    assert "1. Board ignores closed PRs: cards go stale" in short, f"182.4: the reviewer card does not show its proposed issue on top:\n{short}"
     short = top(agent.render(rec("reviewer", "pr", BLOCK)))
-    for problem in ("The day is never checked.", "Restarts are not tried."):
-        assert problem in short, f"182.4: the reviewer card does not show why it blocks ({problem!r}) on top:\n{short}"
-    assert not re.search(r"\b9\.\d\b|\bB\d\b", short), f"182.4: the reviewer card shows a criterion number or a blocker code:\n{short}"
+    for crit, problem in (("9.2", "The day is never checked."), ("9.3", "Restarts are not tried.")):
+        assert any(crit in l and problem in l for l in short.splitlines()), \
+            f"182.4: the reviewer card does not list {crit} with its note {problem!r} on top:\n{short}"
+    for crit in ("9.1", "9.4"):
+        assert not re.search(rf"\b{re.escape(crit)}\b", short), f"182.4: the reviewer card lists {crit}, which it does not block on:\n{short}"
 
 
 def test_agents_md_has_the_human_brain_bottleneck_principle(record_property):
