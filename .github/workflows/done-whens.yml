@@ -16,7 +16,10 @@ jobs:
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
+      # Main's copy of Dokima's code: in the merge queue the default is the queued commit, so name main's branch.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
       - id: m
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.merge_group.base_ref }}
           persist-credentials: false
       - uses: actions/checkout@v5
         with:
