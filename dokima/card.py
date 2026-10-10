@@ -41,6 +41,8 @@ FIELD_ICONS = {"planner": "planner", "worker": "worker", "plan review": "plan-re
                "outside the plan": "outside-the-plan", "issue found": "issue-found", "related": "related",
                "blocked by": "blocked-by", "blocks": "blocks", "stats": "stats"}
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #\d+", re.I)
+# A `#` right after a closing keyword, as GitHub reads one (fixes #99, Closes: #12, resolved o/r#7).
+KEYWORD_HASH = re.compile(r"(\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:[\w.-]+/[\w.-]+)?)#(?=\d)", re.I)
 
 
 def icon(repo, name, alt=None):
@@ -482,8 +484,9 @@ def render(repo, issue, found, page="issue"):
             lines += fold("Non-functional requirements",
                           criteria_list(repo, issue["number"], len(criteria) + 1, "Non-functional requirement", nfr,
                                         plan_tests, by_key, tests)) + [""]
-        lines += ["**Scope:**", ""] + [f"- {escape(s)}" for s in h.get("scope") or []] + [""]
-        lines += ["**Out of scope:**", ""] + [f"- {escape(s)}" for s in h.get("out_of_scope") or []] + [""]
+        lines += [" ".join(["**Scope:**", ", ".join(f"`{s}`" for s in h.get("scope") or [])]).rstrip(), ""]
+        if h.get("out_of_scope"):
+            lines += fold("Out of scope", [f"- {escape(s)}" for s in h["out_of_scope"]]) + [""]
     lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
     return "\n".join(lines)
 
@@ -493,10 +496,15 @@ def issue_body(card, notes):
     return card + ("\n\n" + notes if notes else "")
 
 
-def pr_body(card, body):
-    """The PR's description: the card, then the line linking the issue, and nothing else."""
-    found = CLOSES.search(body or "")
-    return card + ("\n\n" + found.group(0) if found else "")
+def pr_body(card, text, ask):
+    """The PR's description: the card, the owner's Original issue fold, then the Closes line.
+
+    In the PR's copy a `#` after a closing keyword is written `&#35;`, which shows the same, so the owner's words never
+    close or name another issue: the PR's own Closes line stays the only closing reference (#373)."""
+    found = CLOSES.search(text or "")
+    shown = KEYWORD_HASH.sub(r"\1&#35;", ask or "")
+    return (card.rstrip("\n") + "\n\n" + body.MARKER + body.FOLD_START + shown + body.FOLD_END
+            + ("\n\n" + found.group(0) if found else ""))
 
 
 def shows(current, top):
@@ -842,9 +850,10 @@ def draw(repo, number, pr_number, plans=None, noted=None, cache=None, changed_on
     if now.get("loop") and now["loop"] != before.get("loop"):
         stop_for_loop(repo, number, now["loop"], found.get("owners"))
     # The PR gets the same card, open, merged or closed, so it never keeps an older card than the issue (#224).
-    if pr and not (changed_only and pr_body(top, pr.get("body")) == (pr.get("body") or "")):
+    ask = body.ask(current)
+    if pr and not (changed_only and pr_body(top, pr.get("body"), ask) == (pr.get("body") or "")):
         with open("pr.md", "w") as f:
-            f.write(pr_body(top, pr.get("body")))
+            f.write(pr_body(top, pr.get("body"), ask))
         gh("api", "-X", "PATCH", f"repos/{repo}/pulls/{pr_number}", "-F", "body=@pr.md")
         print(f"Card written into PR #{pr_number}")
     return before, now
