@@ -320,7 +320,12 @@ def status(issue, found):
     rec = agent.records([items[at[-1]]])[0]
     if rec.get("role") == "split":
         return "Work", None
-    column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, found.get("owners") or set()))
+    owners = found.get("owners") or set()
+    # A build started since the newest record is Work, with nothing for the owner, as on the board.
+    begun = [s for s in (agent.started(c, owners) for c in items[at[-1] + 1:]) if s]
+    if begun and begun[-1] == "Work":
+        return "Work", None
+    column, needs = agent.board_place(rec, agent.next_step(items[:at[-1]], rec, owners))
     # A pull request autopilot put in the merge queue is GitHub's to merge, so nothing is the owner's.
     needs = needs and not agent.queued_since(items, at[-1])
     return column, todo(issue, found, rec) if needs else None
