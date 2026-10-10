@@ -3,7 +3,7 @@
 Issue #251, story 2 of #231. The planner hands back `links`: three lists of open issue numbers, `blocked_by`, `blocks` and `relates_to` (#250).
 This story draws them. Each kind with at least one link gets one line: its fixed field icon from card.FIELD_ICONS
 ("blocked by" -> blocked-by.svg, "blocks" -> blocks.svg, "related" -> related.svg, all added by #234), right in front
-of its label (Blocked by, Blocks, Relates to), then its issue numbers as #N. A kind with no links has no line, and an
+of its label (Blocked by, Blocks, Relates to), then its issues, each by its full address since #480. A kind with no links has no line, and an
 older plan with no links field draws exactly as one with three empty lists.
 
 The issue card (dokima/card.py render, on the issue and on its pull request) draws them from the newest plan. The
@@ -127,7 +127,7 @@ def check_lines(text, links, k, where):
         assert files == [LINK_ICON[field]], \
             f"{k}: {where}'s {label} line draws the icons {files}, not only {LINK_ICON[field]}.svg: {line}"
         assert not VERDICT_ICONS & set(files), f"{k}: {where}'s {label} line carries a verdict or run icon: {line}"
-        numbers = sorted(int(x) for x in re.findall(r"#(\d+)\b", line))
+        numbers = sorted(int(x) for x in re.findall(r"https://github\.com/o/r/issues/(\d+)\b", line))
         assert numbers == sorted(links[kind]), \
             f"{k}: {where}'s {label} line shows issues {numbers}, not exactly {sorted(links[kind])}: {line}"
 
@@ -184,4 +184,4 @@ def test_the_issue_card_shows_the_links_of_the_newest_plan(record_property):
     for page in ("issue", "pr"):
         text = draw([with_links(STORY, older), with_links(STORY, newer)], page)
         check_lines(text, newer, "251.1", f"the {page} card after a re-plan")
-        assert not re.search(r"#15\b", text), f"251.1: the {page} card still shows the older plan's link to #15:\n{text}"
+        assert not re.search(r"(?:#|/issues/)15\b", text), f"251.1: the {page} card still shows the older plan's link to #15:\n{text}"

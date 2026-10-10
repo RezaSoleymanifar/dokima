@@ -3,7 +3,7 @@ Slow calls hand back a job id.
 
 **Plan** · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/needs-you.svg" width="16" height="16" align="absmiddle" alt="needs you"> Needs you: Fix the rejected hand-back
 
-<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/related.svg" width="16" height="16" align="absmiddle" alt="related"> **Relates to:** #12
+<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/related.svg" width="16" height="16" align="absmiddle" alt="related"> **Relates to:** https://github.com/o/r/issues/12
 
 **User story:** Owners get a job id.
 

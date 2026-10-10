@@ -5,7 +5,7 @@ Slow calls hand back a job id.
 
 https://github.com/o/r/pull/5 · <img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/files-changed.svg" width="16" height="16" align="absmiddle" alt="files changed"> [files changed](https://github.com/o/r/pull/5/files)
 
-<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/related.svg" width="16" height="16" align="absmiddle" alt="related"> **Relates to:** #12
+<img src="https://raw.githubusercontent.com/o/r/main/dokima/icons/related.svg" width="16" height="16" align="absmiddle" alt="related"> **Relates to:** https://github.com/o/r/issues/12
 
 **User story:** Owners get a job id.
 

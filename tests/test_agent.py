@@ -315,10 +315,10 @@ def test_an_approved_split_is_filed_as_sub_issues_with_their_order(record_proper
     assert ("api", "-X", "POST", "repos/o/r/issues/139/sub_issues", "-F", "sub_issue_id=9201") in calls
     assert ("api", "-X", "POST", "repos/o/r/issues/202/dependencies/blocked_by", "-F", "issue_id=9201") in calls
     body = [c[c.index("--body") + 1] for c in calls if c[:2] == ("issue", "create")][1]
-    assert "Part of:** #139 Parent" in body and "u2" in body and "[source](https://x/2)" in body
+    assert re.search(r"Part of:\*\* https://github\.com/[\w./-]*/issues/139\b", body) and "u2" in body and "Source: https://x/2" in body
     card = agent.render(r)
     words = re.sub(r"<img [^>]*>\s*", "", card)  # the field icons code draws (issue #234) are not words
-    assert "#202 Second (blocked by #201)" in words and "no model" in words
+    assert re.search(r"issues/202 \(blocked by https://github\.com/[\w./-]*/issues/201\)", words) and "no model" in words
     calls.clear()
     again = agent.file_split("o/r", 139, recs + [r])
     assert again == r and not [c for c in calls if c[:2] == ("issue", "create")], "filing twice filed new issues"
