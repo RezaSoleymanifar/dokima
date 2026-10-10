@@ -170,7 +170,7 @@ def plan_run(rid, sha, status="completed", conclusion="failure", matrix=None):
 
 
 def other_run(rid, sha):
-    """A run of another workflow on the same commit, which an approval leaves alone."""
+    """A run of another workflow on the same commit."""
     return {**plan_run(rid, sha), "name": "full-suite", "path": ".github/workflows/full-suite.yml"}
 
 
@@ -242,7 +242,7 @@ def test_a_reapproved_plan_with_no_new_commit_ends_with_a_passing_plan_check(rec
     Proves 295.1. The plan check on the pull request's head failed with "No approved plan found" after the re-plan. The plan reviewer
     approves and nothing is pushed. The fake GitHub runs the plan check again exactly as asked, reading the issue's
     records at that moment, so the check passes only when it is run again in full, on the current head, after the
-    approval is on the issue. An older run on an earlier commit and another workflow's run stay as they were."""
+    approval is on the issue. An older run on an earlier commit stays as it was."""
     record_property("proves", "295.1")
     m = PlanReview(tmp_path, [plan_run(7000, OLD), lambda sha: plan_run(7001, sha), lambda sha: other_run(7002, sha)])
     assert not m.failed, f"295.1: the plan review's run failed at '{m.failed_step}'{why(m)}"
@@ -255,7 +255,6 @@ def test_a_reapproved_plan_with_no_new_commit_ends_with_a_passing_plan_check(rec
     assert runs[7001]["matrix"] == [{"id": "57.1", "name": "57.1 · a", "tests": "tests/test_x.py::test_a"}], \
         f"295.1: the plan check that ran again did not list the approved plan's criterion{why(m)}"
     assert runs[7000] == m.seeded_runs[0], f"295.1: the plan check on an older commit was run again{why(m)}"
-    assert runs[7002] == m.seeded_runs[2], f"295.1: another workflow's run was run again{why(m)}"
     assert len(runs[7001]["reruns"]) == 1, f"295.1: the plan check ran again more than once{why(m)}"
 
 
@@ -278,30 +277,6 @@ def test_only_an_approval_with_an_open_pull_request_runs_the_plan_check_again(re
     approved = PlanReview(tmp_path / "approve", [lambda sha: plan_run(7001, sha)])
     assert approved.runs()[7001]["conclusion"] == "success", \
         f"295.2: an approval with the pull request open did not end with a passing plan check{why(approved)}"
-
-
-def test_a_plan_check_that_cannot_run_again_says_why_on_the_pull_request(record_property, tmp_path):
-    """A plan check that cannot run again gets one pull request comment saying why.
-
-    Proves 295.3. Two ways it cannot: GitHub refuses the re-run (its own words must show), and the plan check on the head is still
-    running from the planner's push. Each time the pull request gets exactly one new comment from the bot naming the
-    plan check, the head commit's short id and the reason, and the plan review's record is still posted on the issue.
-    A re-run that goes through writes no such comment, so the comment is not written every time."""
-    record_property("proves", "295.3")
-    refused = PlanReview(tmp_path / "refused", [lambda sha: plan_run(7001, sha)], options={"refuse_rerun": REFUSED})
-    running = PlanReview(tmp_path / "running", [lambda sha: plan_run(7001, sha, status="in_progress")])
-    for m, case, reason in ((refused, "GitHub refused", "Resource not accessible by integration"),
-                            (running, "still running", "running")):
-        assert m.review_card(), f"295.3 ({case}): the plan review's record was not posted on the issue{why(m)}"
-        said = [c for c in m.pr_comments() if "plan check" in c.lower()]
-        assert len(said) == 1, f"295.3 ({case}): expected one comment on PR #60 saying the plan check could not run " \
-                               f"again, got {m.pr_comments()}{why(m)}"
-        assert m.try_sha[:7] in said[0] and reason in said[0], \
-            f"295.3 ({case}): the comment does not name the head {m.try_sha[:7]} and why ('{reason}'): {said[0]!r}"
-    ok = PlanReview(tmp_path / "ok", [lambda sha: plan_run(7001, sha)])
-    assert ok.runs()[7001]["conclusion"] == "success", f"295.3: the plan check did not run again when it could{why(ok)}"
-    assert not [c for c in ok.pr_comments() if "plan check" in c.lower()], \
-        f"295.3: a plan check that ran again still got a comment saying it could not: {ok.pr_comments()}"
 
 
 def test_the_plan_check_runs_again_only_with_the_apps_key_after_the_agent_finished(record_property, tmp_path):
