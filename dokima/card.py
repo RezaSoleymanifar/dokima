@@ -255,11 +255,22 @@ def answers_of(h):
     return [a for a in v if isinstance(a, dict) and a.get("raise")] if isinstance(v, list) else []
 
 
+SHORT = re.compile(r"(?<![\w&/\[`])#(\d+)\b(?!\])")
+
+
+def short_refs(repo, text):
+    """Bare #N in prose written as a plain link, [#N](address): inside a bullet GitHub otherwise draws each one with its
+    title and icon, which buries the sentence (tested on card-gallery #40). Code spans are left alone."""
+    parts = re.split(r"(`[^`\n]*`)", text or "")
+    return "".join(p if i % 2 else SHORT.sub(lambda m: f"[#{m.group(1)}]({ref(repo, m.group(1))})", p)
+                   for i, p in enumerate(parts))
+
+
 def raise_line(repo, r):
     """One raise as a list item: icon, label, words and who it is for.
 
     Its ID is never drawn."""
-    words = lambda s: escape(" ".join(str(s).split()))
+    words = lambda s: short_refs(repo, escape(" ".join(str(s).split())))
     label = f"**{words(r['label'])}:** " if isinstance(r.get("label"), str) and r["label"].strip() else ""
     who = ("filed as an issue" if r["kind"] == "issue" else
            "for you" if r.get("to") == "owner" else f"for the {words(r.get('to') or 'no one')}")

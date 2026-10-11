@@ -535,7 +535,7 @@ def bullets(items, show):
 
 def pairs(d):
     """One line per key and value of a field that should be a dict; nothing when it is not."""
-    return [f"- {k}: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in d.items()] if isinstance(d, dict) else []
+    return [f"- `{k}`: {', '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in d.items()] if isinstance(d, dict) else []
 
 
 def files_changed(base):
@@ -667,7 +667,7 @@ def answered_lines(repo, rec, earlier):
         lines.append(f"- {raised_by(by)} raised: {card.raise_line(repo, r)[2:]}" if r
                      else "- A raise not found in this issue's earlier records")
         word = {"done": "Done", "disagree": "Disagree"}.get(a.get("answer"), escape_line(str(a.get("answer"))))
-        lines.append(f"  - {word}: {escape_line(a.get('why'))}")
+        lines.append(f"  - {word}: {card.short_refs(repo, escape_line(a.get('why')))}")
         if filled(a.get("words")) and filled(a.get("source")):
             lines.append(f"  - Your words: {said(a['words'], a['source'])}")
     return lines
@@ -695,7 +695,7 @@ def raised_lines(repo, rec, placed=()):
     for r in raised:
         lines.append(card.raise_line(repo, r))
         if filled(r.get("evidence")):
-            lines.append(f"  - Evidence: {card.escape(escape_line(r['evidence']))}")
+            lines.append(f"  - Evidence: {card.short_refs(repo, card.escape(escape_line(r['evidence'])))}")
     return lines
 
 
@@ -1386,6 +1386,8 @@ def check(kind, path, plan_path=None, number=None):
     if filled(data.get("summary")):
         listed, too_long = words.summary_caps(data["summary"])
         bad += too_long
+    more, too_long = words.style({k: v for k, v in data.items() if k != "summary"})
+    listed, bad = listed + more, bad + too_long
     if kind == "work" and os.environ.get("PLANNER_BASE"):
         more, too_long = worker_docstring_caps(os.environ["PLANNER_BASE"])
         listed, bad = listed + more, bad + too_long
