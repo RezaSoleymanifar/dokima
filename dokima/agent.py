@@ -1123,7 +1123,10 @@ def owner_words(repo, number, d, items, owners):
     its parent issue. Every criterion of a plan must quote words found at its source link (#416)."""
     from dokima.body import ask
     mine = lambda c: (c.get("author") or {}).get("login") in owners and c.get("url")
-    out = {issue_url(number): ask(d.get("body") or "")}
+    from dokima.body import STORY
+    # A story split from a parent holds a planner's text, not the owner's: only the parent's ask counts as theirs.
+    own = ask(d.get("body") or "")
+    out = {} if STORY.match(own) else {issue_url(number): own}
     out.update({c["url"]: c.get("body") or "" for c in items if mine(c)})
     up = parent_words(repo, number)
     if up:

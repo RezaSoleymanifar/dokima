@@ -40,6 +40,9 @@ Write the plan the way a product manager writes a story, in these terms:
 - **User story:** one sentence, what changes for the owner when this is done. It replaces "Objective".
 - **Feature:** a parent issue that splits into 2 to 5 user stories. Each story says which other stories it depends on.
 - **Acceptance criteria:** the behaviors and features the owner asked for, numbered N.1, N.2 ... (N is the issue number).
+  Each criterion is exactly one behavior: one action, one visible result. "X and Y", two results, or "that includes A,
+  B and C" is several criteria. Bad: "Editing an issue redraws its card and its PR's card, and a merge redraws both."
+  Good: "Editing an issue redraws its card." / "Merging a pull request redraws its issue's card."
   Product voice, third person, never "I". Natural phrasing, never a formula; "When you..." only where it's natural.
   Each one is observable (what the owner sees, a file, an exit code, a number with its unit), never an adjective, and
   links to where the owner said it: the issue, or a specific comment. When they asked for it more than once, its
@@ -169,24 +172,25 @@ Exactly one kind: user_story or feature.
    "summary": "...",
    "user_story": "...",
    "acceptance_criteria": [{"text": "...", "words": "the owner's exact words this delivers", "source": "https://github.com/OWNER/REPO/issues/N or #issuecomment-..."}, ...],
-   "non_functional": [{"text": "...", "why": "...", "principle": "..."}, ...],
+   "non_functional": [{"text": "...", "why": "...", "words": "the owner's exact words", "source": "issue or comment link"}, ...],
    "scope": ["path", ...],
    "out_of_scope": ["...", ...],
    "tests": {"N.1": ["tests/test_x.py::test_name", ...], ...},
    "test_changes": {"path::test_name": "why", ...},
    "links": {"blocked_by": [N, ...], "blocks": [N, ...], "relates_to": [N, ...]}}
-  Criterion k is N.k: the acceptance criteria first, then the non-functional requirements. Every criterion needs at
-  least one test in "tests", and each of those tests also names its criterion with record_property("proves", "N.k").
+  Criterion k is N.k: the acceptance criteria first, then the non-functional requirements. Every criterion has exactly
+  one test in "tests", and each of those tests also names its criterion with record_property("proves", "N.k").
   Change no file outside the tests. Every older test you change, rename or delete needs a reason in "test_changes".
 - A feature: {"kind": "feature", "summary": "...", "feature": "...", "stories": [{"title": "...", "user_story": "...",
-  "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...],
+  "acceptance_criteria": [...], "non_functional": [...], "depends_on": [story index, ...]}, ...] (criteria shaped as above),
   "links": {...}} with 2 to 5 stories.
 Every kind carries "summary": one plain sentence saying what the issue is about; the card opens with it.
 Every kind carries "links": the open issues this one is blocked by, blocks and relates to, as three lists of issue
 numbers from open_issues.json; code rejects a missing or malformed field, a number that is not an open issue there, this
 issue itself and one issue in two lists.
 Any kind may carry "raises" and "answers", as Raising and answering says. Raise a question for the owner only where
-the owner's words allow two readings or an ask cannot be tested; settle every technical choice yourself. Plan anyway, on
+the owner's words allow two readings or an ask cannot be tested; settle every technical choice yourself. More than 3
+questions means the issue is not ready: code stops it until the owner answers. Plan anyway, on
 your best reading, and say that reading in the question: the owner may answer or not, and the plan stands either way
 until they do. Such an ask becomes a question, never dropped. A doubt about the ask is a question for the owner too,
 with its evidence. Every round after the first answers each raise listed for you; "disagree" needs evidence the
@@ -196,5 +200,7 @@ Only the user_story kind is built on today; a feature is shown to the owner as h
 Write code, file paths, commands and quoted code as markdown code: backticks inline, a code block for several lines.
 
 Every acceptance criterion and non-functional requirement quotes, in `words`, the owner's exact words it delivers,
-copied from its `source`. Code checks the words are there. No words of the owner's behind it, no criterion: add
+copied from its `source`. Code checks the words are there. In a story split from a parent issue, the story's own text
+was written by a planner, not the owner: quote the owner from the parent issue or the owner's comments, with that link as
+the source. No words of the owner's behind it, no criterion: add
 nothing they did not ask for, and no non-functional requirement unless they wrote one.
