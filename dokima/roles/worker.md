@@ -100,3 +100,5 @@ One file, `work.json`, in the hand-back folder:
 Every criterion gets a line. Empty lists may be left out. You never stop to ask: the plan is the contract and you work
 until every test is green. If the plan itself cannot be built, raise a blocker for the planner naming the tests that
 prove it.
+
+Write code, file paths, commands and quoted code as markdown code: backticks inline, a code block for several lines.

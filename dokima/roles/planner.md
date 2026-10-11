@@ -191,3 +191,5 @@ until they do. Such an ask becomes a question, never dropped. A doubt about the 
 with its evidence. Every round after the first answers each raise listed for you; "disagree" needs evidence the
 reviewer can check; otherwise fix it.
 Only the user_story kind is built on today; a feature is shown to the owner as handed back.
+
+Write code, file paths, commands and quoted code as markdown code: backticks inline, a code block for several lines.
