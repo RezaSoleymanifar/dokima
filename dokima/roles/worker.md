@@ -92,7 +92,7 @@ Before you hand back, go through this list and raise what you find:
 
 # What you hand back
 One file, `work.json`, in the hand-back folder:
-  {"summary": "One plain sentence of at most 25 words: what you changed.",
+  {"summary": "One plain sentence of at most 20 words: what you changed.",
    "criteria": {"N.1": "Where and how it is built, one line.", ...},
    "evidence": "The test command you ran last and its result line.",
    "raises": [...],
