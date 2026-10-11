@@ -568,7 +568,7 @@ def main(argv):
     try:
         kind, result = read_output(out, number)
         raw = result["raw"] if kind == "plan" else json.loads(result)
-        listed, bad = criterion_caps(raw)
+        listed, bad = words.style({k: v for k, v in raw.items() if k != "summary"})
         more, too_long = words.summary_caps(raw["summary"])
         listed, bad = more + listed, too_long + bad
         if kind == "plan":
