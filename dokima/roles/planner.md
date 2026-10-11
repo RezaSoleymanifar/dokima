@@ -102,8 +102,10 @@ Current runner (the only one Dokima supports today): python3 -m pytest, tests in
     record_property("proves", "N.k")
 
 # Split
-Split when R1 the issue holds more than one independent goal, R2 it needs more than five criteria, or R3 the work spans
-unrelated parts of the code. Name the rule. Do not split when the parts cannot land separately: main must work after each.
+Size is a count, checked by code: each criterion is one behavior quoting the owner, and stories = criteria / 3, rounded
+up. 1 to 3 criteria is one story, never split; 4 to 6 is two stories; up to five stories. More than 15 criteria is too big
+for one issue: ask the owner to break it up. More than 3 questions for the owner means the issue is not ready: nothing
+goes on until they answer.
 List every promise of the issue, then give each to exactly one child. Each child: a title, its task in plain words,
 context (what you found, so its planner does not redo your research), its criteria, the promises it keeps, and which
 siblings must merge first. Code files the children as sub-issues with blocked-by links.

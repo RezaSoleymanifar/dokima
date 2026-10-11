@@ -120,6 +120,32 @@ def check_source(where, source, issue):
                   "or a comment on either")
 
 
+PER_STORY = 3
+
+
+def count(s):
+    """How many criteria a story holds: its acceptance criteria and non-functional requirements."""
+    return len(s.get("acceptance_criteria") or []) + len(s.get("non_functional") or [])
+
+
+def check_size(stories):
+    """Garbled unless the stories hold their criteria at 1 to 3 each, in exactly as many stories as the count needs.
+
+    The size rule (#416): stories = criteria / 3, rounded up. 1 to 3 criteria is one story; 4 to 6 two; and so on, up to
+    five stories. More than 15 criteria is too big for one issue: the owner breaks it up."""
+    sizes = [count(s) for s in stories]
+    total, need = sum(sizes), -(-sum(sizes) // PER_STORY)
+    if need > 5:
+        raise Garbled(f"the issue holds {total} criteria, more than 15, too big for one issue: hand back one story that "
+                      "asks the owner, in a question, to break the issue up")
+    if len(stories) != need:
+        raise Garbled(f"{total} criteria make {need} {'story' if need == 1 else 'stories'} (3 at most each), not "
+                      f"{len(stories)}: " + ("hand back one user_story" if need == 1 else f"split into exactly {need}"))
+    big = [n for n, k in enumerate(sizes, 1) if k > PER_STORY]
+    if big:
+        raise Garbled(f"story {big[0]} holds {sizes[big[0] - 1]} criteria; each story holds 1 to 3")
+
+
 def check_stories(stories, issue=None, said=None):
     """Garbled unless every story of a split is complete, its criteria cite this issue, and its dependencies point at
     the split's own stories with no loop. Stories are named counting from 1, as the split's card numbers them;
@@ -195,6 +221,7 @@ def from_kind(p, issue=None, said=None):
         if not isinstance(stories, list) or not 2 <= len(stories) <= 5:
             raise Garbled("a feature needs 2 to 5 stories")
         check_stories(stories, issue, said)
+        check_size(stories)
         return "feature", json.dumps(p, indent=2)
     if kind != "user_story":
         raise Garbled(f"plan.json kind is {kind!r}: {ALWAYS}")
@@ -214,6 +241,7 @@ def from_kind(p, issue=None, said=None):
         check_words(f"acceptance criterion {k}", c, said)
     if not isinstance(nfr, list):
         raise Garbled("a story needs non_functional as a list (empty for none)")
+    check_size([p])
     for k, c in enumerate(nfr, 1):
         if not isinstance(c, dict):
             raise Garbled(f"non-functional requirement {k} must be an object with its text and why")
