@@ -1188,6 +1188,21 @@ def problems_review(r):
     return bad
 
 
+def problems_tests(r, plan):
+    """A plan review must judge every test the plan names: does it check only its criterion's behavior, with the edge
+    cases the owner named or normal use hits? A false one never approves."""
+    named = sorted({t for ts in ((plan or {}).get("tests") or {}).values() if isinstance(ts, list) for t in ts})
+    rows = r.get("tests") if isinstance(r.get("tests"), list) else []
+    seen = {str(x.get("test")): x for x in rows if isinstance(x, dict)}
+    bad = [f"tests has no judgment of `{t}`: say only_its_behavior true or false, and why in one line"
+           for t in named if not (isinstance(seen.get(t, {}).get("only_its_behavior"), bool)
+                                  and str(seen.get(t, {}).get("why") or "").strip())]
+    wide = [t for t, x in seen.items() if x.get("only_its_behavior") is False]
+    if wide and r.get("verdict") == "approve":
+        bad.append(", ".join("`" + t + "`" for t in wide) + f" check more than their criterion's behavior, so the verdict cannot be approve")
+    return bad
+
+
 def problems_size(r, ids=()):
     """A plan review must judge each criterion one behavior or not, in `behaviors`, and say whether the plan keeps the
     size rule: size is "ok", or the rule it breaks. A criterion bundling two behaviors breaks it; a plan that breaks
@@ -1382,6 +1397,7 @@ def check(kind, path, plan_path=None, number=None):
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
                 bad += problems_size(data, plan_criteria(plan, number))
+                bad += problems_tests(data, plan)
     for line in listed + bad:
         print(line)
     return 1 if bad else 0
