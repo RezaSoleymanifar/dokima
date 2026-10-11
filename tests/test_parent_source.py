@@ -56,9 +56,11 @@ def feature(sources):
     return {"kind": "feature", "summary": "Two stories.", "feature": "Cards show what is true now.",
             "stories": [{"title": "One", "user_story": "u1", "non_functional": [], "depends_on": [],
                          "acceptance_criteria": [{"text": f"Criterion {k} holds.", "source": s}
-                                                 for k, s in enumerate(sources, 1)]},
+                                                 for k, s in enumerate(sources[:3], 1)]},
                         {"title": "Two", "user_story": "u2", "non_functional": [], "depends_on": [0],
-                         "acceptance_criteria": [{"text": "Two holds.", "source": url(STORY_N)}]}],
+                         "acceptance_criteria": [{"text": f"Criterion {k} holds.", "source": s}
+                                                 for k, s in enumerate(sources[3:], 4)]
+                                                + [{"text": "Two holds.", "source": url(STORY_N)}]}],
             "links": {"blocked_by": [], "blocks": [], "relates_to": []}}
 
 
