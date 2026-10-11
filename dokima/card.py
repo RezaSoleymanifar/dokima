@@ -72,7 +72,8 @@ def full_refs(repo, text):
 
 
 def link_lines(repo, links):
-    """One line per kind of link a plan has (Blocked by, Blocks, Relates to), each with its own icon; none for a kind
+    """One block per kind of link a plan has (Blocked by, Blocks, Relates to): its icon and label, then one bullet per
+    issue, since GitHub shows an issue's title and state only for a link that is a bullet of its own; none for a kind
     with no links or a plan with no links field."""
     links = links if isinstance(links, dict) else {}
     out = []
@@ -80,7 +81,7 @@ def link_lines(repo, links):
                                ("relates_to", "related", "Relates to")):
         numbers = links.get(kind) if isinstance(links.get(kind), list) else []
         if numbers:
-            out.append(f"{field_icon(repo, field)} **{label}:** " + ", ".join(ref(repo, n) for n in numbers))
+            out.append(f"{field_icon(repo, field)} **{label}:**\n\n" + "\n".join(f"- {ref(repo, n)}" for n in numbers) + "\n")
     return out
 
 
