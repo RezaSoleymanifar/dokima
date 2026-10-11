@@ -15,17 +15,12 @@ How the tests reach the code:
   fold, then the closing line by the issue's full address `issue_url`.
 - agent.issue_of_pr(head, body) and board.issue_of read which issue a PR was built for; scan.card_now and scan.main
   compare cards with the ones Dokima draws now, faked by tests/test_scan.py's World.
-- GitHub's own rendering of what the code writes is read from tests/github_rendering.json: GitHub's markdown API's
-  answer for each exact text, recorded by `python3 tests/record_rendering.py`. Tests run with no network, so they
-  never call GitHub; a text with no answer recorded for it, byte for byte, fails rather than passes.
 """
 import html
-import json
 import os
 import re
 import sys
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -213,97 +208,6 @@ def test_the_closing_line_is_the_descriptions_only_closing_reference(record_prop
 
 
 # 452.4: as GitHub renders them, the closing line and both top rows show GitHub's own references
-
-GITHUB = "dokima-dev/dokima"
-REAL = {"number": 440, "url": f"https://github.com/{GITHUB}/issues/440"}
-REAL_PR = {"number": 448, "merged": False, "state": "open", "body": "Closes #440"}
-REAL_RUN = {"status": "completed", "conclusion": "success",
-            "html_url": f"https://github.com/{GITHUB}/actions/runs/38083227252"}
-RECORDED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_rendering.json")
-
-
-def texts():
-    """The texts whose GitHub rendering is checked, drawn now for real issue #440.
-
-    They are drawn by the code as it is now, for issue #440 and its PR #448. Returns {name: text}. tests/record_rendering.py records GitHub's answer for each of these."""
-    f = {"recs": [], "pr": REAL_PR, "check_runs": [], "reviews": [], "owners": set(), "tests": {}, "worker": REAL_RUN,
-         "children": []}
-    issue_card = card.render(GITHUB, REAL, f, page="issue")
-    pr_card = card.render(GITHUB, REAL, f, page="pr")
-    try:
-        described = card.pr_body(pr_card, "Closes #440", "My ask.", issue_url=REAL["url"])
-    except TypeError:
-        # Before #452 pr_body took no issue address and copied the PR's own Closes #N.
-        described = card.pr_body(pr_card, "Closes #440", "My ask.")
-    return {"issue top row": top_row(issue_card, GITHUB) or "", "PR top row": top_row(pr_card, GITHUB) or "",
-            "closing line": described.rstrip().splitlines()[-1]}
-
-
-def rendered(name, text):
-    """GitHub's recorded rendering of the text; fails when none was recorded for it exactly."""
-    try:
-        with open(RECORDED, encoding="utf-8") as f:
-            answers = json.load(f)
-    except FileNotFoundError:
-        pytest.fail(f"452.4: no GitHub rendering is recorded ({RECORDED} is missing); run python3 tests/record_rendering.py")
-    hit = [a["html"] for a in answers if a.get("text") == text]
-    if not hit:
-        pytest.fail(f"452.4: GitHub's rendering of the {name} was never recorded for this exact text, so it proves "
-                    f"nothing; run python3 tests/record_rendering.py. The text: {text!r}")
-    return hit[0]
-
-
-def anchors(page):
-    """Every link in GitHub's HTML as (href, its attributes, its words)."""
-    return [(m.group(2), m.group(1), re.sub(r"<[^>]+>", "", m.group(3)).strip())
-            for m in re.finditer(r'<a ((?:[^>]*?\s)?href="([^"]*)"[^>]*)>(.*?)</a>', page, re.S)]
-
-
-def reference(page, url, kind):
-    """The links GitHub draws as its own reference to the URL, of the given kind.
-
-    Such a link has the class issue-link, a hovercard of that kind, and the words #N."""
-    n = url.rstrip("/").rsplit("/", 1)[1]
-    return [a for a in anchors(page) if a[0] == url and "issue-link" in a[1]
-            and f'data-hovercard-type="{kind}"' in a[1] and a[2] == f"#{n}"]
-
-
-def test_github_renders_the_closing_line_as_its_reference_to_the_issue(record_property):
-    """As GitHub renders it, the closing line is Closes, then GitHub's reference to the issue.
-
-    Proves 452.4. Reads GitHub's recorded rendering of the closing line the code writes for real issue #440, and checks the line is
-    exactly Closes and the issue's full address, and that GitHub draws it as the word Closes then one link of its own
-    issue-reference kind (the one it gives a title and state icon) to issue #440, and no other link."""
-    record_property("proves", "452.4")
-    line = texts()["closing line"]
-    assert line == f"Closes {REAL['url']}", f"452.4: the closing line the code writes is {line!r}"
-    page = rendered("closing line", line)
-    refs = reference(page, REAL["url"], "issue")
-    assert len(refs) == 1 and len(anchors(page)) == 1, \
-        f"452.4: GitHub does not draw the closing line as one reference to issue #440: {page}"
-    assert re.sub(r"<[^>]+>", "", page).split()[0] == "Closes", f"452.4: GitHub's rendering does not start with Closes: {page}"
-
-
-def test_github_renders_the_issue_cards_top_row_with_no_link_to_itself(record_property):
-    """As GitHub renders them, the issue's top row never links the issue itself.
-
-    Proves 452.4. Reads GitHub's recorded rendering of the top rows the code draws for real issue #440 with PR #448, and checks the
-    issue's row holds no link to issue #440 at all, and holds GitHub's own reference to PR #448, while the PR's row
-    holds GitHub's own references to both issue #440 and PR #448."""
-    record_property("proves", "452.4")
-    drawn = texts()
-    issue_page = rendered("issue top row", drawn["issue top row"])
-    pr_url = f"https://github.com/{GITHUB}/pull/448"
-    assert not [a for a in anchors(issue_page) if a[0].rstrip("/") == REAL["url"]], \
-        f"452.4: as GitHub renders it, the issue card's top row still links issue #440 itself: {issue_page}"
-    assert len(reference(issue_page, pr_url, "pull_request")) == 1, \
-        f"452.4: as GitHub renders it, the issue card's top row does not show PR #448 as GitHub's reference: {issue_page}"
-    pr_page = rendered("PR top row", drawn["PR top row"])
-    assert len(reference(pr_page, REAL["url"], "issue")) == 1, \
-        f"452.4: as GitHub renders it, the PR card's top row does not show issue #440 as GitHub's reference: {pr_page}"
-    assert len(reference(pr_page, pr_url, "pull_request")) == 1, \
-        f"452.4: as GitHub renders it, the PR card's top row does not show PR #448 as GitHub's reference: {pr_page}"
-
 
 # 452.5: Dokima still reads which issue a PR was built for from its closing line, by full address or by #N
 

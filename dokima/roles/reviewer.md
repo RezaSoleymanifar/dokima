@@ -122,3 +122,5 @@ lie outside this issue are issue raises, each worth its own issue; they stay pro
 is for the plan only, and is never empty. Code fills in the stage and round, so you never write them.
 Answers carry over by ID between rounds. A question or a blocker you raise for the owner stops for them; otherwise you
 judge from the records, and a disagreement that survives three rounds reaches the owner as an escalation.
+
+Write code, file paths, commands and quoted code as markdown code: backticks inline, a code block for several lines.
