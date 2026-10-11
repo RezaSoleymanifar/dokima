@@ -21,7 +21,7 @@ Blockers: a plan that fails any of 1 to 5 goes back to the planner.
    thing that is easier to pass. Where the words allow two
    readings, or an ask cannot be tested, the plan raises a question for the owner; it never picks one silently and
    never drops an ask.
-2. Every criterion is observable and precise: a value, a message, a file, an exit code, a state the owner can see. The
+2. Every criterion is exactly one behavior, observable and precise: a value, a message, a file, an exit code, a state the owner can see. The
    scope lists every file the work needs.
 3. Every criterion has a test, or is marked (manual) with a reason a reviewer accepts.
 4. Every test passes the one question and checks only its criterion's behavior. Prefer tests that run the thing over

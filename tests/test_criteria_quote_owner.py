@@ -36,3 +36,15 @@ def test_a_non_functional_requirement_needs_the_owners_words_too():
     ok = {"text": "t", "words": "never escaped", "source": ISSUE}
     with pytest.raises(planner.Garbled):
         planner.from_kind(story(ok, nfr=[{"text": "never inject HTML", "why": "safety"}]), ISSUE, SAID)
+
+
+def test_a_story_split_from_a_parent_does_not_count_its_own_text_as_the_owners(monkeypatch):
+    """A split story's text was written by a planner, so the owner's words come only from the parent and comments."""
+    from dokima import agent
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setattr(agent, "parent_words", lambda repo, n: {"number": 5, "body": "Cards update right away.", "comments": []})
+    story = ("<!-- dokima-card -->\n<!-- /dokima-card -->\n\n<details open><summary>From the approved plan of #5, story 1"
+             "</summary>\n\nPlanner text.\n</details>")
+    said = agent.owner_words("o/r", 7, {"body": story}, [], ["boss"])
+    assert "https://github.com/o/r/issues/7" not in said
+    assert said["https://github.com/o/r/issues/5"] == "Cards update right away."
