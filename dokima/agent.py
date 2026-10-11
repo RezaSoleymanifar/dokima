@@ -1118,6 +1118,20 @@ def pack_parent(*dirs):
     return None
 
 
+def owner_words(repo, number, d, items, owners):
+    """Where the owner said things, as {link: text}: the issue's own ask, each code owner's comment, and the same on
+    its parent issue. Every criterion of a plan must quote words found at its source link (#416)."""
+    from dokima.body import ask
+    mine = lambda c: (c.get("author") or {}).get("login") in owners and c.get("url")
+    out = {issue_url(number): ask(d.get("body") or "")}
+    out.update({c["url"]: c.get("body") or "" for c in items if mine(c)})
+    up = parent_words(repo, number)
+    if up:
+        out[issue_url(up["number"])] = ask(up["body"])
+        out.update({c["url"]: c.get("body") or "" for c in up["comments"] if mine(c)})
+    return out
+
+
 def pack(repo, number, role, stage, dest):
     """Build the starting pack from GitHub's records: the issue and its PRs' conversation, every agent record so far,
     the open raises this role must answer (open_blockers.json), the newest passed plan, the issue's parent on GitHub (parent.json, naming none when it has none or GitHub cannot
@@ -1129,6 +1143,8 @@ def pack(repo, number, role, stage, dest):
     json.dump({"number": parent_of(repo, number)}, open(os.path.join(dest, "parent.json"), "w"))
     if listed is not None:
         json.dump(listed, open(os.path.join(dest, "open_issues.json"), "w"), indent=1)
+        owners = [o for o in os.environ.get("OWNERS", "").split(",") if o]
+        json.dump(owner_words(repo, number, d, items, owners), open(os.path.join(dest, "owner_words.json"), "w"), indent=1)
     # The open raises this agent must answer; the file keeps the name the workflows give it.
     json.dump(raises_for(recs, role), open(os.path.join(dest, "open_blockers.json"), "w"), indent=1)
     open(os.path.join(dest, "issue.md"), "w").write(issue_text(d, items))
@@ -1170,6 +1186,31 @@ def problems_review(r):
     if r.get("verdict") == "block" and not blocks:
         bad.append("a block needs at least one blocker in raises")
     return bad
+
+
+def problems_size(r, ids=()):
+    """A plan review must judge each criterion one behavior or not, in `behaviors`, and say whether the plan keeps the
+    size rule: size is "ok", or the rule it breaks. A criterion bundling two behaviors breaks it; a plan that breaks
+    it is never approved."""
+    bad = []
+    rows = r.get("behaviors") if isinstance(r.get("behaviors"), list) else []
+    seen = {str(b.get("criterion")): b for b in rows if isinstance(b, dict)}
+    for k in ids:
+        b = seen.get(str(k))
+        if not b or not isinstance(b.get("one_behavior"), bool) or not str(b.get("why") or "").strip():
+            bad.append(f"behaviors has no judgment of criterion {k}: say one_behavior true or false, and why in one line")
+    bundled = [k for k, b in seen.items() if b.get("one_behavior") is False]
+    size = str(r.get("size") or "").strip()
+    if bundled and size.lower() == "ok":
+        bad.append(f"criteria {', '.join(bundled)} bundle more than one behavior, so size cannot be ok")
+    if bad:
+        return bad
+    if not size:
+        return ['size is empty: write "ok" if every story holds 1 to 3 criteria, each one behavior, in as few stories as '
+                "the count needs; otherwise say which part breaks it"]
+    if size.lower() != "ok" and r.get("verdict") == "approve":
+        return [f"size says the plan breaks the size rule ({size}), so the verdict cannot be approve"]
+    return []
 
 
 def problems_asks(r, ids):
@@ -1340,6 +1381,7 @@ def check(kind, path, plan_path=None, number=None):
             bad += problems_plan(kind, data, plan, number)
             if kind == "review" and os.environ.get("STAGE") == "plan":
                 bad += problems_asks(data, plan_criteria(plan, number))
+                bad += problems_size(data, plan_criteria(plan, number))
     for line in listed + bad:
         print(line)
     return 1 if bad else 0
@@ -2190,6 +2232,10 @@ def clash_pending(recs):
     return at is not None and not any(r.get("role") == "worker" for r in recs[at + 1:])
 
 
+# More questions for the owner than this and a plan is not ready: it stops for the owner, whatever else says go.
+MAX_QUESTIONS = 3
+
+
 def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", number="", parent=lambda: None):
     """The river: what follows the run that just finished. ("start", role, stage) or ("stop", why), decided by code.
 
@@ -2214,6 +2260,10 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
         stops = [r for r in owner_raises(h) if r.get("kind") == "blocker"]
         if stops:
             return ("stop", "The planner raised a blocker for you: " + quoted(stops) + " Answer with `/plan` and your words.")
+        many = [r for r in owner_raises(h) if r.get("kind") == "question"]
+        if len(many) > MAX_QUESTIONS:
+            return ("stop", f"The plan has {len(many)} questions for you, more than {MAX_QUESTIONS}: it is not ready. "
+                            "Answer them with `/plan` and your words; nothing goes on until you do.")
         if h.get("questions") or owner_raises(h):
             asked = "The plan has questions for you. Answer with `/plan` and your words, or say `/review` to go on with its assumptions."
             on = autopilot()
@@ -2236,6 +2286,9 @@ def next_step(items, rec, owners, rounds=3, autopilot=lambda: False, body="", nu
     verdict = h.get("verdict")
     plan = (latest(records(items), "planner") or {}).get("handback") or {}
     asked = [r for r in owner_raises(plan) if r.get("kind") == "question"]
+    if stage == "plan" and len(asked) > MAX_QUESTIONS:
+        return ("stop", f"The plan has {len(asked)} questions for you, more than {MAX_QUESTIONS}: it is not ready. "
+                        "Answer them with `/plan` and your words.")
     if stage == "plan" and verdict in ("approve", "block") and (plan.get("questions") or asked):
         on = autopilot()
         if on is None:
