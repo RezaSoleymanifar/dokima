@@ -242,7 +242,7 @@ def test_the_card_never_changes_the_owner_part(record_property, monkeypatch, git
     current = body.redraw(TRICKY, PLAN_TOP)
     below = current.split(body.MARKER, 1)[1]
     for k in range(3):
-        # A card already current is not saved again (#438), so a later run that saves nothing keeps the body as it was.
+        # Every change now redraws (#438), so a run that finds the card current may save nothing and keeps the body.
         saved = run_card(monkeypatch, github, current)
         assert saved is not None or k > 0, "179.2: the first card run saved nothing"
         saved = current if saved is None else saved
