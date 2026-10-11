@@ -546,14 +546,12 @@ def issue_body(card, notes):
 
 
 def pr_body(card, text, ask, issue_url=None):
-    """The PR's description: the card, the owner's Original issue fold, then the Closes line.
+    """The PR's description: the card, then the owner's Original issue fold, with no Closes line (#416).
 
-    The Closes line names the issue by its full address `issue_url`, so GitHub shows its title (#452); without one it
-    keeps the PR's own Closes #N. In the PR's copy a `#` after a closing keyword is written `&#35;`, and the `h` of a
-    full address after one `&#104;`, which show the same, so the owner's words never close or name another issue: the
-    PR's own Closes line stays the only closing reference (#373)."""
-    found = CLOSES.search(text or "")
-    closing = f"Closes {issue_url}" if issue_url else found.group(0) if found else None
+    The card links the issue, and card.yml closes it when the pull request merges. In the PR's copy a `#` after a
+    closing keyword is written `&#35;`, and the `h` of a full address after one `&#104;`, which show the same, so the
+    owner's words never close or name another issue (#373). `text` and `issue_url` are no longer read."""
+    closing = None
     shown = KEYWORD_URL.sub(r"\1&#104;", KEYWORD_HASH.sub(r"\1&#35;", ask or ""))
     card, done = card.split(body.DONE, 1) if body.DONE in card else (card, "")
     return (card.rstrip("\n") + "\n\n" + body.MARKER + body.FOLD_START + shown + body.FOLD_END
