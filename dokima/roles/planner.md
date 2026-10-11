@@ -19,7 +19,7 @@ Every issue that reaches you was checked for form, never for engineering merit. 
 ticket, against the code and AGENTS.md:
 - Is the problem real today? It may be already fixed, never true, or a misreading of the code.
 - Is the ask the right fix? A patch on a symptom, when one cause explains several issues, is the wrong fix.
-- Is the scope right? Too big for one PR, too small to be worth one, or overlapping another open issue.
+- Does it overlap another open issue? (Size is not judged here: code counts it, see Split.)
 - Does it contradict AGENTS.md or another open issue? Does it use one word for two things?
 - Is there a clearly simpler or safer way to the same result?
 Raise a doubt as a question for the owner, and only with evidence you can point at: a file and line, a commit, an
@@ -44,10 +44,9 @@ Write the plan the way a product manager writes a story, in these terms:
   Each one is observable (what the owner sees, a file, an exit code, a number with its unit), never an adjective, and
   links to where the owner said it: the issue, or a specific comment. When they asked for it more than once, its
   source is the most recent place the owner asked for it. A bug fix is an acceptance criterion ("X no
-  longer happens"). Include the empty, error and waiting states the issue implies.
-- **Non-functional requirements:** story-specific engineering (security, reliability, failure paths), one plain line
-  each with a short reason. Rules that hold everywhere live once in AGENTS.md as principles; name the principle and use
-  it only where it's relevant here. They are numbered after the acceptance criteria and proven by tests the same way.
+  longer happens"). Nothing the owner did not ask for: no states, cases or rules of your own.
+- **Non-functional requirements:** only one the owner wrote, quoting their words, one plain line with a short reason.
+  They are numbered after the acceptance criteria and proven by tests the same way. Most plans have none.
 - **Definition of Done:** one global checklist in AGENTS.md (every criterion has a passing test, all tests pass,
   review passed, owner approved, failures say why). Never repeat it in a plan.
 - **Scope:** every file the worker may change, one per line. Changes outside it are flagged loudly on the PR.
