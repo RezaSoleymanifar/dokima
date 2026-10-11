@@ -269,7 +269,7 @@ def assert_pr_folded(k, pr_text, top, ask, closes=CLOSES_40):
     assert not before.replace(body.MARKER, "").strip(), f"{k}: something other than the marker sits between the card " \
                                                          f"and the Original issue fold on the PR: {before!r}"
     after = re.sub(r"^\s*<!-- dokima-done -->\n[^\n]*", "", after)  # since #416 Done sits right after the fold
-    assert after.strip() == closes, f"{k}: after the fold the PR should end with only {closes!r}, not {after!r}"
+    assert not after.strip(), f"{k}: after the fold the PR should end, with no Closes line since #416, not {after!r}"
     assert [f for f in folds(pr_text) if f[1] == "Original issue"][0][0] == "<details>", \
         f"{k}: the Original issue fold on the PR is not closed by default"
 
@@ -368,8 +368,9 @@ def test_the_owners_closing_words_on_the_pr_close_nothing(record_property, monke
     top = saved.split(body.MARKER, 1)[0]
     assert_pr_folded("373.5", pr_text, top, shown)
     found = [m.group(0) for m in KEYWORDS.finditer(pr_text)]
-    assert found == [CLOSES_40], f"373.5: the PR's description holds closing references other than {CLOSES_40}: {found}"
-    assert agent.issue_of_pr("", pr_text) == "40", "373.5: Dokima reads the PR's issue from the owner's words"
+    # Since #416 the PR carries no Closes line; the owner's words still close nothing.
+    assert found == [], f"373.5: the PR's description holds closing references: {found}"
+    assert agent.issue_of_pr("", pr_text) is None, "373.5: Dokima reads the PR's issue from the owner's words"
     _, again = draw_both(monkeypatch, github, saved, pr_text)
-    assert again is not None and again.rstrip().endswith(CLOSES_40) and KEYWORDS.findall(again) == [CLOSES_40], \
-        f"373.5: a second redraw lost the PR's own Closes line or picked up the owner's:\n{again!r}"
+    assert again is None or KEYWORDS.findall(again) == [], \
+        f"373.5: a second redraw picked up a closing reference from the owner's words:\n{again!r}"

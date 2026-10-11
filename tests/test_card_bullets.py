@@ -321,7 +321,7 @@ def test_the_issue_and_pr_cards_are_identical_and_link_both_pages(record_propert
     for c in (a, b):
         assert re.search(r"(^|[\s·])https://github\.com/o/r/pull/5($|[\s·])", c, re.M), "235.4: the card does not link back to PR #5"
     assert code_review(a) == code_review(b) == "passed", "235.4: a code review that passed does not show passed on both"
-    assert on_pr.rstrip().endswith("Closes " + ISSUE["url"]), "235.4: the PR lost its line closing the issue"
+    assert "Closes" not in on_pr, "235.4: the PR still carries a Closes line (#416 dropped it)"
 
 
 # 235.5: under each criterion, Source links to where the owner asked for it, the most recent time
