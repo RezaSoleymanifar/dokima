@@ -360,7 +360,7 @@ def test_the_issue_and_its_pr_show_the_same_card(record_property, monkeypatch, t
         # Since #452 the links row differs only by the issue's own link, which the PR's row keeps.
         assert x == y or x == y.replace(" · " + ISSUE["url"] + " · ", " · ", 1), \
             f"180.1: the issue and PR cards differ: “{x}” vs “{y}”"
-    assert on_pr.rstrip().endswith("Closes " + ISSUE["url"]), "180.1: the PR lost its line closing the issue"
+    assert "Closes" not in on_pr, "180.1: the PR still carries a Closes line (#416 dropped it)"
 
 
 def test_the_card_finds_the_pr_on_either_branch(record_property, monkeypatch):

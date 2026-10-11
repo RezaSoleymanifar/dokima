@@ -959,8 +959,8 @@ def test_merging_a_pr_redraws_its_card_and_its_issues_card(tmp_path, record_prop
             f"345.1: after {what}, PR #246's card does not say Merged: {pr_card!r}"
         assert issue_card == without_issue_link(pr_card, 239) and pr_card != issue_card, \
             f"345.1: after {what}, issue #239 and PR #246 show different cards, besides the PR's link to #239"
-        assert hub.pr_body(246).rstrip().endswith("Closes https://github.com/o/r/issues/239"), \
-            f"345.1: after {what}, PR #246 lost its closing line: {hub.pr_body(246)[-200:]!r}"
+        assert "Closes" not in hub.pr_body(246), \
+            f"345.1: after {what}, PR #246 still carries a Closes line (#416 dropped it): {hub.pr_body(246)[-200:]!r}"
 
 
 def test_merging_one_pr_leaves_other_cards_alone(tmp_path, record_property):
