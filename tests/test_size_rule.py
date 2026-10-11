@@ -52,3 +52,14 @@ def test_every_criterion_is_judged_one_behavior_and_a_bundle_breaks_size():
     assert agent.problems_size(dict(ok, behaviors=[]), ["7.1"])
     bundled = dict(ok, behaviors=[{"criterion": "7.1", "one_behavior": False, "why": "X and Y"}])
     assert agent.problems_size(bundled, ["7.1"])
+
+
+def test_every_test_is_judged_and_a_test_checking_more_never_approves():
+    """Each test the plan names needs a judgment; one checking more than its behavior cannot pass."""
+    plan = {"tests": {"7.1": ["tests/t.py::a"]}}
+    ok = {"verdict": "approve", "tests": [{"test": "tests/t.py::a", "only_its_behavior": True, "why": "one result"}]}
+    assert not agent.problems_tests(ok, plan)
+    assert agent.problems_tests(dict(ok, tests=[]), plan)
+    wide = dict(ok, tests=[{"test": "tests/t.py::a", "only_its_behavior": False, "why": "also checks links"}])
+    assert agent.problems_tests(wide, plan)
+    assert not agent.problems_tests(dict(wide, verdict="block"), plan)
