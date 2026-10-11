@@ -116,6 +116,7 @@ One file, `review.json`, in the hand-back folder named below. Code reads only th
    "answers": [...],
    "asks": [{"ask": "the owner's words", "source": "issue or comment link", "criterion": "N.k" | "S<s>.<k>" | "missing"}],
    "behaviors": [{"criterion": "N.k", "one_behavior": true | false, "why": "one line"}],
+   "tests": [{"test": "path::name", "only_its_behavior": true | false, "why": "one line"}],
    "size": "ok" | "which part of the size rule the plan breaks"}
 "approve" raises no blocker; "block" raises at least one. Every blocker is for the one who fixes it: the worker for
 code, the planner for a test or the plan; code sends a code review with any blocker for the planner back to the
@@ -131,4 +132,7 @@ Write code, file paths, commands and quoted code as markdown code: backticks inl
 The size rule: each criterion is one behavior, quoting the owner's words, with one test; a criterion that bundles two
 things ("X and Y") is two criteria. Stories = criteria / 3, rounded up, so each story holds 1 to 3 and nothing is split
 smaller. Code counts the stories; you judge, in behaviors, every criterion: is it exactly one behavior (one action, one
-result)? An "and", two results, or two cases in one criterion is false. Any false means size is not ok. Write "size": "ok", or which part breaks; a plan that breaks it is never approved.
+result)? An "and", two results, or two cases in one criterion is false. Any false means size is not ok.
+In tests, judge every test the plan names: does it check only its criterion's behavior, with the edge cases the owner
+named or normal use hits? Anything else it checks, or a case nobody asked about, is false, and a plan with a false test
+is never approved. Write "size": "ok", or which part breaks; a plan that breaks it is never approved.
