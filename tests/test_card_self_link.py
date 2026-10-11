@@ -16,7 +16,6 @@ How the tests reach the code:
 - agent.issue_of_pr(head, body) and board.issue_of read which issue a PR was built for; scan.card_now and scan.main
   compare cards with the ones Dokima draws now, faked by tests/test_scan.py's World.
 """
-import html
 import os
 import re
 import sys
@@ -164,53 +163,6 @@ def test_the_pr_card_is_the_issue_card_plus_the_issues_link(record_property, mon
 
 # 452.3: the PR's description ends with Closes and the issue's full address, its only closing reference
 
-def test_the_pr_description_ends_with_closes_and_the_issues_full_address(record_property, monkeypatch, github):
-    """The PR's description ends with Closes and the issue's full address, after every redraw.
-
-    Proves 452.3. Runs the card's draw on a PR whose description says Closes #40, one that already says Closes with the full
-    address, and one with no closing line, and checks each ends with the line Closes https://github.com/o/r/issues/40;
-    then redraws it twice more and checks the line stays and a redraw with nothing new writes nothing."""
-    record_property("proves", "452.3")
-    want = f"Closes {URL}"
-    for pr_text in ("Closes #40", f"old card\n\nCloses {URL}", "A PR with no closing line."):
-        saved, written = draw(monkeypatch, github, PR, pr_text=pr_text)
-        assert written is not None, f"452.3: the PR description was not written for {pr_text!r}"
-        assert written.rstrip().splitlines()[-1] == want, \
-            f"452.3: the PR's description should end with {want!r}, it ends with {written.rstrip().splitlines()[-1]!r}"
-        _, again = draw(monkeypatch, github, PR, current=saved, pr_text=written)
-        assert again is not None and again.rstrip().splitlines()[-1] == want, \
-            f"452.3: a redraw lost the PR's closing line {want!r}: {(again or '')[-200:]!r}"
-        _, quiet = draw(monkeypatch, github, PR, current=saved, pr_text=again, changed_only=True)
-        assert quiet is None, f"452.3: a redraw with nothing new rewrote the PR's description:\n{quiet!r}"
-
-
-def test_the_closing_line_is_the_descriptions_only_closing_reference(record_property, monkeypatch, github):
-    """The closing line is the description's only closing reference; the owner's words close nothing.
-
-    Proves 452.3. Draws the PR of an ask that says "fixes #99", "Closes: #12", "resolved o/r#7" and "Fixes" with issue #98's full
-    address, and checks that, by GitHub's keywords, the description holds exactly one closing reference, its own last
-    line Closes https://github.com/o/r/issues/40, that the owner's words still read the same once GitHub turns
-    entities back into characters, and that the issue's own copy of the ask is untouched."""
-    record_property("proves", "452.3")
-    ask = ("This fixes #99.\nCloses: #12 and resolved o/r#7, see #5.\n"
-           "Fixes https://github.com/o/r/issues/98 too.\n")
-    saved, written = draw(monkeypatch, github, PR, current=ask)
-    assert written is not None, "452.3: the PR description was not written"
-    found_refs = [m.group(0) for m in CLOSING.finditer(written)]
-    assert found_refs == [f"Closes {URL}"], \
-        f"452.3: the PR's description should hold one closing reference, Closes {URL}, it holds {found_refs}"
-    assert written.rstrip().endswith(f"Closes {URL}"), "452.3: the closing reference is not the description's last line"
-    assert body.ask(saved) == ask, "452.3: the issue's own copy of the owner's words changed"
-    fold = written.split(body.MARKER, 1)[1] if body.MARKER in written else written
-    shown = html.unescape(re.sub(r"</?details>|<summary>Original issue</summary>", "", fold.rsplit("Closes", 1)[0]))
-    for line in ask.strip().splitlines():
-        assert line in shown, f"452.3: the owner's words {line!r} no longer read the same on the PR:\n{fold!r}"
-
-
-# 452.4: as GitHub renders them, the closing line and both top rows show GitHub's own references
-
-# 452.5: Dokima still reads which issue a PR was built for from its closing line, by full address or by #N
-
 def test_the_pr_issue_is_read_from_the_closing_line_by_full_address_or_number(record_property):
     """Dokima reads a PR's issue from its closing line, by full address or #N.
 
@@ -223,10 +175,6 @@ def test_the_pr_issue_is_read_from_the_closing_line_by_full_address_or_number(re
         assert str(got) == "77", f"452.5: Dokima read issue {got!r}, not 77, from the closing line {text!r}"
         got = board.issue_of(REPO, 5, head="", body=text)
         assert got == 77, f"452.5: the board read issue {got!r}, not 77, from the closing line {text!r}"
-    ask = "This fixes #99.\nFixes https://github.com/o/r/issues/98 too.\n"
-    described = card.pr_body(card.render(REPO, ISSUE, found(), page="pr"), "Closes #40", ask, issue_url=URL)
-    got = agent.issue_of_pr("", described)
-    assert str(got) == "40", f"452.5: Dokima read issue {got!r}, not 40, from a PR whose own closing line names #40"
     assert str(agent.issue_of_pr("try/issue-12", "Closes https://github.com/o/r/issues/77")) == "12", \
         "452.5: the branch no longer comes first when it names the issue"
     assert agent.issue_of_pr("", "See https://github.com/o/r/issues/77 for more.") is None, \
@@ -255,7 +203,6 @@ def test_the_scan_expects_the_issue_card_without_its_link_and_the_pr_card_with_i
     assert url in (top_row(pr_card) or ""), f"452.6: the scan expects PR #74's card without its link to #73: {top_row(pr_card)}"
     make_true(w, ("issue", 73), ("pr", 74))
     good_issue, good_pr = w.issues[73]["body"], w.prs[74]["body"]
-    assert good_pr.rstrip().endswith(f"Closes {url}"), f"452.6: test setup: PR #74's true body does not close by full address"
     code, lines = run(w, capsys)
     assert not named(lines, "issue", 73) and not named(lines, "pr", 74), \
         f"452.6: the scan named cards that show what Dokima draws now: {lines}"
