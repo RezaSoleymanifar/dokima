@@ -58,6 +58,19 @@ def field_icon(repo, field):
     return icon(repo, FIELD_ICONS[field], alt=field)
 
 
+def ref(repo, n):
+    """Issue or PR `n` by its full address, so GitHub shows its icon, title and number."""
+    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/issues/{n}"
+
+
+SHORT_REF = re.compile(r"(?<![\w&/])#(\d+)\b")
+
+
+def full_refs(repo, text):
+    """`text` with every short #N written out as its full address."""
+    return SHORT_REF.sub(lambda m: ref(repo, m.group(1)), text or "")
+
+
 def link_lines(repo, links):
     """One line per kind of link a plan has (Blocked by, Blocks, Relates to), each with its own icon; none for a kind
     with no links or a plan with no links field."""
@@ -67,7 +80,7 @@ def link_lines(repo, links):
                                ("relates_to", "related", "Relates to")):
         numbers = links.get(kind) if isinstance(links.get(kind), list) else []
         if numbers:
-            out.append(f"{field_icon(repo, field)} **{label}:** " + ", ".join(f"#{n}" for n in numbers))
+            out.append(f"{field_icon(repo, field)} **{label}:** " + ", ".join(ref(repo, n) for n in numbers))
     return out
 
 
@@ -216,8 +229,14 @@ def fold(title, lines):
     return [f"<details><summary><b>{title}</b></summary>", "", *lines, "", "</details>"]
 
 
+CODE = re.compile(r"((?:^|(?<=\n))```[^\n]*\n.*?\n```(?=\n|$)|(?<!\\)`[^`\n]+`)", re.S)
+
+
 def escape(text):
-    return html.escape(text or "", quote=False)
+    """`<`, `>` and `&` escaped so words draw no HTML, but left as written inside markdown code, where GitHub shows
+    them as written: an inline `span` on one line, or a fenced block."""
+    parts = CODE.split(text or "")
+    return "".join(p if i % 2 else html.escape(p, quote=False) for i, p in enumerate(parts))
 
 
 RAISE_ICON = {"question": "question", "blocker": "blocker", "issue": "issue found"}
@@ -395,7 +414,7 @@ def criterion_item(repo, label, c, check, tests):
             out.append(f'  - *<a href="{t["url"]}">{field_icon(repo, "verified by")} Verified by</a>: '
                        f'{escape(t["verified_by"])}*')
     if c.get("source"):
-        out.append(f'  - Source: {c["source"]}')
+        out.append(f'  - Source: {full_refs(repo, c["source"])}')
     return out
 
 
@@ -515,9 +534,9 @@ def render(repo, issue, found, page="issue"):
                                         plan_tests, by_key, tests)) + [""]
         lines += [" ".join(["**Scope:**", ", ".join(f"`{s}`" for s in h.get("scope") or [])]).rstrip(), ""]
         if h.get("out_of_scope"):
-            lines += fold("Out of scope", [f"- {escape(s)}" for s in h["out_of_scope"]]) + [""]
-    lines += [done_row(repo, found, all_tests), "", plan.CARD_END]
-    return "\n".join(lines)
+            lines += fold("Out of scope", [f"- {full_refs(repo, escape(s))}" for s in h["out_of_scope"]]) + [""]
+    # The Definition of Done goes last, below the Original issue fold: body.redraw puts it after the fold.
+    return "\n".join(lines + [body.FOLDED, plan.CARD_END, "", body.DONE, done_row(repo, found, all_tests)])
 
 
 def issue_body(card, notes):
@@ -535,8 +554,9 @@ def pr_body(card, text, ask, issue_url=None):
     found = CLOSES.search(text or "")
     closing = f"Closes {issue_url}" if issue_url else found.group(0) if found else None
     shown = KEYWORD_URL.sub(r"\1&#104;", KEYWORD_HASH.sub(r"\1&#35;", ask or ""))
+    card, done = card.split(body.DONE, 1) if body.DONE in card else (card, "")
     return (card.rstrip("\n") + "\n\n" + body.MARKER + body.FOLD_START + shown + body.FOLD_END
-            + ("\n\n" + closing if closing else ""))
+            + (body.TRAILER + done.strip("\n") if done.strip() else "") + ("\n\n" + closing if closing else ""))
 
 
 def shows(current, top):
