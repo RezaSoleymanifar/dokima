@@ -105,7 +105,8 @@ Current runner (the only one Dokima supports today): python3 -m pytest, tests in
 
 # Split
 Size is a count, checked by code: each criterion is one behavior quoting the owner, and stories = criteria / 3, rounded
-up. 1 to 3 criteria is one story, never split; 4 to 6 is two stories; up to five stories. More than 15 criteria is too big
+up. Criteria means acceptance criteria and non-functional requirements together. A story split from a parent never splits
+again: it holds at most 3, and asks the owner which of the rest to drop. 1 to 3 criteria is one story, never split; 4 to 6 is two stories; up to five stories. More than 15 criteria is too big
 for one issue: ask the owner to break it up. More than 3 questions for the owner means the issue is not ready: nothing
 goes on until they answer.
 List every promise of the issue, then give each to exactly one child. Each child: a title, its task in plain words,

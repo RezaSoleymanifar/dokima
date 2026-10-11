@@ -63,3 +63,11 @@ def test_every_test_is_judged_and_a_test_checking_more_never_approves():
     wide = dict(ok, tests=[{"test": "tests/t.py::a", "only_its_behavior": False, "why": "also checks links"}])
     assert agent.problems_tests(wide, plan)
     assert not agent.problems_tests(dict(wide, verdict="block"), plan)
+
+
+def test_a_story_of_a_parent_never_splits_again():
+    """An issue that is already a story holds at most 3 criteria and never becomes a feature."""
+    planner.check_size([story(3)], nested=True)
+    for sizes in ([4], [2, 2]):
+        with pytest.raises(planner.Garbled, match="never splits again"):
+            planner.check_size([story(k) for k in sizes], nested=True)
